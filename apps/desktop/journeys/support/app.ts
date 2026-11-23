@@ -83,9 +83,12 @@ export const launch = async (journey: string, data: string): Promise<Screen> => 
     },
     close: async () => {
       // Journeys run in the background (--background): a window on screen would get in the user's way.
-      const shown = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().some((window) => window.isVisible()));
-      await app.close();
-      if (shown) throw new Error("a window was shown on screen; journeys must stay in the background");
+      try {
+        const shown = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().some((window) => window.isVisible()));
+        if (shown) throw new Error("a window was shown on screen; journeys must stay in the background");
+      } finally {
+        await app.close();
+      }
     },
   };
 };

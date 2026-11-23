@@ -136,7 +136,7 @@ const restack = Effect.fn("restack")(function* (
   const view = yield* library.pipe(Effect.provide(services));
   if (!view.stack.entries.some((entry) => entry.id === id)) return yield* new Refused({ why: `no patch named ${id}` });
   const next = change(view.stack, id);
-  const saved = next === undefined ? view : yield* changeStack(next).pipe(Effect.provide(services));
+  const saved = next === undefined ? view : yield* changeStack(settings.work, next).pipe(Effect.provide(services));
   yield* Console.log(stackLines(saved).join("\n"));
 });
 

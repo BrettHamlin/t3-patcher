@@ -146,10 +146,15 @@ const patchNamed = Effect.fn("patchNamed")(function* (id: string) {
   return patches.find((patch) => patch.manifest.id === id);
 });
 
-/** Save a changed stack; returns the patches as they now stand. */
-export const changeStack = Effect.fn("changeStack")(function* (stack: Stack) {
-  yield* saveStack(stack);
-  return yield* library;
+/** Save a changed stack, holding the lock so it can't interleave with a run or a capture; returns the patches. */
+export const changeStack = Effect.fn("changeStack")(function* (work: string, stack: Stack) {
+  return yield* locked(
+    work,
+    Effect.gen(function* () {
+      yield* saveStack(stack);
+      return yield* library;
+    }),
+  );
 });
 
 /** Apply the patches that are on, in stack order, and keep the report as the last run. Holds the lock throughout. */

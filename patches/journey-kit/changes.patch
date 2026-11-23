@@ -22,10 +22,10 @@ index 0000000000000000000000000000000000000000..7258764f516719f15ac086486fb6769d
 +});
 diff --git a/patcher/journeys/support.mjs b/patcher/journeys/support.mjs
 new file mode 100644
-index 0000000000000000000000000000000000000000..e73320c366f693671d7cd382d30708edd83b91aa
+index 0000000000000000000000000000000000000000..62e74d6ac27a15c29dcd753135bf6476ec3990e7
 --- /dev/null
 +++ b/patcher/journeys/support.mjs
-@@ -0,0 +1,162 @@
+@@ -0,0 +1,165 @@
 +// Launches a built app for t3-patcher journeys, isolated from the installed app and the keychain.
 +// Env: T3_PATCHER_APP (built .app), T3_PATCHER_EVIDENCE (screenshots, logs), optional
 +// T3_PATCHER_TMP (parent of the throwaway home; defaults to $TMPDIR).
@@ -137,13 +137,15 @@ index 0000000000000000000000000000000000000000..e73320c366f693671d7cd382d30708ed
 +    async close() {
 +      if (closed) return;
 +      closed = true;
-+      const shown = await app
-+        .evaluate(
++      // Bounded, so a stuck app can't stop the teardown below; a failed probe fails the journey.
++      const shown = await Promise.race([
++        app.evaluate(
 +          ({ BrowserWindow }) =>
 +            globalThis.patcherWindowShown === true ||
 +            BrowserWindow.getAllWindows().some((window) => window.isVisible()),
-+        )
-+        .catch(() => false);
++        ),
++        new Promise((resolve) => setTimeout(() => resolve("unknown"), 5_000).unref()),
++      ]).catch(() => "unknown");
 +      const logs = NodePath.join(t3Home, "userdata/logs");
 +      if (NodeFS.existsSync(logs)) {
 +        NodeFS.cpSync(logs, NodePath.join(evidence, "logs"), { recursive: true });
@@ -160,6 +162,7 @@ index 0000000000000000000000000000000000000000..e73320c366f693671d7cd382d30708ed
 +        NodeChildProcess.execFileSync(LSREGISTER, ["-u", appPath], { stdio: "ignore" });
 +      } catch {}
 +      cleanup();
++      if (shown === "unknown") throw new Error("couldn't check whether a window was shown");
 +      if (shown)
 +        throw new Error("a window was shown on screen; journeys must stay in the background");
 +    },

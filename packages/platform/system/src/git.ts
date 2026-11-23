@@ -21,12 +21,17 @@ const sortedUnique = (entries: ReadonlyArray<string>): ReadonlyArray<string> =>
 const slotRef = (slot: string): string => `refs/t3-patcher/slots/${slot}`;
 const hasMarkers = (content: string): boolean =>
   content.split("\n").some((line) => line.startsWith("<<<<<<< ") || line.startsWith(">>>>>>> "));
-// The paths `git apply` names in file-level errors ("error: <path>: <why>"); "patch failed" lines are hunk rejects.
-const erroredPaths = (stderr: string): ReadonlyArray<string> =>
-  stderr.split("\n").flatMap((line) => {
-    const named = /^error: (.+?): /.exec(line);
-    return named === null || line.startsWith("error: patch failed: ") ? [] : [named[1] ?? ""];
-  });
+// `git apply` error lines that don't name a file with a .rej (a rejected hunk's "while searching for:" names none):
+// changes it skipped rather than rejected.
+const unaccounted = (stderr: string, rejects: ReadonlyArray<string>): ReadonlyArray<string> =>
+  stderr
+    .split("\n")
+    .filter(
+      (line) =>
+        line.startsWith("error: ") &&
+        line !== "error: while searching for:" &&
+        !rejects.some((name) => line.includes(name)),
+    );
 
 /**
  * The app's source from git: a bare mirror of `repository` at `<work>/upstream.git`, and each slot a worktree of it
@@ -121,11 +126,9 @@ export const gitSource = (input: {
                   return yield* stepFailed(`the diff doesn't apply: ${lastLines(partial.stderr)}`);
                 }
                 // A file-level error (e.g. the file is gone) skips that file without a .rej: the change would be lost.
-                const skipped = erroredPaths(partial.stderr).filter((name) => name !== "" && !rejects.includes(name));
+                const skipped = unaccounted(partial.stderr, rejects);
                 if (skipped.length > 0) {
-                  return yield* stepFailed(
-                    `the diff doesn't apply to ${sortedUnique(skipped).join(", ")}: ${lastLines(partial.stderr)}`,
-                  );
+                  return yield* stepFailed(`the diff doesn't apply: ${skipped.join("; ")}`);
                 }
                 return sortedUnique(rejects);
               }),

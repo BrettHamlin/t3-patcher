@@ -156,21 +156,7 @@ describe("gitSource", () => {
       const workspace = yield* source.open("v1.2.0", "main");
       expect(yield* Effect.flip(workspace.apply(unknown))).toEqual(
         new StepFailed({
-          reason: [
-            "the diff doesn't apply to other.txt: Checking patch a.txt...",
-            "error: while searching for:",
-            "one",
-            "two",
-            "three",
-            "",
-            "error: patch failed: a.txt:1",
-            "Checking patch new.txt...",
-            "Checking patch other.txt...",
-            "error: other.txt: No such file or directory",
-            "Applying patch a.txt with 1 reject...",
-            "Rejected hunk #1.",
-            "Applied patch new.txt cleanly.",
-          ].join("\n"),
+          reason: "the diff doesn't apply: error: other.txt: No such file or directory",
         }),
       );
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)));

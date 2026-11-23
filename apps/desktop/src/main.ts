@@ -86,7 +86,7 @@ const serve = (window: BrowserWindow, userdata: string, running: Ref.Ref<boolean
       Effect.gen(function* () {
         const stack = yield* decodeStack(data).pipe(Effect.mapError(() => new BadRequest({ what: "not a stack" })));
         const found = yield* settings;
-        return yield* changeStack(stack).pipe(Effect.provide(stackServices(userdata, found)));
+        return yield* changeStack(found.work, stack).pipe(Effect.provide(Layer.merge(stackServices(userdata, found), NodeServices.layer)));
       }),
     ),
   );
