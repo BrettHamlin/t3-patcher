@@ -1,0 +1,15 @@
+id = "apply"
+summary = "Apply the stack over the installed version: fresh source, each patch in order (conflicts merged, then resolved), checks, build, journeys, saved patches, and an optional install."
+modules = ["apply"]
+
+[[journeys]]
+name = "patches_apply_in_order_and_install"
+proves = "Two patches, the second building on the first, apply in order over 1.0.0; every step passes, the installed app then has both patches' file, and the run shows again after a relaunch."
+
+[[journeys]]
+name = "conflict_is_resolved_and_patch_saved"
+proves = "A patch made against 1.0.0 conflicts with installed 1.1.0; the resolver fixes it, every step passes, and the patch is saved with base version 1.1.0."
+
+[[journeys]]
+name = "unresolved_conflict_stops_the_run"
+proves = "When the resolver leaves the conflict, the patch step fails with what's left, every later step is skipped, and the installed app and the patch are unchanged."

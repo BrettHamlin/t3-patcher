@@ -50,6 +50,8 @@ export interface Screen {
   readonly waitForText: (id: UiId, text: string) => Promise<void>;
   /** The text of each of the element's children, in order. */
   readonly lines: (id: UiId) => Promise<ReadonlyArray<string>>;
+  /** Wait until the element shows some text, then return it (for text the journey can't know beforehand). */
+  readonly text: (id: UiId) => Promise<string>;
   /** Save a screenshot as evidence, named for what it shows. */
   readonly checkpoint: (label: string) => Promise<void>;
   readonly close: () => Promise<void>;
@@ -70,6 +72,11 @@ export const launch = async (journey: string, data: string): Promise<Screen> => 
     click: (id) => find(page, id).click(),
     waitForText: (id, text) => find(page, id).getByText(text, { exact: true }).first().waitFor(),
     lines: (id) => find(page, id).locator(":scope > *").allInnerTexts(),
+    text: async (id) => {
+      const shown = find(page, id).filter({ hasText: /\S/ });
+      await shown.waitFor();
+      return shown.innerText();
+    },
     checkpoint: async (label) => {
       count += 1;
       await page.screenshot({ path: NodePath.join(folder, `${String(count).padStart(2, "0")}-${label}.png`) });
