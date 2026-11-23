@@ -48,3 +48,33 @@ export const outcome = (report: RunReport): string => {
 /** "[<status>] <kind> <name> — <note>", without the note when there is none. */
 export const stepLine = (step: Step): string =>
   `[${step.status}] ${step.kind} ${step.name}${step.note === "" ? "" : ` — ${step.note}`}`;
+
+/** `text` as one shell word that the shell takes literally. */
+const quoted = (text: string): string => `'${text.replaceAll("'", `'\\''`)}'`;
+
+/** Each variable that names a cache the build uses, and its folder under the build environment folder. */
+const CACHES = [
+  ["TMPDIR", "tmp"],
+  ["XDG_CACHE_HOME", "xdg-cache"],
+  ["ELECTRON_CACHE", "electron-cache"],
+  ["ELECTRON_BUILDER_CACHE", "electron-builder-cache"],
+  ["pnpm_config_store_dir", "pnpm-store"],
+  ["pnpm_config_cache_dir", "pnpm-cache"],
+  ["CARGO_HOME", "cargo-home"],
+  ["npm_config_cache", "npm-cache"],
+  ["COREPACK_HOME", "corepack"],
+] as const;
+
+/**
+ * The build environment script (`$T3_PATCHER_ENV`), sourced from a checkout's root: PATH is `path` with the
+ * checkout's node_modules/.bin in front, and every cache is a folder under `folder`, made if missing.
+ */
+export const buildEnv = (folder: string, path: string): string =>
+  [
+    "# Source from the checkout root. Written by `t3-patcher init`; keeps the build's caches under $BE.",
+    `BE=${quoted(folder)}`,
+    `export PATH="$PWD/node_modules/.bin":${quoted(path)}`,
+    ...CACHES.map(([name, sub]) => `export ${name}="$BE/${sub}"`),
+    `mkdir -p ${CACHES.map(([name]) => `"$${name}"`).join(" ")}`,
+    "",
+  ].join("\n");

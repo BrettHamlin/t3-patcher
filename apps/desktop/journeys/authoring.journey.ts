@@ -5,7 +5,7 @@ import { expect, test } from "vite-plus/test";
 
 import { dataFolder, launch } from "./support/app.ts";
 
-const LISTED = ["1. blue-title [on] — Blue title", "2. notes-one [on] — Add notes"] as const;
+const LISTED = ["1. notes-one [on] — Add notes", "2. blue-title [on] — Blue title"] as const;
 
 test("new_patch_is_captured", async () => {
   const data = await dataFolder("new_patch_is_captured");
@@ -22,13 +22,13 @@ test("new_patch_is_captured", async () => {
   await first.fill(AuthorUi.summary, "Makes the title blue.");
   await first.click(AuthorUi.capture);
   await first.waitForText(AuthorUi.message, "captured blue-title");
-  await first.waitForText(StackUi.list, LISTED[0]);
+  await first.waitForText(StackUi.list, LISTED[1]);
   expect(await first.lines(StackUi.list)).toEqual(LISTED);
   await first.checkpoint("captured");
   await first.close();
 
   const again = await launch("new_patch_is_captured", data);
-  await again.waitForText(StackUi.list, LISTED[0]);
+  await again.waitForText(StackUi.list, LISTED[1]);
   expect(await again.lines(StackUi.list)).toEqual(LISTED);
   await again.checkpoint("after-relaunch");
   await again.close();
