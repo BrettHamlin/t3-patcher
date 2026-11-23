@@ -7,8 +7,11 @@ import type * as Effect from "effect/Effect";
 export interface InstallationShape {
   /** The installed version, e.g. "0.1.11". */
   readonly version: Effect.Effect<string, StepFailed>;
-  /** Replace the installed app with the built one at `built`, keeping a backup. Fails if the app is running. */
-  readonly install: (built: string) => Effect.Effect<string, StepFailed>;
+  /**
+   * Replace the installed app with the built one at `built`, keeping a backup. Fails if the app is running, or if
+   * the installed version is no longer `version` (the one the build was made from).
+   */
+  readonly install: (built: string, version: string) => Effect.Effect<string, StepFailed>;
 }
 export class Installation extends Context.Service<Installation, InstallationShape>()("@app/apply/services/Installation") {}
 
@@ -29,16 +32,21 @@ export interface Workspace {
   readonly commit: (message: string) => Effect.Effect<string, StepFailed>;
   /** The uncommitted changes, including new files, as a diff (binary, full index); empty if none. */
   readonly pending: Effect.Effect<string, StepFailed>;
+  /** Record that this checkout is ready for authoring, made for installed `version`, at the current HEAD. */
+  readonly markReady: (version: string) => Effect.Effect<void, StepFailed>;
 }
 
 export interface SourceShape {
   /**
    * A clean checkout of `tag` in the folder named `slot`: fetched from the target's repository, reset and cleaned
-   * (ignored files such as installed packages are kept, so builds stay fast).
+   * (ignored files such as installed packages are kept, so builds stay fast). Clears the slot's ready mark.
    */
   readonly open: (tag: string, slot: string) => Effect.Effect<Workspace, StepFailed>;
-  /** The checkout already in `slot`, as it is. Fails if there is none. */
-  readonly existing: (slot: string) => Effect.Effect<Workspace, StepFailed>;
+  /**
+   * The checkout already in `slot`, as it is, with the version it was marked ready for. Fails if there is none, or
+   * if it wasn't marked ready since it was last opened (or its HEAD moved since).
+   */
+  readonly existing: (slot: string) => Effect.Effect<{ readonly workspace: Workspace; readonly version: string }, StepFailed>;
 }
 export class Source extends Context.Service<Source, SourceShape>()("@app/apply/services/Source") {}
 
