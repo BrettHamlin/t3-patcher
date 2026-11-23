@@ -11,14 +11,84 @@ import {
 } from "@app/apply";
 import type { CaptureRequest, PatchManifest, RunReport, Settings, Stack } from "@app/contracts";
 import { fileLibrary, filePatchWriter, fileStackStore, loadSettings, saveReport } from "@app/files";
-import { before, library, Library, parsePatchId, saveStack, selected, type StackStore } from "@app/stack";
+import {
+  appended,
+  arranged,
+  before,
+  library,
+  Library,
+  parsePatchId,
+  saveStack,
+  selected,
+  StackStore,
+} from "@app/stack";
 import { commandResolver, commandShell, gitSource, macInstallation } from "@app/system";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
+import type * as PlatformError from "effect/PlatformError";
 import * as Schema from "effect/Schema";
+
+export class Busy extends Schema.TaggedError<Busy>()("Busy", { pid: Schema.Number }) {
+  override get message(): string {
+    return `another run is going (pid ${this.pid})`;
+  }
+}
+
+/** Whether process `pid` is running: signal 0 checks without sending; EPERM means it runs as someone else. */
+const alive = (pid: number): boolean => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error: unknown) {
+    return error instanceof Error && "code" in error && error.code === "EPERM";
+  }
+};
+
+/** Take the lock file for this process: create it holding the pid, or take it over from a process that has ended. */
+const takeLock = Effect.fn("takeLock")(function* (file: string) {
+  const fs = yield* FileSystem.FileSystem;
+  yield* fs.makeDirectory((yield* Path.Path).dirname(file), { recursive: true });
+  for (let attempt = 0; ; attempt += 1) {
+    const taken = yield* fs.writeFileString(file, `${process.pid}\n`, { flag: "wx" }).pipe(
+      Effect.as(true),
+      Effect.catchIf(
+        (error) => error.reason._tag === "AlreadyExists",
+        () => Effect.succeed(false),
+      ),
+    );
+    if (taken) return;
+    const pid = Number.parseInt(yield* fs.readFileString(file).pipe(Effect.orElseSucceed(() => "")), 10);
+    if (attempt > 0 || (Number.isInteger(pid) && pid > 0 && alive(pid))) return yield* new Busy({ pid });
+    yield* fs.remove(file, { force: true });
+  }
+});
+
+/** Remove the lock file if this process still holds it. */
+const dropLock = Effect.fn("dropLock")(function* (file: string) {
+  const fs = yield* FileSystem.FileSystem;
+  const held = yield* fs.readFileString(file).pipe(Effect.orElseSucceed(() => ""));
+  if (held.trim() === String(process.pid)) yield* fs.remove(file, { force: true });
+});
+
+/**
+ * Run `effect` holding `<work>/patcher.lock`, so the window and the CLI never use the work folder's checkouts at once.
+ * Fails with Busy while another live process holds it.
+ */
+export const locked = <A, E, R>(
+  work: string,
+  effect: Effect.Effect<A, E, R>,
+): Effect.Effect<A, E | Busy | PlatformError.PlatformError, R | FileSystem.FileSystem | Path.Path> =>
+  Effect.gen(function* () {
+    const file = (yield* Path.Path).join(work, "patcher.lock");
+    return yield* Effect.acquireUseRelease(
+      takeLock(file),
+      () => effect,
+      () => dropLock(file).pipe(Effect.ignore),
+    );
+  });
 
 /** The user data folder: `--userdata <folder>` (or `--data <folder>`, the starter's test harness's flag), else `fallback`. */
 export const userdataFolder = (argv: ReadonlyArray<string>, fallback: string): string => {
@@ -87,7 +157,10 @@ export const applyStack = Effect.fn("applyStack")(function* (userdata: string, s
   const patches = yield* (yield* Library).patches;
   const { stack } = yield* library;
   const evidence = (yield* Path.Path).join(settings.work, "evidence");
-  const report: RunReport = yield* run(settings.target, selected(stack, patches), install, { evidence });
+  const report: RunReport = yield* locked(
+    settings.work,
+    run(settings.target, selected(stack, patches), install, { evidence }),
+  );
   yield* saveReport(userdata, report);
   return report;
 });
@@ -97,12 +170,21 @@ export const workspaceFor = Effect.fn("workspaceFor")(function* (settings: Setti
   const id = yield* parsePatchId(raw);
   const patches = yield* (yield* Library).patches;
   const { stack } = yield* library;
-  return yield* openWorkspace(settings.target, before(stack, patches, id), yield* patchNamed(id), id);
+  const existing = yield* patchNamed(id);
+  return yield* locked(settings.work, openWorkspace(settings.target, before(stack, patches, id), existing, id));
 });
 
-/** Save the changes in a patch's workspace as the patch. Returns its manifest. */
+/**
+ * Save the changes in a patch's workspace as the patch. A new patch goes last in the stack, on: its workspace had
+ * every patch that is on applied. Returns its manifest.
+ */
 export const capturePatch = Effect.fn("capturePatch")(function* (settings: Settings, request: CaptureRequest) {
-  const patch = yield* capture(settings.target, request, yield* patchNamed(request.id));
+  const patch = yield* locked(settings.work, capture(settings.target, request, yield* patchNamed(request.id)));
+  const saved = yield* (yield* StackStore).load;
+  if (!saved.entries.some((entry) => entry.id === request.id)) {
+    const patches = yield* (yield* Library).patches;
+    yield* saveStack(appended(arranged(patches, saved), request.id));
+  }
   const manifest: PatchManifest = patch.manifest;
   return manifest;
 });

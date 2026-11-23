@@ -1,5 +1,5 @@
 import type { Stack } from "@app/contracts";
-import { arranged, before, library, moved, saveStack, selected, toggled } from "@app/stack";
+import { appended, arranged, before, library, moved, saveStack, selected, toggled } from "@app/stack";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Ref from "effect/Ref";
@@ -64,6 +64,32 @@ describe("moved", () => {
       expect(moved(stack, a.manifest.id, -1)).toEqual(stack);
       expect(moved(stack, c.manifest.id, 1)).toEqual(stack);
       expect(moved(stack, d.manifest.id, 1)).toEqual(stack);
+    }));
+});
+
+describe("appended", () => {
+  it.effect("puts the id last and on, wherever it was before", () =>
+    Effect.gen(function* () {
+      const [a, b, c] = yield* three;
+      const stack = arranged([a, b, c], { entries: [{ id: c.manifest.id, enabled: false }] });
+      expect([
+        appended({ entries: [{ id: a.manifest.id, enabled: false }] }, b.manifest.id),
+        appended(stack, c.manifest.id),
+      ]).toEqual([
+        {
+          entries: [
+            { id: "a", enabled: false },
+            { id: "b", enabled: true },
+          ],
+        },
+        {
+          entries: [
+            { id: "a", enabled: true },
+            { id: "b", enabled: true },
+            { id: "c", enabled: true },
+          ],
+        },
+      ]);
     }));
 });
 

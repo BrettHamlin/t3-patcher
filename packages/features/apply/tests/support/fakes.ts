@@ -27,8 +27,20 @@ export interface FakeOptions {
   /** Shell commands (by name) that fail. */
   readonly failing?: ReadonlySet<string>;
   readonly installFails?: boolean;
-  /** The uncommitted changes in an existing workspace. */
-  readonly pending?: string;
+  /** The installed version after the first time it's read, if the app is updated during a run. */
+  readonly installedLater?: string;
+  /** Workspaces already in their slots (by slot name), marked ready. */
+  readonly existing?: ReadonlyMap<string, ExistingWorkspace>;
+}
+
+/** A workspace left in its slot by an earlier openWorkspace. */
+export interface ExistingWorkspace {
+  /** The version it was marked ready for. */
+  readonly version: string;
+  /** Its uncommitted changes; empty if none. */
+  readonly pending: string;
+  /** Files it still has conflicts in. */
+  readonly conflicts?: ReadonlyArray<string>;
 }
 
 export interface ShellCall {
@@ -81,6 +93,11 @@ export const target = (overrides: Partial<Pick<Target, "checks" | "build">> = {}
 const setIn = <A>(ref: Ref.Ref<ReadonlyMap<string, A>>, key: string, value: A) =>
   Ref.update(ref, (map) => new Map([...map, [key, value]]));
 
+const forget = <A>(ref: Ref.Ref<ReadonlyMap<string, A>>, key: string) =>
+  Ref.update(ref, (map) => new Map([...map].filter(([at]) => at !== key)));
+
+const slotPath = (slot: string): string => `/work/${slot}`;
+
 /** In-memory services that record what the feature asked of them, in order. */
 export const fakes = Effect.fn("fakes")(function* (options: FakeOptions = {}) {
   const version = options.version ?? "0.1.11";
@@ -90,11 +107,20 @@ export const fakes = Effect.fn("fakes")(function* (options: FakeOptions = {}) {
   const written = yield* Ref.make<ReadonlyArray<Patch>>([]);
   const reports = yield* Ref.make<ReadonlyArray<RunReport>>([]);
   const installed = yield* Ref.make<ReadonlyArray<string>>([]);
+  const versionRead = yield* Ref.make(false);
   const log = (event: string) => Ref.update(events, (all) => [...all, event]);
 
-  // Per workspace folder: diffs applied since the last commit, and files still conflicted.
-  const pending = yield* Ref.make<ReadonlyMap<string, ReadonlyArray<string>>>(new Map());
-  const conflicted = yield* Ref.make<ReadonlyMap<string, ReadonlyArray<string>>>(new Map());
+  // Per workspace folder: diffs applied since the last commit, files still conflicted, and the version it's ready for.
+  const left = [...(options.existing ?? new Map<string, ExistingWorkspace>())];
+  const pending = yield* Ref.make<ReadonlyMap<string, ReadonlyArray<string>>>(
+    new Map(left.map(([slot, found]) => [slotPath(slot), found.pending === "" ? [] : [found.pending]])),
+  );
+  const conflicted = yield* Ref.make<ReadonlyMap<string, ReadonlyArray<string>>>(
+    new Map(left.map(([slot, found]) => [slotPath(slot), found.conflicts ?? []])),
+  );
+  const ready = yield* Ref.make<ReadonlyMap<string, string>>(
+    new Map(left.map(([slot, found]) => [slotPath(slot), found.version])),
+  );
 
   const workspace = (path: string): Workspace => ({
     path,
@@ -114,17 +140,25 @@ export const fakes = Effect.fn("fakes")(function* (options: FakeOptions = {}) {
       yield* setIn(pending, path, []);
       return diffs.join("\n");
     }),
-    pending: Ref.get(pending).pipe(
-      Effect.map((map) => [...(options.pending === undefined ? [] : [options.pending]), ...(map.get(path) ?? [])].join("\n")),
-    ),
+    pending: Ref.get(pending).pipe(Effect.map((map) => (map.get(path) ?? []).join("\n"))),
+    markReady: Effect.fn("fake.markReady")(function* (readyFor: string) {
+      yield* log(`ready ${readyFor} in ${path}`);
+      yield* setIn(ready, path, readyFor);
+    }),
   });
 
   const layer = Layer.mergeAll(
     Layer.succeed(Installation)({
-      version: Effect.succeed(version),
-      install: Effect.fn("fake.install")(function* (built: string) {
-        yield* log(`install ${built}`);
+      version: Ref.getAndSet(versionRead, true).pipe(
+        Effect.map((read) => (read ? (options.installedLater ?? version) : version)),
+      ),
+      install: Effect.fn("fake.install")(function* (built: string, from: string) {
+        yield* log(`install ${built} (${from})`);
         if (options.installFails === true) return yield* new StepFailed({ reason: "T3 Code is running" });
+        const now = options.installedLater ?? version;
+        if (from !== now) {
+          return yield* new StepFailed({ reason: `T3 Code is now ${now}, not ${from}: run again` });
+        }
         yield* Ref.update(installed, (all) => [...all, built]);
         return `installed ${built}`;
       }),
@@ -132,11 +166,16 @@ export const fakes = Effect.fn("fakes")(function* (options: FakeOptions = {}) {
     Layer.succeed(Source)({
       open: Effect.fn("fake.open")(function* (tag: string, slot: string) {
         yield* log(`open ${tag} in ${slot}`);
-        return workspace(`/work/${slot}`);
+        yield* setIn(pending, slotPath(slot), []);
+        yield* setIn(conflicted, slotPath(slot), []);
+        yield* forget(ready, slotPath(slot));
+        return workspace(slotPath(slot));
       }),
       existing: Effect.fn("fake.existing")(function* (slot: string) {
         yield* log(`existing ${slot}`);
-        return workspace(`/work/${slot}`);
+        const readyFor = (yield* Ref.get(ready)).get(slotPath(slot));
+        if (readyFor === undefined) return yield* new StepFailed({ reason: `no workspace ready in ${slot}` });
+        return { workspace: workspace(slotPath(slot)), version: readyFor };
       }),
     }),
     Layer.succeed(Resolver)({

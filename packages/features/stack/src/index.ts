@@ -63,6 +63,11 @@ export const moved = (stack: Stack, id: PatchId, by: -1 | 1): Stack => {
   return { entries: stack.entries.map((each, index) => (index === from ? other : index === to ? entry : each)) };
 };
 
+/** The stack with `id` last and on: where a new patch goes, after every patch its workspace had applied. */
+export const appended = (stack: Stack, id: PatchId): Stack => ({
+  entries: [...stack.entries.filter((entry) => entry.id !== id), { id, enabled: true }],
+});
+
 /** The patches that are on, in stack order. */
 export const selected = (stack: Stack, patches: ReadonlyArray<Patch>): ReadonlyArray<Patch> =>
   stack.entries.flatMap((entry) => {

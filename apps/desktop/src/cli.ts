@@ -27,7 +27,7 @@ import {
   userdataFolder,
   workspaceFor,
 } from "./services.ts";
-import { type Line, outcome, parse, stackLines, stepLine } from "./text.ts";
+import { buildEnv, type Line, outcome, parse, stackLines, stepLine } from "./text.ts";
 
 const USAGE = `usage: t3-patcher <command> [--userdata <folder>]
   init [--patches <folder>] [--work <folder>] [--force]
@@ -96,6 +96,16 @@ const init = Effect.fn("init")(function* (userdata: string, home: string, line: 
   const work = given === undefined ? yield* cacheWork(home) : path.resolve(given);
   yield* saveSettings(userdata, defaultSettings({ patches, work }));
   yield* Console.log(`saved ${file}\npatches: ${patches}\nwork: ${work}`);
+  const folder = path.join(work, "build-env");
+  const env = path.join(folder, "env.sh");
+  if (yield* fs.exists(env)) {
+    yield* Console.log(`build environment: ${env} (kept)`);
+  } else {
+    yield* fs.makeDirectory(folder, { recursive: true });
+    yield* fs.writeFileString(env, buildEnv(folder, yield* Config.String("PATH")));
+    yield* Console.log(`build environment: wrote ${env}`);
+  }
+  yield* Console.log("T3 Code's build also needs `cargo` on that file's PATH: add it there if it isn't.");
 });
 
 const status = Effect.fn("status")(function* (userdata: string, settings: Settings) {

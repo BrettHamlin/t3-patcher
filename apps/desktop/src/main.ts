@@ -117,7 +117,7 @@ const serve = (window: BrowserWindow, userdata: string, running: Ref.Ref<boolean
       Effect.gen(function* () {
         const found = yield* settings;
         return yield* workspaceFor(found, typeof id === "string" ? id : "").pipe(
-          Effect.provide(servicesFor(userdata, found)),
+          Effect.provide(Layer.merge(servicesFor(userdata, found), NodeServices.layer)),
         );
       }),
     ),
@@ -131,7 +131,9 @@ const serve = (window: BrowserWindow, userdata: string, running: Ref.Ref<boolean
           Effect.mapError(() => new BadRequest({ what: "a patch needs a valid name, a title and a summary" })),
         );
         const found = yield* settings;
-        return yield* capturePatch(found, request).pipe(Effect.provide(servicesFor(userdata, found)));
+        return yield* capturePatch(found, request).pipe(
+          Effect.provide(Layer.merge(servicesFor(userdata, found), NodeServices.layer)),
+        );
       }),
     ),
   );

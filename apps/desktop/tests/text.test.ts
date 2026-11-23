@@ -3,7 +3,7 @@ import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vite-plus/test";
 
 import { defaultUserdata, userdataFolder } from "../src/services.ts";
-import { outcome, parse, stackLines, stepLine } from "../src/text.ts";
+import { buildEnv, outcome, parse, stackLines, stepLine } from "../src/text.ts";
 
 const id = Schema.decodeSync(PatchId);
 
@@ -67,5 +67,33 @@ describe("text", () => {
       stepLine({ kind: "patch", name: "aa", status: "passed", note: "applied" }),
       stepLine({ kind: "build", name: "copy", status: "skipped", note: "" }),
     ]).toEqual(["[passed] patch aa — applied", "[skipped] build copy"]);
+  });
+});
+
+describe("build environment", () => {
+  it("puts the checkout's node_modules/.bin before the given PATH and every cache under the folder", () => {
+    expect(buildEnv("/w/build-env", "/tools/node/bin:/usr/bin:/bin").split("\n")).toEqual([
+      "# Source from the checkout root. Written by `t3-patcher init`; keeps the build's caches under $BE.",
+      "BE='/w/build-env'",
+      `export PATH="$PWD/node_modules/.bin":'/tools/node/bin:/usr/bin:/bin'`,
+      `export TMPDIR="$BE/tmp"`,
+      `export XDG_CACHE_HOME="$BE/xdg-cache"`,
+      `export ELECTRON_CACHE="$BE/electron-cache"`,
+      `export ELECTRON_BUILDER_CACHE="$BE/electron-builder-cache"`,
+      `export pnpm_config_store_dir="$BE/pnpm-store"`,
+      `export pnpm_config_cache_dir="$BE/pnpm-cache"`,
+      `export CARGO_HOME="$BE/cargo-home"`,
+      `export npm_config_cache="$BE/npm-cache"`,
+      `export COREPACK_HOME="$BE/corepack"`,
+      `mkdir -p "$TMPDIR" "$XDG_CACHE_HOME" "$ELECTRON_CACHE" "$ELECTRON_BUILDER_CACHE" "$pnpm_config_store_dir" "$pnpm_config_cache_dir" "$CARGO_HOME" "$npm_config_cache" "$COREPACK_HOME"`,
+      "",
+    ]);
+  });
+
+  it("quotes folders so the shell takes them literally", () => {
+    expect(buildEnv("/it's here/$HOME", "/a b").split("\n").slice(1, 3)).toEqual([
+      `BE='/it'\\''s here/$HOME'`,
+      `export PATH="$PWD/node_modules/.bin":'/a b'`,
+    ]);
   });
 });
