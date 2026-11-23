@@ -63,6 +63,7 @@ it.effect("matches the model over 300 random stacks", () =>
       const build = Array.from({ length: 1 + count(1) }, (_, k) => ({ name: `t-build${k}`, run: "x" }));
       const install = random() < 0.5;
       const installFails = random() < 0.25;
+      const updated = random() < 0.15;
 
       const plan: ReadonlyArray<Planned> = [
         { kind: "source", name: "T3 Code source", broken: false },
@@ -84,9 +85,9 @@ it.effect("matches the model over 300 random stacks", () =>
           })),
         ),
         { kind: "save", name: "save patches", broken: false },
-        ...(install ? [{ kind: "install" as const, name: "install", broken: installFails }] : []),
+        ...(install ? [{ kind: "install" as const, name: "install", broken: installFails || updated }] : []),
       ];
-      story.push(`failing ${[...failing].join(" ")}`, `install ${install}${installFails ? " fails" : ""}`);
+      story.push(`failing ${[...failing].join(" ")}`, `install ${install}${installFails ? " fails" : ""}${updated ? " updated" : ""}`);
 
       const firstFailure = plan.findIndex((step) => step.broken);
       const passedUpTo = firstFailure === -1 ? plan.length : firstFailure;
@@ -102,7 +103,7 @@ it.effect("matches the model over 300 random stacks", () =>
         lastReportIsResult: true,
       };
 
-      const fake = yield* fakes({ conflicts, failing, installFails });
+      const fake = yield* fakes({ conflicts, failing, installFails, ...(updated ? { installedLater: "0.1.12" } : {}) });
       const report = yield* run(target({ checks: targetChecks, build }), patches, install, { evidence: "/e" }).pipe(
         Effect.provide(fake.layer),
       );

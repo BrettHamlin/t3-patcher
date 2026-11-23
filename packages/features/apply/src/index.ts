@@ -131,7 +131,8 @@ const saveStep = (): Action => ({
 const installStep = (target: Target): Action => ({
   kind: "install",
   name: "install",
-  perform: (opened) => Installation.use((installation) => installation.install(builtApp(opened.workspace, target))),
+  perform: (opened) =>
+    Installation.use((installation) => installation.install(builtApp(opened.workspace, target), opened.version)),
 });
 
 const targetCommand = (command: Command) => (opened: Opened): Command => ({
@@ -220,7 +221,9 @@ export const run: (
 
 /**
  * A workspace for making or changing patch `id`: a checkout of the installed version with `preceding` applied and
- * committed, then `id`'s own diff (if it exists) applied and left uncommitted to edit. Returns its folder.
+ * committed, then `id`'s own diff (if it exists) applied and left uncommitted to edit, marked ready for that version.
+ * Fails, leaving it as it is, if the workspace already there has changes that `existing` doesn't hold. Returns its
+ * folder.
  */
 export const openWorkspace: (
   target: Target,
@@ -229,7 +232,18 @@ export const openWorkspace: (
   id: string,
 ) => Effect.Effect<string, StepFailed, Installation | Source | Resolver> = Effect.fn("openWorkspace")(
   function* (target, preceding, existing, id) {
-    const { workspace } = yield* openInstalled(target, slot(id));
+    const found = yield* (yield* Source)
+      .existing(slot(id))
+      .pipe(Effect.catchTag("StepFailed", () => Effect.undefined));
+    if (found !== undefined) {
+      const draft = yield* found.workspace.pending;
+      if (draft.trim() !== "" && draft !== existing?.diff) {
+        return yield* new StepFailed({
+          reason: `the workspace for ${id} has changes that aren't captured: capture them, or delete ${found.workspace.path} to start over`,
+        });
+      }
+    }
+    const { version, workspace } = yield* openInstalled(target, slot(id));
     yield* Effect.forEach(
       preceding,
       (patch) => applyCommitted(workspace, patch).pipe(Effect.mapError(named(patch.manifest.id))),
@@ -238,6 +252,7 @@ export const openWorkspace: (
     if (existing !== undefined) {
       yield* applyResolved(workspace, existing).pipe(Effect.mapError(named(existing.manifest.id)));
     }
+    yield* workspace.markReady(version);
     return workspace.path;
   },
 );
@@ -253,14 +268,17 @@ export const capture: (
   target: Target,
   request: CaptureRequest,
   existing: Patch | undefined,
-) => Effect.Effect<Patch, StepFailed, Installation | Source | PatchWriter> = Effect.fn("capture")(
+) => Effect.Effect<Patch, StepFailed, Source | PatchWriter> = Effect.fn("capture")(
   function* (_target, request, existing) {
-    const workspace = yield* (yield* Source).existing(slot(request.id));
+    const { workspace, version } = yield* (yield* Source).existing(slot(request.id));
+    const left = yield* workspace.conflicts;
+    if (left.length > 0) {
+      return yield* new StepFailed({ reason: `conflicts left in ${left.join(", ")}: resolve them before capturing` });
+    }
     const diff = yield* workspace.pending;
     if (diff.trim() === "") {
       return yield* new StepFailed({ reason: `nothing changed in the workspace for ${request.id}` });
     }
-    const version = yield* (yield* Installation).version;
     const patch: Patch = {
       manifest: {
         id: request.id,

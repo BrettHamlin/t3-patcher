@@ -72,7 +72,7 @@ describe("run", () => {
         "run build",
         "run a-journey",
         "run b-journey",
-        "install /work/stack/release/T3 Code.app",
+        "install /work/stack/release/T3 Code.app (0.1.11)",
       ]);
       expect(yield* Ref.get(fake.written)).toEqual([]);
       expect(yield* Ref.get(fake.installed)).toEqual(["/work/stack/release/T3 Code.app"]);
@@ -196,6 +196,26 @@ describe("run", () => {
         { manifest: { ...a.manifest, base: rebased }, diff: resolvedDiff("diff:a") },
         { manifest: { ...b.manifest, base: rebased }, diff: "diff:b" },
       ]);
+    }));
+
+  it.effect("installs only over the version the build was made from", () =>
+    Effect.gen(function* () {
+      const fake = yield* fakes({ installedLater: "0.1.12" });
+      const patches = yield* twoPatches();
+      const report = yield* run(target(), patches, true, folders).pipe(Effect.provide(fake.layer));
+      expect(report.steps.map((step) => `${step.name}: ${step.status} ${step.note}`)).toEqual([
+        "T3 Code source: passed 0.1.11 (v0.1.11)",
+        "a: passed applied",
+        "b: passed applied",
+        "typecheck: passed ",
+        "a: unit: passed ",
+        "build: passed ",
+        "a: a-journey: passed ",
+        "b: b-journey: passed ",
+        "save patches: passed nothing to save",
+        "install: failed T3 Code is now 0.1.12, not 0.1.11: run again",
+      ]);
+      expect(yield* Ref.get(fake.installed)).toEqual([]);
     }));
 
   it.effect("a failing check stops the run before the build", () =>
