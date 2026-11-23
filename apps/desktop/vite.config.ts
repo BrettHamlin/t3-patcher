@@ -1,4 +1,4 @@
-// Bundles the main process and the preload (vp pack). Electron loads dist/main.cjs.
+// Bundles the main process, the preload and the CLI (vp pack). Electron loads dist/main.cjs; Node runs dist/cli.cjs.
 import { defineConfig } from "vite-plus";
 
 const bundle = (entry: string) => ({
@@ -12,4 +12,4 @@ const bundle = (entry: string) => ({
   deps: { neverBundle: ["electron"], alwaysBundle: (id: string) => !id.startsWith("node:") && id !== "electron" },
 });
 
-export default defineConfig({ pack: [bundle("src/main.ts"), bundle("src/preload.ts")] });
+export default defineConfig({ pack: [bundle("src/main.ts"), bundle("src/preload.ts"), bundle("src/cli.ts")] });

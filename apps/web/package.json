@@ -4,7 +4,7 @@
   "type": "module",
   "dependencies": {
     "@app/contracts": "workspace:*",
-    "@app/tally": "workspace:*",
+    "@app/stack": "workspace:*",
     "effect": "4.1.5",
     "react": "19.3.0",
     "react-dom": "19.3.0"

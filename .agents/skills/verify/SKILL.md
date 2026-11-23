@@ -20,7 +20,7 @@ It checks the feature map, builds the renderer and the desktop app, runs every j
 
 ```sh
 python3 scripts/verify.py look --fresh                                  # a new, empty data folder; opens, screenshots, closes
-python3 scripts/verify.py look fill tally-name apple click tally-add    # steps by test id; the data folder is kept
+python3 scripts/verify.py look fill stack-patch notes-one click stack-toggle    # steps by test id; the data folder is kept
 ```
 
 Each look prints and saves `.build/look/look.png` and every element's test id and text (`.build/look/look.txt`). Read the screenshot. `--data <folder>` uses another data folder. Exploring is for looking and judging; it's not proof. Once a behaviour works, write the journey that proves it.

@@ -1,56 +1,167 @@
-// The main process: the composition root for real services. Usage: electron . [--data <folder>]
-import { encodeTally, decodeTally, TallyChannel } from "@app/contracts";
-import { fileTallyStore } from "@app/files";
-import { current, TallyStore } from "@app/tally";
+// The main process: the composition root for real services. Usage: electron . [--userdata <folder>]
+import { Progress } from "@app/apply";
+import { Answer, CaptureRequest, LibraryView, PatchManifest, PatcherChannel, RunReport, Stack } from "@app/contracts";
+import { loadReport } from "@app/files";
+import { library } from "@app/stack";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
+import * as Ref from "effect/Ref";
+import * as Schema from "effect/Schema";
 import { app, autoUpdater as nativeUpdater, BrowserWindow, ipcMain } from "electron";
 import { autoUpdater } from "electron-updater";
 
-const dataFolder = (argv: ReadonlyArray<string>): string => {
-  const flag = argv.indexOf("--data");
-  return (flag === -1 ? undefined : argv[flag + 1]) ?? app.getPath("userData");
+import {
+  applyStack,
+  capturePatch,
+  changeStack,
+  defaultUserdata,
+  servicesFor,
+  settingsIn,
+  stackServices,
+  userdataFolder,
+  workspaceFor,
+} from "./services.ts";
+
+class AlreadyRunning extends Schema.TaggedError<AlreadyRunning>()("AlreadyRunning", {}) {
+  override get message(): string {
+    return "a run is already going";
+  }
+}
+
+class BadRequest extends Schema.TaggedError<BadRequest>()("BadRequest", { what: Schema.String }) {
+  override get message(): string {
+    return this.what;
+  }
+}
+
+/** Run `effect` and send its result as an Answer: the value, or what went wrong in words. */
+const respond = <A, I>(
+  schema: Schema.Codec<A, I>,
+  effect: Effect.Effect<A, { readonly message: string }>,
+): Promise<unknown> =>
+  Effect.runPromise(
+    effect.pipe(
+      Effect.match({
+        onFailure: (failure) => ({ ok: false as const, error: failure.message }),
+        onSuccess: (value) => ({ ok: true as const, value }),
+      }),
+      Effect.catchDefect(() => Effect.succeed({ ok: false as const, error: "something went wrong in the app" })),
+      Effect.flatMap(Schema.encodeEffect(Answer(schema))),
+      Effect.orElseSucceed(() => ({ ok: false, error: "the answer couldn't be sent" })),
+    ),
+  );
+
+const decodeStack = Schema.decodeUnknownEffect(Stack);
+const decodeCapture = Schema.decodeUnknownEffect(CaptureRequest);
+const encodeReport = Schema.encodeEffect(RunReport);
+
+const node = <A, E>(effect: Effect.Effect<A, E, NodeServices.NodeServices>) =>
+  effect.pipe(Effect.provide(NodeServices.layer));
+
+const serve = (window: BrowserWindow, userdata: string, running: Ref.Ref<boolean>): void => {
+  const settings = node(settingsIn(userdata));
+  // Each report of a run, as it changes, goes to the window.
+  const progress = Layer.succeed(Progress)({
+    report: Effect.fn("Progress.report")(function* (report) {
+      const encoded = yield* encodeReport(report).pipe(Effect.option);
+      if (Option.isSome(encoded) && !window.isDestroyed()) window.webContents.send(PatcherChannel.report, encoded.value);
+    }),
+  });
+
+  ipcMain.handle(PatcherChannel.library, () =>
+    respond(
+      LibraryView,
+      Effect.gen(function* () {
+        const found = yield* settings;
+        return yield* library.pipe(Effect.provide(stackServices(userdata, found)));
+      }),
+    ),
+  );
+
+  ipcMain.handle(PatcherChannel.saveStack, (_event, data: unknown) =>
+    respond(
+      LibraryView,
+      Effect.gen(function* () {
+        const stack = yield* decodeStack(data).pipe(Effect.mapError(() => new BadRequest({ what: "not a stack" })));
+        const found = yield* settings;
+        return yield* changeStack(found.work, stack).pipe(Effect.provide(Layer.merge(stackServices(userdata, found), NodeServices.layer)));
+      }),
+    ),
+  );
+
+  ipcMain.handle(PatcherChannel.apply, (_event, install: unknown) =>
+    respond(
+      RunReport,
+      Effect.gen(function* () {
+        const found = yield* settings;
+        if (!(yield* Ref.getAndSet(running, true))) {
+          return yield* applyStack(userdata, found, install === true).pipe(
+            Effect.provide(Layer.mergeAll(servicesFor(userdata, found), progress, NodeServices.layer)),
+            Effect.ensuring(Ref.set(running, false)),
+          );
+        }
+        return yield* new AlreadyRunning();
+      }),
+    ),
+  );
+
+  ipcMain.handle(PatcherChannel.lastReport, () =>
+    respond(Schema.NullOr(RunReport), node(loadReport(userdata)).pipe(Effect.map(Option.getOrNull))),
+  );
+
+  ipcMain.handle(PatcherChannel.workspace, (_event, id: unknown) =>
+    respond(
+      Schema.String,
+      Effect.gen(function* () {
+        const found = yield* settings;
+        return yield* workspaceFor(found, typeof id === "string" ? id : "").pipe(
+          Effect.provide(Layer.merge(servicesFor(userdata, found), NodeServices.layer)),
+        );
+      }),
+    ),
+  );
+
+  ipcMain.handle(PatcherChannel.capture, (_event, data: unknown) =>
+    respond(
+      PatchManifest,
+      Effect.gen(function* () {
+        const request = yield* decodeCapture(data).pipe(
+          Effect.mapError(() => new BadRequest({ what: "a patch needs a valid name, a title and a summary" })),
+        );
+        const found = yield* settings;
+        return yield* capturePatch(found, request).pipe(
+          Effect.provide(Layer.merge(servicesFor(userdata, found), NodeServices.layer)),
+        );
+      }),
+    ),
+  );
 };
 
-const store = fileTallyStore(dataFolder(process.argv)).pipe(Layer.provide(NodeServices.layer));
-
-ipcMain.handle(TallyChannel.load, () =>
-  Effect.runPromise(
-    current.pipe(
-      Effect.map(encodeTally),
-      Effect.orElseSucceed(() => null),
-      Effect.provide(store),
-    ),
-  ),
-);
-
-ipcMain.handle(TallyChannel.save, (_event, data: unknown) =>
-  Effect.runPromise(
-    Effect.gen(function* () {
-      const tally = yield* decodeTally(data);
-      const saved = yield* TallyStore;
-      yield* saved.save(tally);
-      return true;
-    }).pipe(
-      Effect.orElseSucceed(() => false),
-      Effect.provide(store),
-    ),
-  ),
-);
+// `--background` (journeys): the window is never shown and the app never takes focus or shows in the Dock, so test
+// runs don't get in the way of whoever is using the Mac. It still renders, so screenshots work.
+const background = process.argv.includes("--background");
 
 const open = async (): Promise<void> => {
   await app.whenReady();
+  if (background) app.dock?.hide();
+  const userdata = userdataFolder(process.argv, defaultUserdata(app.getPath("home")));
   const window = new BrowserWindow({
-    width: 480,
-    height: 640,
+    width: 900,
+    height: 820,
+    title: "T3 Patcher",
+    show: !background,
+    paintWhenInitiallyHidden: true,
     webPreferences: {
       preload: `${import.meta.dirname}/preload.cjs`,
       contextIsolation: true,
       sandbox: true,
       nodeIntegration: false,
+      backgroundThrottling: !background,
     },
   });
+  serve(window, userdata, Ref.makeUnsafe(false));
   await window.loadFile(`${import.meta.dirname}/renderer/index.html`);
 };
 

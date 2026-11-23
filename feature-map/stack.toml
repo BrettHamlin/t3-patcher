@@ -1,0 +1,7 @@
+id = "stack"
+summary = "The patches in order: each turned on or off and moved up or down; the order is saved in the user data folder."
+modules = ["stack"]
+
+[[journeys]]
+name = "stack_changes_are_saved"
+proves = "Two patches are listed in order; turning one off and moving the other up changes the list, and the same list shows after a relaunch."

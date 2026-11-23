@@ -1,15 +1,25 @@
 // Runs in the renderer before the page, sandboxed: exposes the bridge and nothing else.
-import type { SavedTally } from "@app/contracts";
-import { TALLY_BRIDGE, TallyChannel, type TallyBridge } from "@app/contracts/ipc";
-import { contextBridge, ipcRenderer } from "electron";
+import type { CaptureRequest, Stack } from "@app/contracts";
+import { PATCHER_BRIDGE, PatcherChannel, type PatcherBridge } from "@app/contracts/ipc";
+import { contextBridge, ipcRenderer, type IpcRendererEvent } from "electron";
 
-contextBridge.exposeInMainWorld(TALLY_BRIDGE, {
-  load: async (): Promise<unknown> => {
-    const loaded: unknown = await ipcRenderer.invoke(TallyChannel.load);
-    return loaded;
+const ask = async (channel: string, ...args: ReadonlyArray<unknown>): Promise<unknown> => {
+  const answer: unknown = await ipcRenderer.invoke(channel, ...args);
+  return answer;
+};
+
+contextBridge.exposeInMainWorld(PATCHER_BRIDGE, {
+  library: () => ask(PatcherChannel.library),
+  saveStack: (stack: typeof Stack.Encoded) => ask(PatcherChannel.saveStack, stack),
+  apply: (install: boolean) => ask(PatcherChannel.apply, install),
+  lastReport: () => ask(PatcherChannel.lastReport),
+  onReport: (listener: (report: unknown) => void) => {
+    const heard = (_event: IpcRendererEvent, report: unknown): void => listener(report);
+    ipcRenderer.on(PatcherChannel.report, heard);
+    return () => {
+      ipcRenderer.off(PatcherChannel.report, heard);
+    };
   },
-  save: async (tally: SavedTally): Promise<unknown> => {
-    const saved: unknown = await ipcRenderer.invoke(TallyChannel.save, tally);
-    return saved;
-  },
-} satisfies TallyBridge);
+  workspace: (id: string) => ask(PatcherChannel.workspace, id),
+  capture: (request: typeof CaptureRequest.Encoded) => ask(PatcherChannel.capture, request),
+} satisfies PatcherBridge);

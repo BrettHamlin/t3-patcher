@@ -15,11 +15,11 @@ const EVIDENCE = process.env["BSTACK_EVIDENCE"] ?? NodePath.join(PROJECT, ".buil
 /** The app to launch: the packaged app if $BSTACK_PACKAGED_APP names one (scripts/package.py), else the built one. */
 export const command = async (data: string): Promise<{ readonly executablePath: string; readonly args: Array<string> }> => {
   const packaged = process.env["BSTACK_PACKAGED_APP"];
-  if (packaged) return { executablePath: packaged, args: ["--data", data] };
+  if (packaged) return { executablePath: packaged, args: ["--data", data, "--background"] };
   const require = NodeModule.createRequire(import.meta.url);
   const folder = NodePath.dirname(require.resolve("electron/package.json"));
   const relative = (await NodeFs.readFile(NodePath.join(folder, "path.txt"), "utf8")).trim();
-  return { executablePath: NodePath.join(folder, "dist", relative), args: [NodePath.join(DESKTOP, "dist/main.cjs"), "--data", data] };
+  return { executablePath: NodePath.join(folder, "dist", relative), args: [NodePath.join(DESKTOP, "dist/main.cjs"), "--data", data, "--background"] };
 };
 
 /** A new, empty folder for one journey's data. */
@@ -50,9 +50,16 @@ export interface Screen {
   readonly waitForText: (id: UiId, text: string) => Promise<void>;
   /** The text of each of the element's children, in order. */
   readonly lines: (id: UiId) => Promise<ReadonlyArray<string>>;
+  /** Wait until the element shows some text, then return it (for text the journey can't know beforehand). */
+  readonly text: (id: UiId) => Promise<string>;
   /** Save a screenshot as evidence, named for what it shows. */
   readonly checkpoint: (label: string) => Promise<void>;
   readonly close: () => Promise<void>;
+}
+
+/** The part of Electron's main-process module the visibility check uses. */
+interface MainProcess {
+  readonly BrowserWindow: { readonly getAllWindows: () => ReadonlyArray<{ readonly isVisible: () => boolean }> };
 }
 
 const find = (page: Page, id: UiId): Locator => page.getByTestId(id.value);
@@ -70,10 +77,25 @@ export const launch = async (journey: string, data: string): Promise<Screen> => 
     click: (id) => find(page, id).click(),
     waitForText: (id, text) => find(page, id).getByText(text, { exact: true }).first().waitFor(),
     lines: (id) => find(page, id).locator(":scope > *").allInnerTexts(),
+    text: async (id) => {
+      const shown = find(page, id).filter({ hasText: /\S/ });
+      await shown.waitFor();
+      return shown.innerText();
+    },
     checkpoint: async (label) => {
       count += 1;
       await page.screenshot({ path: NodePath.join(folder, `${String(count).padStart(2, "0")}-${label}.png`) });
     },
-    close: () => app.close(),
+    close: async () => {
+      // Journeys run in the background (--background): a window on screen would get in the user's way.
+      try {
+        const shown = await app.evaluate((electron: MainProcess) =>
+          electron.BrowserWindow.getAllWindows().some((window) => window.isVisible()),
+        );
+        if (shown) throw new Error("a window was shown on screen; journeys must stay in the background");
+      } finally {
+        await app.close();
+      }
+    },
   };
 };
