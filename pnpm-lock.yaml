@@ -184,15 +184,21 @@ importers:
 
   apps/desktop:
     dependencies:
+      '@app/apply':
+        specifier: workspace:*
+        version: link:../../packages/features/apply
       '@app/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
       '@app/files':
         specifier: workspace:*
         version: link:../../packages/platform/files
-      '@app/tally':
+      '@app/stack':
         specifier: workspace:*
-        version: link:../../packages/features/tally
+        version: link:../../packages/features/stack
+      '@app/system':
+        specifier: workspace:*
+        version: link:../../packages/platform/system
       '@effect/platform-node':
         specifier: 4.1.5
         version: 4.1.5(effect@4.1.5)(redis@6.3.1)
@@ -227,9 +233,9 @@ importers:
       '@app/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
-      '@app/tally':
+      '@app/stack':
         specifier: workspace:*
-        version: link:../../packages/features/tally
+        version: link:../../packages/features/stack
       effect:
         specifier: 4.1.5
         version: 4.1.5
@@ -259,7 +265,23 @@ importers:
         specifier: 4.1.5
         version: 4.1.5
 
-  packages/features/tally:
+  packages/features/apply:
+    dependencies:
+      '@app/contracts':
+        specifier: workspace:*
+        version: link:../../contracts
+      effect:
+        specifier: 4.1.5
+        version: 4.1.5
+    devDependencies:
+      '@effect/vitest':
+        specifier: 4.1.5
+        version: 4.1.5(effect@4.1.5)(vitest@5.0.5)
+      vite-plus:
+        specifier: 1.4.0
+        version: 1.4.0(@types/node@24.12.4)(@vitest/ui@5.0.5)(jiti@2.7.0)
+
+  packages/features/stack:
     dependencies:
       '@app/contracts':
         specifier: workspace:*
@@ -283,9 +305,9 @@ importers:
       '@app/files':
         specifier: workspace:*
         version: link:../platform/files
-      '@app/tally':
+      '@app/system':
         specifier: workspace:*
-        version: link:../features/tally
+        version: link:../platform/system
       '@effect/platform-node':
         specifier: 4.1.5
         version: 4.1.5(effect@4.1.5)(redis@6.3.1)
@@ -299,19 +321,56 @@ importers:
 
   packages/platform/files:
     dependencies:
+      '@app/apply':
+        specifier: workspace:*
+        version: link:../../features/apply
       '@app/contracts':
         specifier: workspace:*
         version: link:../../contracts
-      '@app/tally':
+      '@app/stack':
         specifier: workspace:*
-        version: link:../../features/tally
+        version: link:../../features/stack
+      '@effect/platform-node':
+        specifier: 4.1.5
+        version: 4.1.5(effect@4.1.5)(redis@6.3.1)
       effect:
         specifier: 4.1.5
         version: 4.1.5
     devDependencies:
+      '@effect/vitest':
+        specifier: 4.1.5
+        version: 4.1.5(effect@4.1.5)(vitest@5.0.5)
       '@types/node':
         specifier: 24.12.4
         version: 24.12.4
+      vite-plus:
+        specifier: 1.4.0
+        version: 1.4.0(@types/node@24.12.4)(@vitest/ui@5.0.5)(jiti@2.7.0)
+
+  packages/platform/system:
+    dependencies:
+      '@app/apply':
+        specifier: workspace:*
+        version: link:../../features/apply
+      '@app/contracts':
+        specifier: workspace:*
+        version: link:../../contracts
+      '@effect/platform-node':
+        specifier: 4.1.5
+        version: 4.1.5(effect@4.1.5)(redis@6.3.1)
+      effect:
+        specifier: 4.1.5
+        version: 4.1.5
+    devDependencies:
+      '@effect/vitest':
+        specifier: 4.1.5
+        version: 4.1.5(effect@4.1.5)(vitest@5.0.5)
+      '@types/node':
+        specifier: 24.12.4
+        version: 24.12.4
+      vite-plus:
+        specifier: 1.4.0
+        version: 1.4.0(@types/node@24.12.4)(@vitest/ui@5.0.5)(jiti@2.7.0)
 
 packages:
 

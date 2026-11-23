@@ -4,9 +4,11 @@
   "type": "module",
   "main": "dist/main.cjs",
   "dependencies": {
+    "@app/apply": "workspace:*",
     "@app/contracts": "workspace:*",
     "@app/files": "workspace:*",
-    "@app/tally": "workspace:*",
+    "@app/stack": "workspace:*",
+    "@app/system": "workspace:*",
     "@effect/platform-node": "4.1.5",
     "effect": "4.1.5",
     "electron": "44.10.1",

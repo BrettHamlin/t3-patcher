@@ -8,7 +8,7 @@
   "dependencies": {
     "@app/contracts": "workspace:*",
     "@app/files": "workspace:*",
-    "@app/tally": "workspace:*",
+    "@app/system": "workspace:*",
     "@effect/platform-node": "4.1.5",
     "effect": "4.1.5"
   },
