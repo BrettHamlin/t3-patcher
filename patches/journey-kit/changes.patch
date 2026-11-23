@@ -1,0 +1,167 @@
+diff --git a/patcher/journeys/app-opens.mjs b/patcher/journeys/app-opens.mjs
+new file mode 100644
+index 0000000000000000000000000000000000000000..7258764f516719f15ac086486fb6769ddbfd5e6b
+--- /dev/null
++++ b/patcher/journeys/app-opens.mjs
+@@ -0,0 +1,16 @@
++// Journey: the built app opens, shows the seeded thread in the sidebar and renders its messages.
++//   T3_PATCHER_APP=<built .app> T3_PATCHER_EVIDENCE=<dir> node patcher/journeys/app-opens.mjs
++import { FIXTURE_THREAD_TITLE, STEP_TIMEOUT_MS, journey } from "./support.mjs";
++
++await journey("app-opens", async ({ page, screenshot }, step) => {
++  step(`finding "${FIXTURE_THREAD_TITLE}" in the sidebar`);
++  const thread = page.locator("li[data-thread-item]", { hasText: FIXTURE_THREAD_TITLE });
++  await thread.waitFor({ timeout: STEP_TIMEOUT_MS });
++  step("opening the thread");
++  await thread.click();
++  await page
++    .getByText("The release opens and shows this thread.")
++    .waitFor({ timeout: STEP_TIMEOUT_MS });
++  step("taking the screenshot");
++  console.log(await screenshot("app-opens"));
++});
+diff --git a/patcher/journeys/support.mjs b/patcher/journeys/support.mjs
+new file mode 100644
+index 0000000000000000000000000000000000000000..66bb4d3984547da76891904b8d53573ac6ca64a1
+--- /dev/null
++++ b/patcher/journeys/support.mjs
+@@ -0,0 +1,139 @@
++// Launches a built app for t3-patcher journeys, isolated from the installed app and the keychain.
++// Env: T3_PATCHER_APP (built .app), T3_PATCHER_EVIDENCE (screenshots, logs), optional
++// T3_PATCHER_TMP (parent of the throwaway home; defaults to $TMPDIR).
++import * as NodeChildProcess from "node:child_process";
++import * as NodeFS from "node:fs";
++import * as NodeModule from "node:module";
++import * as NodeOS from "node:os";
++import * as NodePath from "node:path";
++
++const repoRoot = NodePath.resolve(import.meta.dirname, "../..");
++const { _electron } = NodeModule.createRequire(
++  NodePath.join(repoRoot, "apps/desktop/package.json"),
++)("playwright-core");
++
++// The release launch check's fixture: one project and two threads, from an older build.
++export const FIXTURE_DB = NodePath.join(repoRoot, "scripts/fixtures/desktop-launch/statev2.sqlite");
++export const FIXTURE_THREAD_TITLE = "Release launch check";
++export const STEP_TIMEOUT_MS = 60_000;
++const LSREGISTER =
++  "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister";
++
++function requireEnv(name) {
++  const value = process.env[name];
++  if (!value) throw new Error(`${name} is not set`);
++  return value;
++}
++
++export function evidenceDir() {
++  const dir = requireEnv("T3_PATCHER_EVIDENCE");
++  NodeFS.mkdirSync(dir, { recursive: true });
++  return dir;
++}
++
++function appExecutable(appPath) {
++  const name = NodeChildProcess.execFileSync(
++    "/usr/libexec/PlistBuddy",
++    ["-c", "Print :CFBundleExecutable", NodePath.join(appPath, "Contents/Info.plist")],
++    { encoding: "utf8" },
++  ).trim();
++  return NodePath.join(appPath, "Contents/MacOS", name);
++}
++
++/**
++ * Starts the app. Returns { app, page, home, t3Home, screenshot(name), close() }.
++ * `seed: true` copies the release launch fixture into the T3 home.
++ */
++export async function launchApp({ seed = true, env = {} } = {}) {
++  const appPath = NodePath.resolve(requireEnv("T3_PATCHER_APP"));
++  const evidence = evidenceDir();
++  const parent = process.env.T3_PATCHER_TMP || process.env.TMPDIR || NodeOS.tmpdir();
++  NodeFS.mkdirSync(parent, { recursive: true });
++  const home = NodeFS.mkdtempSync(NodePath.join(parent, "t3-journey-"));
++  const t3Home = NodePath.join(home, "t3");
++  NodeFS.mkdirSync(NodePath.join(t3Home, "userdata"), { recursive: true });
++  if (seed) NodeFS.copyFileSync(FIXTURE_DB, NodePath.join(t3Home, "userdata/statev2.sqlite"));
++
++  const cleanup = () => NodeFS.rmSync(home, { recursive: true, force: true, maxRetries: 5 });
++  let app;
++  try {
++    app = await _electron.launch({
++      executablePath: appExecutable(appPath),
++      // Chromium keeps its encryption key in the keychain; a fake HOME has none (a "Keychain Not
++      // Found" dialog) and the real one prompts an ad-hoc build. The mock keychain avoids both.
++      args: ["--use-mock-keychain"],
++      env: {
++        ...process.env,
++        // macOS userData, and so the single-instance lock, follows HOME only. The real HOME
++        // would share the installed app's profile and hand this launch to the running app.
++        HOME: home,
++        XDG_CONFIG_HOME: NodePath.join(home, ".config"),
++        XDG_DATA_HOME: NodePath.join(home, ".local/share"),
++        XDG_CACHE_HOME: NodePath.join(home, ".cache"),
++        T3CODE_HOME: t3Home,
++        T3CODE_TELEMETRY_ENABLED: "false",
++        T3CODE_DISABLE_AUTO_UPDATE: "true",
++        ...env,
++      },
++      timeout: STEP_TIMEOUT_MS,
++    });
++  } catch (error) {
++    cleanup();
++    throw error;
++  }
++  const page = await app.firstWindow({ timeout: STEP_TIMEOUT_MS });
++
++  let closed = false;
++  return {
++    app,
++    page,
++    home,
++    t3Home,
++    async screenshot(name) {
++      const file = NodePath.join(evidence, `${name}.png`);
++      await page.screenshot({ path: file, timeout: 10_000 });
++      return file;
++    },
++    async close() {
++      if (closed) return;
++      closed = true;
++      const logs = NodePath.join(t3Home, "userdata/logs");
++      if (NodeFS.existsSync(logs)) {
++        NodeFS.cpSync(logs, NodePath.join(evidence, "logs"), { recursive: true });
++      }
++      // Playwright drops the process handle once the app closes, so read it first.
++      const child = app.process();
++      await Promise.race([
++        app.close().catch(() => {}),
++        new Promise((resolve) => setTimeout(resolve, 10_000).unref()),
++      ]);
++      child.kill("SIGKILL");
++      // Launching registers the build under the installed app's bundle id and URL schemes.
++      try {
++        NodeChildProcess.execFileSync(LSREGISTER, ["-u", appPath], { stdio: "ignore" });
++      } catch {}
++      cleanup();
++    },
++  };
++}
++
++/** Runs `body(session, step)` with a launched app; screenshots and exits 1 on failure. */
++export async function journey(name, body, options) {
++  let session;
++  let current = "launching the app";
++  const step = (description) => {
++    current = description;
++  };
++  try {
++    session = await launchApp(options);
++    await body(session, step);
++    console.log(`journey ${name}: passed`);
++  } catch (error) {
++    console.error(`journey ${name}: failed while ${current}`);
++    console.error(error instanceof Error ? error.stack : error);
++    await session?.screenshot(`${name}-failure`).catch(() => {});
++    process.exitCode = 1;
++  } finally {
++    await session?.close();
++  }
++}

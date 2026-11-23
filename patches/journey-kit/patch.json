@@ -1,0 +1,17 @@
+{
+  "id": "journey-kit",
+  "title": "Journey kit",
+  "summary": "patcher/journeys/support.mjs launches the built app for patch journeys: a throwaway HOME and T3CODE_HOME seeded with the release launch fixture, Chromium's mock keychain, telemetry and auto-update off, logs and screenshots into $T3_PATCHER_EVIDENCE. Every other patch's journeys use it.",
+  "base": {
+    "version": "0.1.11",
+    "commit": "59651c1761f6c63e9b6056839067066968e6a406"
+  },
+  "checks": [],
+  "journeys": [
+    {
+      "name": "app_opens",
+      "proves": "The built app opens on an isolated home, lists the seeded thread in the sidebar and shows its message when opened.",
+      "run": ". \"$T3_PATCHER_ENV\" && node patcher/journeys/app-opens.mjs"
+    }
+  ]
+}

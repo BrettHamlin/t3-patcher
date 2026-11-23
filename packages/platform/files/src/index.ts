@@ -169,9 +169,17 @@ export const defaultSettings = (input: { readonly patches: string; readonly work
     tag: "v{version}",
     installed: "/Applications/T3 Code (Beta).app",
     built: "release/mac-arm64/T3 Code (Beta).app",
-    // checks and build are filled in by the T3 build investigation.
-    checks: [],
-    build: [],
-    env: {},
+    checks: [
+      { name: "install packages", run: `. "$T3_PATCHER_ENV" && pnpm install --frozen-lockfile` },
+      { name: "changed files", run: `. "$T3_PATCHER_ENV" && pnpm exec vp run check:changed v{version}` },
+    ],
+    build: [
+      { name: "env file", run: "test -f .env || cp .env.example .env" },
+      {
+        name: "app",
+        run: `. "$T3_PATCHER_ENV" && node scripts/build-desktop-artifact.ts --platform mac --target dir --arch arm64 --build-version {version}`,
+      },
+    ],
+    env: { T3_PATCHER_ENV: `${input.work}/build-env/env.sh` },
   },
 });
