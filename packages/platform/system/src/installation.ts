@@ -67,7 +67,11 @@ export const macInstallation = (input: {
 
       return {
         version,
-        install: Effect.fn("Installation.install")(function* (built: string) {
+        install: Effect.fn("Installation.install")(function* (built: string, expected: string) {
+          const installedVersion = yield* version;
+          if (installedVersion !== expected) {
+            return yield* stepFailed(`${name} is now ${installedVersion}, not ${expected}: apply again`);
+          }
           const running = yield* run(spawner, "pgrep", ["-f", regex(path.join(input.installed, "Contents", "MacOS") + "/")]);
           if (running.code === 0) return yield* stepFailed(`quit ${name} first`);
           if (!(yield* exists(built))) return yield* stepFailed(`no built app at ${built}`);

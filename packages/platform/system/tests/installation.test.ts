@@ -67,12 +67,12 @@ describe("macInstallation", () => {
   it.live("installs the built app, keeping the previous one as a numbered backup", () =>
     Effect.gen(function* () {
       const { installed, backups, built, installation, marker, join } = yield* setup;
-      const first = yield* installation.install(built);
+      const first = yield* installation.install(built, "0.1.11");
       yield* fakeApp(built, "0.1.13");
-      const second = yield* installation.install(built);
+      const second = yield* installation.install(built, "0.1.12");
       yield* write(join(backups, "T3 Code-0.1.13-1.app", "taken"), "");
       yield* fakeApp(built, "0.1.14");
-      const third = yield* installation.install(built);
+      const third = yield* installation.install(built, "0.1.13");
       expect([first, second, third]).toEqual([
         `installed; the previous app is at ${join(backups, "T3 Code-0.1.11-1.app")}`,
         `installed; the previous app is at ${join(backups, "T3 Code-0.1.12-1.app")}`,
@@ -92,7 +92,7 @@ describe("macInstallation", () => {
     Effect.gen(function* () {
       const { root, installed, backups, installation, marker, join } = yield* setup;
       const missing = join(root, "nowhere.app");
-      expect(yield* Effect.flip(installation.install(missing))).toEqual(
+      expect(yield* Effect.flip(installation.install(missing, "0.1.11"))).toEqual(
         new StepFailed({ reason: `no built app at ${missing}` }),
       );
       expect([yield* marker(installed), yield* exists(backups)]).toEqual(["0.1.11", false]);
@@ -105,7 +105,19 @@ describe("macInstallation", () => {
       // Killed when the test's scope closes.
       const running = yield* spawner.spawn(ChildProcess.make(join(installed, "Contents", "MacOS", "x"), ["30"], { stdin: "ignore" }));
       expect(yield* running.isRunning).toBe(true);
-      expect(yield* Effect.flip(installation.install(built))).toEqual(new StepFailed({ reason: "quit T3 Code first" }));
+      expect(yield* Effect.flip(installation.install(built, "0.1.11"))).toEqual(
+        new StepFailed({ reason: "quit T3 Code first" }),
+      );
       expect(yield* marker(installed)).toBe("0.1.11");
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)));
+
+  it.live("fails, changing nothing, when the installed version is no longer the one the build was made from", () =>
+    Effect.gen(function* () {
+      const { installed, backups, built, installation, marker } = yield* setup;
+      yield* fakeApp(installed, "0.1.12");
+      expect(yield* Effect.flip(installation.install(built, "0.1.11"))).toEqual(
+        new StepFailed({ reason: "T3 Code is now 0.1.12, not 0.1.11: apply again" }),
+      );
+      expect([yield* marker(installed), yield* exists(backups)]).toEqual(["0.1.12", false]);
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)));
 });

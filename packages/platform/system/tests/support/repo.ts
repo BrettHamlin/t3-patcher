@@ -31,7 +31,7 @@ export const sh = (cwd: string, command: string, args: ReadonlyArray<string>): E
     }),
   ).pipe(Effect.orDie);
 
-const git = (cwd: string, ...args: ReadonlyArray<string>): Effect.Effect<string, never, Services> =>
+export const git = (cwd: string, ...args: ReadonlyArray<string>): Effect.Effect<string, never, Services> =>
   sh(cwd, "git", ["-c", "user.name=test", "-c", "user.email=test@localhost", "-c", "commit.gpgsign=false", ...args]);
 
 /** A new folder (its real path), removed when the scope closes. */

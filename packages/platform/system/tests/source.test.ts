@@ -7,7 +7,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 
-import { applyElsewhere, exists, PATCHED, read, sh, temporary, upstream, V11, write } from "./support/repo.ts";
+import { applyElsewhere, exists, git, PATCHED, read, sh, temporary, upstream, V11, write } from "./support/repo.ts";
 
 /** A temporary folder with the upstream repository, and a Source over it with its work folder in `<root>/work`. */
 const setup = Effect.gen(function* () {
@@ -97,7 +97,7 @@ describe("gitSource", () => {
       expect({ none, some: yield* workspace.pending }).toEqual({ none: "", some: repo.conflicting });
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)));
 
-  it.live("existing returns the slot as it is, with the base it was opened at", () =>
+  it.live("existing returns the slot as it is, with the base it was opened at and the version it was marked for", () =>
     Effect.gen(function* () {
       const { repo, work, source, join } = yield* setup;
       expect(yield* Effect.flip(source.existing("main"))).toEqual(
@@ -106,11 +106,13 @@ describe("gitSource", () => {
       const opened = yield* source.open("v1.0.0", "main");
       yield* opened.apply(repo.clean);
       yield* opened.commit("one");
+      yield* opened.markReady("1.0.0");
       yield* write(join(opened.path, "draft.txt"), "draft\n");
-      const again = yield* source.existing("main");
-      expect({ path: again.path, base: again.base, pending: yield* again.pending }).toEqual({
+      const { workspace: again, version } = yield* source.existing("main");
+      expect({ path: again.path, base: again.base, version, pending: yield* again.pending }).toEqual({
         path: join(work, "slots", "main"),
         base: repo.v1,
+        version: "1.0.0",
         pending: [
           "diff --git a/draft.txt b/draft.txt",
           "new file mode 100644",
@@ -122,6 +124,73 @@ describe("gitSource", () => {
           "",
         ].join("\n"),
       });
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)));
+
+  it.live("existing fails until the slot is marked ready, and again once it's reopened or its HEAD moves", () =>
+    Effect.gen(function* () {
+      const { repo, source } = yield* setup;
+      const notReady = new StepFailed({ reason: "workspace main isn't ready: open it again" });
+      const opened = yield* source.open("v1.0.0", "main");
+      const before = yield* Effect.flip(source.existing("main"));
+      yield* opened.markReady("1.0.0");
+      const marked = (yield* source.existing("main")).version;
+      yield* opened.apply(repo.clean);
+      yield* opened.commit("moved");
+      const moved = yield* Effect.flip(source.existing("main"));
+      yield* opened.markReady("1.0.0");
+      yield* source.open("v1.1.0", "main");
+      const reopened = yield* Effect.flip(source.existing("main"));
+      expect({ before, marked, moved, reopened }).toEqual({ before: notReady, marked: "1.0.0", moved: notReady, reopened: notReady });
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)));
+
+  it.live("fails, naming the files, when the .rej fallback skips a file the diff changes", () =>
+    Effect.gen(function* () {
+      const { repo, source } = yield* setup;
+      yield* git(repo.folder, "rm", "--quiet", "other.txt");
+      yield* git(repo.folder, "commit", "--quiet", "-m", "v1.2.0");
+      yield* git(repo.folder, "tag", "v1.2.0");
+      const unknown = (repo.conflicting + repo.clean).replace(
+        /^index [0-9a-f]+\.\.[0-9a-f]+/gm,
+        `index ${"1".repeat(40)}..${"2".repeat(40)}`,
+      );
+      const workspace = yield* source.open("v1.2.0", "main");
+      expect(yield* Effect.flip(workspace.apply(unknown))).toEqual(
+        new StepFailed({
+          reason: [
+            "the diff doesn't apply to other.txt: Checking patch a.txt...",
+            "error: while searching for:",
+            "one",
+            "two",
+            "three",
+            "",
+            "error: patch failed: a.txt:1",
+            "Checking patch new.txt...",
+            "Checking patch other.txt...",
+            "error: other.txt: No such file or directory",
+            "Applying patch a.txt with 1 reject...",
+            "Rejected hunk #1.",
+            "Applied patch new.txt cleanly.",
+          ].join("\n"),
+        }),
+      );
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)));
+
+  it.live("fails, naming the files, when a three-way merge leaves a conflict with no markers to resolve", () =>
+    Effect.gen(function* () {
+      const { repo, source, join } = yield* setup;
+      const data = join(repo.folder, "data.bin");
+      yield* write(data, "head\0base\n");
+      yield* git(repo.folder, "add", "data.bin");
+      yield* git(repo.folder, "commit", "--quiet", "-m", "v2.0.0");
+      yield* write(data, "head\0patched\n");
+      const diff = yield* git(repo.folder, "diff", "--binary", "--full-index", "HEAD");
+      yield* write(data, "head\0upstream\n");
+      yield* git(repo.folder, "commit", "--quiet", "-am", "v2.1.0");
+      yield* git(repo.folder, "tag", "v2.1.0");
+      const workspace = yield* source.open("v2.1.0", "main");
+      expect(yield* Effect.flip(workspace.apply(diff))).toEqual(
+        new StepFailed({ reason: "can't merge data.bin (binary or no text conflict); change the patch by hand" }),
+      );
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)));
 
   it.live("reopening a slot resets and cleans it but keeps ignored files", () =>

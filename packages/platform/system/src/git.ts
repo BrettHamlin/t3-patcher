@@ -21,6 +21,14 @@ const sortedUnique = (entries: ReadonlyArray<string>): ReadonlyArray<string> =>
 const slotRef = (slot: string): string => `refs/t3-patcher/slots/${slot}`;
 const hasMarkers = (content: string): boolean =>
   content.split("\n").some((line) => line.startsWith("<<<<<<< ") || line.startsWith(">>>>>>> "));
+// `git apply --numstat -z`: "added\tdeleted\tpath", or for a rename "added\tdeleted\t" followed by both paths.
+const diffPaths = (numstat: string): ReadonlyArray<string> =>
+  paths(numstat).flatMap((entry) => {
+    const counted = /^(?:\d+|-)\t(?:\d+|-)\t(.*)$/s.exec(entry);
+    if (counted === null) return [entry];
+    const name = counted[1] ?? "";
+    return name === "" ? [] : [name];
+  });
 
 /**
  * The app's source from git: a bare mirror of `repository` at `<work>/upstream.git`, and each slot a worktree of it
@@ -59,21 +67,26 @@ export const gitSource = (input: {
           Effect.mapError(() => stepFailed(`no commit ${revision}`)),
         );
 
-      const workspace = (folder: string, base: Commit): Workspace => {
+      const readyFile = (slot: string): string => path.join(slots, `${slot}.ready`);
+      const head = (folder: string) => commitOf(folder, "HEAD");
+
+      const workspace = (folder: string, base: Commit, ready: string): Workspace => {
         const untracked = git(folder, ["ls-files", "--others", "--exclude-standard", "-z"]).pipe(Effect.map(paths));
         const unmerged = git(folder, ["diff", "--name-only", "--diff-filter=U", "-z"]).pipe(Effect.map(paths));
         const rejected = untracked.pipe(
           Effect.map((files) => files.filter((name) => name.endsWith(".rej")).map((name) => name.slice(0, -4))),
         );
-        const marked = Effect.gen(function* () {
-          const changed = paths(yield* git(folder, ["diff", "--name-only", "--no-renames", "-z", "HEAD"]));
-          const candidates = sortedUnique([...changed, ...(yield* untracked)]);
+        const withMarkers = Effect.fn("Workspace.withMarkers")(function* (candidates: ReadonlyArray<string>) {
           const found: Array<string> = [];
           for (const name of candidates) {
             const content = yield* fs.readFileString(path.join(folder, name)).pipe(Effect.orElseSucceed(() => ""));
             if (hasMarkers(content)) found.push(name);
           }
           return found;
+        });
+        const marked = Effect.gen(function* () {
+          const changed = paths(yield* git(folder, ["diff", "--name-only", "--no-renames", "-z", "HEAD"]));
+          return yield* withMarkers(sortedUnique([...changed, ...(yield* untracked)]));
         });
         const addAll = git(folder, ["add", "-A"]);
         return {
@@ -92,6 +105,13 @@ export const gitSource = (input: {
                 if (merged.code === 0) return [];
                 const conflicted = yield* unmerged;
                 if (conflicted.length > 0) {
+                  const textual = yield* withMarkers(conflicted);
+                  const unmarked = sortedUnique(conflicted.filter((name) => !textual.includes(name)));
+                  if (unmarked.length > 0) {
+                    return yield* stepFailed(
+                      `can't merge ${unmarked.join(", ")} (binary or no text conflict); change the patch by hand`,
+                    );
+                  }
                   // Keep the conflict markers in the files, but leave the index as at HEAD, with nothing unmerged.
                   yield* git(folder, ["reset", "-q"]);
                   return sortedUnique(conflicted);
@@ -101,6 +121,16 @@ export const gitSource = (input: {
                 const rejects = yield* rejected;
                 if (partial.code !== 0 && rejects.length === 0) {
                   return yield* stepFailed(`the diff doesn't apply: ${lastLines(partial.stderr)}`);
+                }
+                // A file-level error (e.g. the file is gone) skips that file without a .rej: the change would be lost.
+                const errorLines = partial.stderr.split("\n").filter((line) => line.startsWith("error: "));
+                const skipped = diffPaths(yield* git(folder, ["apply", "--numstat", "-z", patch])).filter(
+                  (name) => !rejects.includes(name) && errorLines.some((line) => line.startsWith(`error: ${name}: `)),
+                );
+                if (skipped.length > 0) {
+                  return yield* stepFailed(
+                    `the diff doesn't apply to ${sortedUnique(skipped).join(", ")}: ${lastLines(partial.stderr)}`,
+                  );
                 }
                 return sortedUnique(rejects);
               }),
@@ -134,6 +164,10 @@ export const gitSource = (input: {
             yield* addAll;
             return yield* git(folder, ["diff", "--cached", ...DIFF, "HEAD"]);
           }),
+          markReady: Effect.fn("Workspace.markReady")(function* (version: string) {
+            const sha = yield* head(folder);
+            yield* fs.writeFileString(ready, `${version}\n${sha}\n`).pipe(Effect.mapError(couldnt(`write ${ready}`)));
+          }),
         };
       };
 
@@ -155,6 +189,8 @@ export const gitSource = (input: {
         open: Effect.fn("Source.open")(function* (tag: string, slot: string) {
           return yield* opening.withPermit(
             Effect.gen(function* () {
+              const ready = readyFile(slot);
+              yield* fs.remove(ready, { force: true }).pipe(Effect.mapError(couldnt(`remove ${ready}`)));
               const fetched = yield* updateMirror;
               const base = yield* commitOf(mirror, `refs/tags/${tag}^{commit}`).pipe(
                 Effect.mapError(() =>
@@ -175,7 +211,7 @@ export const gitSource = (input: {
               yield* git(folder, ["reset", "--quiet", "--hard"]);
               yield* git(folder, ["clean", "-ffdq"]);
               yield* git(mirror, ["update-ref", slotRef(slot), base]);
-              return workspace(folder, base);
+              return workspace(folder, base, ready);
             }),
           );
         }),
@@ -184,7 +220,13 @@ export const gitSource = (input: {
           const missing = stepFailed(`no workspace ${slot}; open it first`);
           if (!(yield* isWorktree(folder))) return yield* missing;
           const base = yield* commitOf(folder, slotRef(slot)).pipe(Effect.mapError(() => missing));
-          return workspace(folder, base);
+          const ready = readyFile(slot);
+          const notReady = stepFailed(`workspace ${slot} isn't ready: open it again`);
+          const [version = "", sha = ""] = (yield* fs
+            .readFileString(ready)
+            .pipe(Effect.mapError(() => notReady))).split("\n");
+          if (version === "" || sha !== (yield* head(folder))) return yield* notReady;
+          return { workspace: workspace(folder, base, ready), version };
         }),
       };
     }),
