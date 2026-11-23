@@ -5,7 +5,7 @@
 // <data>/Installed.app  the "installed" app: that tree at the chosen version
 // <data>/patches/<id>/  patches made with git against v1.0.0
 // <data>/work/          the work folder (source checkouts, logs, backups)
-// <data>/settings.json  written with the files package, as `t3-patcher init` would
+// <data>/settings.json  written with the files package, as `python3 scripts/patcher.py init` would
 import { Commit, type Patch, PatchManifest, type Settings, StorageFailed } from "@app/contracts";
 import { saveSettings } from "@app/files";
 import * as NodeServices from "@effect/platform-node/NodeServices";

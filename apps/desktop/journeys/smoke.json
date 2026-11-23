@@ -1,5 +1,5 @@
 {
-  "$comment": "What scripts/smoke.mjs does with a package on Windows and Linux, where the journeys can't run: the app's own test ids (its *Ui objects in packages/contracts). `start` is what a new, empty data folder shows; after `steps`, the app shows `after`, and still does when opened again. Without settings (`t3-patcher init`) nothing can be saved, so this proves the window opens, answers through the bridge and shows the empty stack.",
+  "$comment": "What scripts/smoke.mjs does with a package on Windows and Linux, where the journeys can't run: the app's own test ids (its *Ui objects in packages/contracts). `start` is what a new, empty data folder shows; after `steps`, the app shows `after`, and still does when opened again. Without settings (`python3 scripts/patcher.py init`) nothing can be saved, so this proves the window opens, answers through the bridge and shows the empty stack.",
   "start": { "id": "stack-list", "lines": ["(no patches)"] },
   "steps": [{ "fill": "stack-patch", "text": "demo" }, { "click": "stack-toggle" }],
   "after": { "id": "stack-list", "lines": ["(no patches)"] }

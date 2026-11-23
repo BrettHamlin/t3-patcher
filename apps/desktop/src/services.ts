@@ -31,7 +31,7 @@ export const defaultUserdata = (home: string): string => `${home}/.t3/userdata/p
 
 export class NoSettings extends Schema.TaggedError<NoSettings>()("NoSettings", {}) {
   override get message(): string {
-    return "no settings: run `t3-patcher init`";
+    return "no settings: run `python3 scripts/patcher.py init`";
   }
 }
 

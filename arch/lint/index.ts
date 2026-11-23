@@ -221,7 +221,7 @@ const noSkippedTests = defineRule({
         if (UNCHECKED.has(name) || effectTable) {
           context.report({
             node,
-            message: `\`.${name}\` registers tests the assertion check can't see. Write one it.effect (or it) that loops over its cases and asserts each with expect, like the property test in packages/features/tally/tests/property.test.ts.`,
+            message: `\`.${name}\` registers tests the assertion check can't see. Write one it.effect (or it) that loops over its cases and asserts each with expect, like the property test in packages/features/apply/tests/property.test.ts.`,
           });
         }
       },
@@ -230,7 +230,7 @@ const noSkippedTests = defineRule({
 });
 
 const UI_MESSAGE =
-  "Use a typed identifier from contracts (e.g. TallyUi.add). Views set data-testid only from one (TallyUi.add.value), and journeys find elements only through the Screen in journeys/support, which takes UiIds; never by text, role or selector. Add the identifier to the screen's *Ui object in packages/contracts; if the Screen lacks what you need, stop and report.";
+  "Use a typed identifier from contracts (e.g. StackUi.toggle). Views set data-testid only from one (StackUi.toggle.value), and journeys find elements only through the Screen in journeys/support, which takes UiIds; never by text, role or selector. Add the identifier to the screen's *Ui object in packages/contracts; if the Screen lacks what you need, stop and report.";
 
 const typedUiIdentifiers = defineRule({
   meta: { type: "problem", docs: { description: "Elements are found only by typed identifiers from contracts." } },
@@ -288,7 +288,7 @@ const typedUiIdentifiers = defineRule({
         if (node.name.type !== "JSXIdentifier" || node.name.name !== "data-testid") return;
         const value = node.value;
         if (!(value?.type === "JSXExpressionContainer" && isContractsUi(value.expression))) {
-          context.report({ node, message: `data-testid must be a contracts identifier, a *Ui object imported from @app/contracts (data-testid={TallyUi.add.value}). ${UI_MESSAGE}` });
+          context.report({ node, message: `data-testid must be a contracts identifier, a *Ui object imported from @app/contracts (data-testid={StackUi.toggle.value}). ${UI_MESSAGE}` });
         }
       },
     };
