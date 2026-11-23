@@ -1,0 +1,7 @@
+id = "authoring"
+summary = "Make a patch: open a workspace with the stack's patches applied, edit it, and capture the changes as a patch."
+modules = []
+
+[[journeys]]
+name = "new_patch_is_captured"
+proves = "Opening a workspace for a new patch shows its folder (with the stack's patches applied); after an edit there, capturing saves the patch and the stack lists it, also after a relaunch."
