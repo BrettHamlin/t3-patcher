@@ -15,11 +15,11 @@ const EVIDENCE = process.env["BSTACK_EVIDENCE"] ?? NodePath.join(PROJECT, ".buil
 /** The app to launch: the packaged app if $BSTACK_PACKAGED_APP names one (scripts/package.py), else the built one. */
 export const command = async (data: string): Promise<{ readonly executablePath: string; readonly args: Array<string> }> => {
   const packaged = process.env["BSTACK_PACKAGED_APP"];
-  if (packaged) return { executablePath: packaged, args: ["--data", data] };
+  if (packaged) return { executablePath: packaged, args: ["--data", data, "--background"] };
   const require = NodeModule.createRequire(import.meta.url);
   const folder = NodePath.dirname(require.resolve("electron/package.json"));
   const relative = (await NodeFs.readFile(NodePath.join(folder, "path.txt"), "utf8")).trim();
-  return { executablePath: NodePath.join(folder, "dist", relative), args: [NodePath.join(DESKTOP, "dist/main.cjs"), "--data", data] };
+  return { executablePath: NodePath.join(folder, "dist", relative), args: [NodePath.join(DESKTOP, "dist/main.cjs"), "--data", data, "--background"] };
 };
 
 /** A new, empty folder for one journey's data. */
@@ -81,6 +81,11 @@ export const launch = async (journey: string, data: string): Promise<Screen> => 
       count += 1;
       await page.screenshot({ path: NodePath.join(folder, `${String(count).padStart(2, "0")}-${label}.png`) });
     },
-    close: () => app.close(),
+    close: async () => {
+      // Journeys run in the background (--background): a window on screen would get in the user's way.
+      const shown = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().some((window) => window.isVisible()));
+      await app.close();
+      if (shown) throw new Error("a window was shown on screen; journeys must stay in the background");
+    },
   };
 };

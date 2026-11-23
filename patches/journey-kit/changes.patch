@@ -22,10 +22,10 @@ index 0000000000000000000000000000000000000000..7258764f516719f15ac086486fb6769d
 +});
 diff --git a/patcher/journeys/support.mjs b/patcher/journeys/support.mjs
 new file mode 100644
-index 0000000000000000000000000000000000000000..66bb4d3984547da76891904b8d53573ac6ca64a1
+index 0000000000000000000000000000000000000000..e73320c366f693671d7cd382d30708edd83b91aa
 --- /dev/null
 +++ b/patcher/journeys/support.mjs
-@@ -0,0 +1,139 @@
+@@ -0,0 +1,162 @@
 +// Launches a built app for t3-patcher journeys, isolated from the installed app and the keychain.
 +// Env: T3_PATCHER_APP (built .app), T3_PATCHER_EVIDENCE (screenshots, logs), optional
 +// T3_PATCHER_TMP (parent of the throwaway home; defaults to $TMPDIR).
@@ -109,6 +109,18 @@ index 0000000000000000000000000000000000000000..66bb4d3984547da76891904b8d53573a
 +    cleanup();
 +    throw error;
 +  }
++  // Keep the app out of the way of whoever is using the Mac: no Dock icon, windows never shown or focused. Playwright
++  // holds the app's "ready" until it attaches, so this runs before any window opens. Hidden windows still paint.
++  await app.evaluate(({ app: electronApp, BrowserWindow }) => {
++    electronApp.dock?.hide();
++    electronApp.focus = () => {};
++    for (const name of ["show", "showInactive", "focus", "moveTop"])
++      BrowserWindow.prototype[name] = () => {};
++    electronApp.on("browser-window-created", (_event, window) => {
++      window.webContents.setBackgroundThrottling(false);
++      window.on("show", () => (globalThis.patcherWindowShown = true));
++    });
++  });
 +  const page = await app.firstWindow({ timeout: STEP_TIMEOUT_MS });
 +
 +  let closed = false;
@@ -125,6 +137,13 @@ index 0000000000000000000000000000000000000000..66bb4d3984547da76891904b8d53573a
 +    async close() {
 +      if (closed) return;
 +      closed = true;
++      const shown = await app
++        .evaluate(
++          ({ BrowserWindow }) =>
++            globalThis.patcherWindowShown === true ||
++            BrowserWindow.getAllWindows().some((window) => window.isVisible()),
++        )
++        .catch(() => false);
 +      const logs = NodePath.join(t3Home, "userdata/logs");
 +      if (NodeFS.existsSync(logs)) {
 +        NodeFS.cpSync(logs, NodePath.join(evidence, "logs"), { recursive: true });
@@ -141,6 +160,8 @@ index 0000000000000000000000000000000000000000..66bb4d3984547da76891904b8d53573a
 +        NodeChildProcess.execFileSync(LSREGISTER, ["-u", appPath], { stdio: "ignore" });
 +      } catch {}
 +      cleanup();
++      if (shown)
++        throw new Error("a window was shown on screen; journeys must stay in the background");
 +    },
 +  };
 +}
@@ -155,6 +176,8 @@ index 0000000000000000000000000000000000000000..66bb4d3984547da76891904b8d53573a
 +  try {
 +    session = await launchApp(options);
 +    await body(session, step);
++    step("closing the app");
++    await session.close();
 +    console.log(`journey ${name}: passed`);
 +  } catch (error) {
 +    console.error(`journey ${name}: failed while ${current}`);

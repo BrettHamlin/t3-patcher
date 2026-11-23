@@ -21,13 +21,11 @@ const sortedUnique = (entries: ReadonlyArray<string>): ReadonlyArray<string> =>
 const slotRef = (slot: string): string => `refs/t3-patcher/slots/${slot}`;
 const hasMarkers = (content: string): boolean =>
   content.split("\n").some((line) => line.startsWith("<<<<<<< ") || line.startsWith(">>>>>>> "));
-// `git apply --numstat -z`: "added\tdeleted\tpath", or for a rename "added\tdeleted\t" followed by both paths.
-const diffPaths = (numstat: string): ReadonlyArray<string> =>
-  paths(numstat).flatMap((entry) => {
-    const counted = /^(?:\d+|-)\t(?:\d+|-)\t(.*)$/s.exec(entry);
-    if (counted === null) return [entry];
-    const name = counted[1] ?? "";
-    return name === "" ? [] : [name];
+// The paths `git apply` names in file-level errors ("error: <path>: <why>"); "patch failed" lines are hunk rejects.
+const erroredPaths = (stderr: string): ReadonlyArray<string> =>
+  stderr.split("\n").flatMap((line) => {
+    const named = /^error: (.+?): /.exec(line);
+    return named === null || line.startsWith("error: patch failed: ") ? [] : [named[1] ?? ""];
   });
 
 /**
@@ -123,10 +121,7 @@ export const gitSource = (input: {
                   return yield* stepFailed(`the diff doesn't apply: ${lastLines(partial.stderr)}`);
                 }
                 // A file-level error (e.g. the file is gone) skips that file without a .rej: the change would be lost.
-                const errorLines = partial.stderr.split("\n").filter((line) => line.startsWith("error: "));
-                const skipped = diffPaths(yield* git(folder, ["apply", "--numstat", "-z", patch])).filter(
-                  (name) => !rejects.includes(name) && errorLines.some((line) => line.startsWith(`error: ${name}: `)),
-                );
+                const skipped = erroredPaths(partial.stderr).filter((name) => name !== "" && !rejects.includes(name));
                 if (skipped.length > 0) {
                   return yield* stepFailed(
                     `the diff doesn't apply to ${sortedUnique(skipped).join(", ")}: ${lastLines(partial.stderr)}`,

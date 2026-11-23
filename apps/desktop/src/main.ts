@@ -139,18 +139,26 @@ const serve = (window: BrowserWindow, userdata: string, running: Ref.Ref<boolean
   );
 };
 
+// `--background` (journeys): the window is never shown and the app never takes focus or shows in the Dock, so test
+// runs don't get in the way of whoever is using the Mac. It still renders, so screenshots work.
+const background = process.argv.includes("--background");
+
 const open = async (): Promise<void> => {
   await app.whenReady();
+  if (background) app.dock?.hide();
   const userdata = userdataFolder(process.argv, defaultUserdata(app.getPath("home")));
   const window = new BrowserWindow({
     width: 900,
     height: 820,
     title: "T3 Patcher",
+    show: !background,
+    paintWhenInitiallyHidden: true,
     webPreferences: {
       preload: `${import.meta.dirname}/preload.cjs`,
       contextIsolation: true,
       sandbox: true,
       nodeIntegration: false,
+      backgroundThrottling: !background,
     },
   });
   serve(window, userdata, Ref.makeUnsafe(false));

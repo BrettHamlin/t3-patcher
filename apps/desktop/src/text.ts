@@ -63,6 +63,7 @@ const CACHES = [
   ["CARGO_HOME", "cargo-home"],
   ["npm_config_cache", "npm-cache"],
   ["COREPACK_HOME", "corepack"],
+  ["electron_config_cache", "electron-cache"],
 ] as const;
 
 /**
@@ -74,6 +75,8 @@ export const buildEnv = (folder: string, path: string): string =>
     "# Source from the checkout root. Written by `t3-patcher init`; keeps the build's caches under $BE.",
     `BE=${quoted(folder)}`,
     `export PATH="$PWD/node_modules/.bin":${quoted(path)}`,
+    // The patcher's own pnpm settings would put the checkout's packages in the patcher's virtual store.
+    "unset pnpm_config_virtual_store_dir npm_config_virtual_store_dir",
     ...CACHES.map(([name, sub]) => `export ${name}="$BE/${sub}"`),
     `mkdir -p ${CACHES.map(([name]) => `"$${name}"`).join(" ")}`,
     "",

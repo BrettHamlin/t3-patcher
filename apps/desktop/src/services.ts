@@ -152,26 +152,32 @@ export const changeStack = Effect.fn("changeStack")(function* (stack: Stack) {
   return yield* library;
 });
 
-/** Apply the patches that are on, in stack order, and keep the report as the last run. */
+/** Apply the patches that are on, in stack order, and keep the report as the last run. Holds the lock throughout. */
 export const applyStack = Effect.fn("applyStack")(function* (userdata: string, settings: Settings, install: boolean) {
-  const patches = yield* (yield* Library).patches;
-  const { stack } = yield* library;
   const evidence = (yield* Path.Path).join(settings.work, "evidence");
-  const report: RunReport = yield* locked(
+  return yield* locked(
     settings.work,
-    run(settings.target, selected(stack, patches), install, { evidence }),
+    Effect.gen(function* () {
+      const patches = yield* (yield* Library).patches;
+      const { stack } = yield* library;
+      const report: RunReport = yield* run(settings.target, selected(stack, patches), install, { evidence });
+      yield* saveReport(userdata, report);
+      return report;
+    }),
   );
-  yield* saveReport(userdata, report);
-  return report;
 });
 
 /** Open the workspace for patch `raw` (new or existing): the patches before it applied. Returns its folder. */
 export const workspaceFor = Effect.fn("workspaceFor")(function* (settings: Settings, raw: string) {
   const id = yield* parsePatchId(raw);
-  const patches = yield* (yield* Library).patches;
-  const { stack } = yield* library;
-  const existing = yield* patchNamed(id);
-  return yield* locked(settings.work, openWorkspace(settings.target, before(stack, patches, id), existing, id));
+  return yield* locked(
+    settings.work,
+    Effect.gen(function* () {
+      const patches = yield* (yield* Library).patches;
+      const { stack } = yield* library;
+      return yield* openWorkspace(settings.target, before(stack, patches, id), yield* patchNamed(id), id);
+    }),
+  );
 });
 
 /**
@@ -179,14 +185,19 @@ export const workspaceFor = Effect.fn("workspaceFor")(function* (settings: Setti
  * every patch that is on applied. Returns its manifest.
  */
 export const capturePatch = Effect.fn("capturePatch")(function* (settings: Settings, request: CaptureRequest) {
-  const patch = yield* locked(settings.work, capture(settings.target, request, yield* patchNamed(request.id)));
-  const saved = yield* (yield* StackStore).load;
-  if (!saved.entries.some((entry) => entry.id === request.id)) {
-    const patches = yield* (yield* Library).patches;
-    yield* saveStack(appended(arranged(patches, saved), request.id));
-  }
-  const manifest: PatchManifest = patch.manifest;
-  return manifest;
+  return yield* locked(
+    settings.work,
+    Effect.gen(function* () {
+      const existing = yield* patchNamed(request.id);
+      const patch = yield* capture(settings.target, request, existing);
+      if (existing === undefined) {
+        const patches = yield* (yield* Library).patches;
+        yield* saveStack(appended(arranged(patches, yield* (yield* StackStore).load), request.id));
+      }
+      const manifest: PatchManifest = patch.manifest;
+      return manifest;
+    }),
+  );
 });
 
 /** The installed app's version. */

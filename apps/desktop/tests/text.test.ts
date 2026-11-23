@@ -76,6 +76,7 @@ describe("build environment", () => {
       "# Source from the checkout root. Written by `t3-patcher init`; keeps the build's caches under $BE.",
       "BE='/w/build-env'",
       `export PATH="$PWD/node_modules/.bin":'/tools/node/bin:/usr/bin:/bin'`,
+      "unset pnpm_config_virtual_store_dir npm_config_virtual_store_dir",
       `export TMPDIR="$BE/tmp"`,
       `export XDG_CACHE_HOME="$BE/xdg-cache"`,
       `export ELECTRON_CACHE="$BE/electron-cache"`,
@@ -85,7 +86,8 @@ describe("build environment", () => {
       `export CARGO_HOME="$BE/cargo-home"`,
       `export npm_config_cache="$BE/npm-cache"`,
       `export COREPACK_HOME="$BE/corepack"`,
-      `mkdir -p "$TMPDIR" "$XDG_CACHE_HOME" "$ELECTRON_CACHE" "$ELECTRON_BUILDER_CACHE" "$pnpm_config_store_dir" "$pnpm_config_cache_dir" "$CARGO_HOME" "$npm_config_cache" "$COREPACK_HOME"`,
+      `export electron_config_cache="$BE/electron-cache"`,
+      `mkdir -p "$TMPDIR" "$XDG_CACHE_HOME" "$ELECTRON_CACHE" "$ELECTRON_BUILDER_CACHE" "$pnpm_config_store_dir" "$pnpm_config_cache_dir" "$CARGO_HOME" "$npm_config_cache" "$COREPACK_HOME" "$electron_config_cache"`,
       "",
     ]);
   });
