@@ -1,0 +1,5 @@
+{
+  // Test setup for journeys and tests (Node.js). Only a devDependency, so the app never ships it.
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": { "types": ["node"] }
+}

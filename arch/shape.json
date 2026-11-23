@@ -1,0 +1,159 @@
+{
+  "$comment": "The module shape (protected). A package's role is its folder; `may_use` names the roles whose packages it may depend on, `external` the third-party packages its code may use, `dev_external` those its tests and config may use. `dev_only` roles (test setup) may only be devDependencies, of the roles whose `dev_may_use` names them. `effect_modules`, when set, are the only effect modules the role's code may import. Read by scripts/arch.py and arch/lint.",
+  "scope": "@app",
+  "roles": {
+    "contracts": {
+      "folders": [
+        "packages/contracts"
+      ],
+      "may_use": [],
+      "external": [
+        "effect"
+      ],
+      "dev_external": [
+        "@effect/vitest",
+        "vite-plus"
+      ],
+      "effect_modules": "logic"
+    },
+    "feature": {
+      "folders": [
+        "packages/features/*"
+      ],
+      "may_use": [
+        "contracts"
+      ],
+      "external": [
+        "effect"
+      ],
+      "dev_external": [
+        "@effect/vitest",
+        "vite-plus"
+      ],
+      "effect_modules": "logic"
+    },
+    "platform": {
+      "folders": [
+        "packages/platform/*"
+      ],
+      "may_use": [
+        "contracts",
+        "feature"
+      ],
+      "external": [
+        "effect",
+        "@effect/platform-node"
+      ],
+      "dev_external": [
+        "@effect/vitest",
+        "vite-plus",
+        "@types/node"
+      ]
+    },
+    "desktop": {
+      "folders": [
+        "apps/desktop"
+      ],
+      "may_use": [
+        "contracts",
+        "feature",
+        "platform"
+      ],
+      "external": [
+        "effect",
+        "@effect/platform-node",
+        "electron",
+        "electron-updater"
+      ],
+      "dev_external": [
+        "@effect/vitest",
+        "vite-plus",
+        "@types/node",
+        "playwright-core",
+        "electron-builder"
+      ],
+      "dev_may_use": [
+        "fixtures"
+      ]
+    },
+    "web": {
+      "folders": [
+        "apps/web"
+      ],
+      "may_use": [
+        "contracts",
+        "feature"
+      ],
+      "external": [
+        "effect",
+        "react",
+        "react-dom"
+      ],
+      "dev_external": [
+        "@effect/vitest",
+        "vite-plus",
+        "@types/react",
+        "@types/react-dom",
+        "@vitejs/plugin-react"
+      ]
+    },
+    "fixtures": {
+      "folders": [
+        "packages/fixtures"
+      ],
+      "may_use": [
+        "contracts",
+        "feature",
+        "platform"
+      ],
+      "external": [
+        "effect",
+        "@effect/platform-node"
+      ],
+      "dev_external": [
+        "@types/node"
+      ],
+      "dev_only": true
+    }
+  },
+  "logic_effect_modules": [
+    "Array",
+    "BigDecimal",
+    "BigInt",
+    "Boolean",
+    "Brand",
+    "Cause",
+    "Chunk",
+    "Clock",
+    "Context",
+    "Data",
+    "DateTime",
+    "Duration",
+    "Effect",
+    "Equal",
+    "Equivalence",
+    "Exit",
+    "Function",
+    "Hash",
+    "HashMap",
+    "HashSet",
+    "Layer",
+    "Match",
+    "Number",
+    "Option",
+    "Order",
+    "Predicate",
+    "Random",
+    "Record",
+    "Redacted",
+    "Ref",
+    "Result",
+    "Schema",
+    "Schedule",
+    "Stream",
+    "String",
+    "Struct",
+    "Tuple",
+    "Types"
+  ]
+}

@@ -1,0 +1,112 @@
+# Runs every gate on each pull request and on main, then packages the app for every platform and proves each package
+# runs. Make `check` and the four `installers` jobs required status checks in branch protection, with "Require review
+# from Code Owners" (CODEOWNERS covers this file).
+#
+# Signing: add the repository secrets MAC_CSC_LINK (base64 of a Developer ID Application .p12) and
+# MAC_CSC_KEY_PASSWORD, for notarizing APPLE_ID, APPLE_APP_SPECIFIC_PASSWORD and APPLE_TEAM_ID, and for Windows
+# WIN_CSC_LINK (base64 of a .pfx code-signing certificate) and WIN_CSC_KEY_PASSWORD. Builds of main are signed with
+# them; pull-request builds, and every build without them, are unsigned. Linux packages aren't signed.
+# Updates: set the repository variable UPDATE_URL to where you'll publish .build/package/out/update/ (each target's
+# files in <UPDATE_URL>/<target>/); the apps built here check it.
+name: check
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: check-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    # Apple silicon: tools.toml pins the darwin-arm64 Node.js and pnpm, and the journeys open the app's window.
+    runs-on: macos-15
+    timeout-minutes: 45
+    env:
+      PYTHONUNBUFFERED: "1"
+      # Signed on main only: pull-request builds are unsigned, as electron-builder also defaults to.
+      CSC_LINK: ${{ github.event_name == 'push' && secrets.MAC_CSC_LINK || '' }}
+      CSC_KEY_PASSWORD: ${{ github.event_name == 'push' && secrets.MAC_CSC_KEY_PASSWORD || '' }}
+      APPLE_ID: ${{ github.event_name == 'push' && secrets.APPLE_ID || '' }}
+      APPLE_APP_SPECIFIC_PASSWORD: ${{ github.event_name == 'push' && secrets.APPLE_APP_SPECIFIC_PASSWORD || '' }}
+      APPLE_TEAM_ID: ${{ github.event_name == 'push' && secrets.APPLE_TEAM_ID || '' }}
+      WIN_CSC_LINK: ${{ github.event_name == 'push' && secrets.WIN_CSC_LINK || '' }}
+      WIN_CSC_KEY_PASSWORD: ${{ github.event_name == 'push' && secrets.WIN_CSC_KEY_PASSWORD || '' }}
+      BSTACK_UPDATE_URL: ${{ vars.UPDATE_URL }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-python@v7.1.0
+        with:
+          python-version: "3.13"
+      - name: Cache folder for tools and build output
+        run: |
+          mkdir -p "$RUNNER_TEMP/bstack-cache"
+          echo "BSTACK_CACHE_DIR=$RUNNER_TEMP/bstack-cache" >> "$GITHUB_ENV"
+      # CI=true (set by GitHub): pnpm refuses to change pnpm-lock.yaml, so a package.json edited without its lockfile fails.
+      - name: compiler, lint, deps, arch, settings, tests, verify
+        run: python3 scripts/check.py
+      - name: Installers for every target; journeys on the Apple silicon app, smoke on its .dmg and on the Intel app (Rosetta)
+        run: python3 scripts/package.py --all
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: installers
+          path: |
+            .build/package/out/*.dmg
+            .build/package/out/*.zip
+            .build/package/out/*.exe
+            .build/package/out/*.AppImage
+            .build/package/out/update/
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v7.0.2
+        if: always()
+        with:
+          name: evidence
+          path: .build/evidence/
+          if-no-files-found: ignore
+
+  installers:
+    # Each Windows and Linux installer installed the way a user would, on its own system, then smoke-tested.
+    needs: check
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows-latest, target: win-x64, ext: exe }
+          - { os: windows-11-arm, target: win-arm64, ext: exe }
+          - { os: ubuntu-latest, target: linux-x64, ext: AppImage }
+          - { os: ubuntu-24.04-arm, target: linux-arm64, ext: AppImage }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-python@v7.1.0
+        with:
+          python-version: "3.13"
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: "24"
+      - uses: actions/download-artifact@v8.0.2
+        with:
+          name: installers
+          path: installers
+      - name: playwright-core at the pinned version
+        run: npm install --prefix "$RUNNER_TEMP/smoke" --no-save --ignore-scripts "playwright-core@$(node -p 'require("./apps/desktop/package.json").devDependencies["playwright-core"]')"
+      - name: Install and smoke test
+        run: |
+          signed=""; [ "$RUNNER_OS" = "Windows" ] && [ "${{ github.event_name }}" = "push" ] && [ -n "${{ secrets.WIN_CSC_LINK }}" ] && signed="--signed"
+          if [ "$RUNNER_OS" = "Linux" ]; then run="xvfb-run --auto-servernum"; else run=""; fi
+          $run python3 scripts/install_and_smoke.py installers/*-${{ matrix.target }}.${{ matrix.ext }} "$RUNNER_TEMP/smoke" smoke-evidence $signed
+      - uses: actions/upload-artifact@v7.0.2
+        if: always()
+        with:
+          name: installer-${{ matrix.target }}
+          path: smoke-evidence/
+          if-no-files-found: ignore

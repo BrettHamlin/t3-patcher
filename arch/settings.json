@@ -1,0 +1,667 @@
+{
+ "$comment": "The enforcement settings, as the tools see them (protected). scripts/settings.py fails if the effective settings differ: compiler options per package (tsc --showConfig), the Effect language service in tsconfig.effect.json, vite.config.ts's lint and test settings as Node imports them, pnpm-workspace.yaml, and CODEOWNERS. Lint rules and compiler options may be added; anything here may change only together with this file.",
+ "compiler": {
+  "roles": {
+   "contracts": {
+    "allowJs": false,
+    "allowImportingTsExtensions": true,
+    "erasableSyntaxOnly": true,
+    "exactOptionalPropertyTypes": true,
+    "forceConsistentCasingInFileNames": true,
+    "lib": [
+     "es2024"
+    ],
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "noEmit": true,
+    "noFallthroughCasesInSwitch": true,
+    "noImplicitReturns": true,
+    "noPropertyAccessFromIndexSignature": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "resolveJsonModule": true,
+    "rewriteRelativeImportExtensions": true,
+    "rootDir": "./",
+    "skipLibCheck": true,
+    "strict": true,
+    "target": "es2024",
+    "types": [],
+    "useDefineForClassFields": true,
+    "useUnknownInCatchVariables": true,
+    "verbatimModuleSyntax": true,
+    "moduleDetection": "force",
+    "isolatedModules": true,
+    "preserveConstEnums": true
+   },
+   "feature": {
+    "allowJs": false,
+    "allowImportingTsExtensions": true,
+    "erasableSyntaxOnly": true,
+    "exactOptionalPropertyTypes": true,
+    "forceConsistentCasingInFileNames": true,
+    "lib": [
+     "es2024"
+    ],
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "noEmit": true,
+    "noFallthroughCasesInSwitch": true,
+    "noImplicitReturns": true,
+    "noPropertyAccessFromIndexSignature": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "resolveJsonModule": true,
+    "rewriteRelativeImportExtensions": true,
+    "rootDir": "./",
+    "skipLibCheck": true,
+    "strict": true,
+    "target": "es2024",
+    "types": [],
+    "useDefineForClassFields": true,
+    "useUnknownInCatchVariables": true,
+    "verbatimModuleSyntax": true,
+    "moduleDetection": "force",
+    "isolatedModules": true,
+    "preserveConstEnums": true
+   },
+   "platform": {
+    "allowJs": false,
+    "allowImportingTsExtensions": true,
+    "erasableSyntaxOnly": true,
+    "exactOptionalPropertyTypes": true,
+    "forceConsistentCasingInFileNames": true,
+    "lib": [
+     "es2024"
+    ],
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "noEmit": true,
+    "noFallthroughCasesInSwitch": true,
+    "noImplicitReturns": true,
+    "noPropertyAccessFromIndexSignature": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "resolveJsonModule": true,
+    "rewriteRelativeImportExtensions": true,
+    "rootDir": "./",
+    "skipLibCheck": true,
+    "strict": true,
+    "target": "es2024",
+    "types": [
+     "node"
+    ],
+    "useDefineForClassFields": true,
+    "useUnknownInCatchVariables": true,
+    "verbatimModuleSyntax": true,
+    "moduleDetection": "force",
+    "isolatedModules": true,
+    "preserveConstEnums": true
+   },
+   "desktop": {
+    "allowJs": false,
+    "allowImportingTsExtensions": true,
+    "erasableSyntaxOnly": true,
+    "exactOptionalPropertyTypes": true,
+    "forceConsistentCasingInFileNames": true,
+    "lib": [
+     "es2024"
+    ],
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "noEmit": true,
+    "noFallthroughCasesInSwitch": true,
+    "noImplicitReturns": true,
+    "noPropertyAccessFromIndexSignature": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "resolveJsonModule": true,
+    "rewriteRelativeImportExtensions": true,
+    "rootDir": "./",
+    "skipLibCheck": true,
+    "strict": true,
+    "target": "es2024",
+    "types": [
+     "node"
+    ],
+    "useDefineForClassFields": true,
+    "useUnknownInCatchVariables": true,
+    "verbatimModuleSyntax": true,
+    "moduleDetection": "force",
+    "isolatedModules": true,
+    "preserveConstEnums": true
+   },
+   "web": {
+    "allowJs": false,
+    "allowImportingTsExtensions": true,
+    "erasableSyntaxOnly": true,
+    "exactOptionalPropertyTypes": true,
+    "forceConsistentCasingInFileNames": true,
+    "jsx": "react-jsx",
+    "lib": [
+     "es2024",
+     "dom",
+     "dom.iterable"
+    ],
+    "module": "preserve",
+    "moduleResolution": "bundler",
+    "noEmit": true,
+    "noFallthroughCasesInSwitch": true,
+    "noImplicitReturns": true,
+    "noPropertyAccessFromIndexSignature": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "resolveJsonModule": true,
+    "rewriteRelativeImportExtensions": true,
+    "rootDir": "./",
+    "skipLibCheck": true,
+    "strict": true,
+    "target": "es2024",
+    "types": [],
+    "useDefineForClassFields": true,
+    "useUnknownInCatchVariables": true,
+    "verbatimModuleSyntax": true,
+    "isolatedModules": true,
+    "preserveConstEnums": true
+   },
+   "fixtures": {
+    "allowJs": false,
+    "allowImportingTsExtensions": true,
+    "erasableSyntaxOnly": true,
+    "exactOptionalPropertyTypes": true,
+    "forceConsistentCasingInFileNames": true,
+    "lib": [
+     "es2024"
+    ],
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "noEmit": true,
+    "noFallthroughCasesInSwitch": true,
+    "noImplicitReturns": true,
+    "noPropertyAccessFromIndexSignature": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "resolveJsonModule": true,
+    "rewriteRelativeImportExtensions": true,
+    "rootDir": "./",
+    "skipLibCheck": true,
+    "strict": true,
+    "target": "es2024",
+    "types": [
+     "node"
+    ],
+    "useDefineForClassFields": true,
+    "useUnknownInCatchVariables": true,
+    "verbatimModuleSyntax": true,
+    "moduleDetection": "force",
+    "isolatedModules": true,
+    "preserveConstEnums": true
+   },
+   "journeys": {
+    "allowJs": false,
+    "allowImportingTsExtensions": true,
+    "erasableSyntaxOnly": true,
+    "exactOptionalPropertyTypes": true,
+    "forceConsistentCasingInFileNames": true,
+    "lib": [
+     "es2024"
+    ],
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "noEmit": true,
+    "noFallthroughCasesInSwitch": true,
+    "noImplicitReturns": true,
+    "noPropertyAccessFromIndexSignature": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "resolveJsonModule": true,
+    "rewriteRelativeImportExtensions": true,
+    "rootDir": "./",
+    "skipLibCheck": true,
+    "strict": true,
+    "target": "es2024",
+    "types": [
+     "node"
+    ],
+    "useDefineForClassFields": true,
+    "useUnknownInCatchVariables": true,
+    "verbatimModuleSyntax": true,
+    "moduleDetection": "force",
+    "isolatedModules": true,
+    "preserveConstEnums": true
+   }
+  },
+  "plugins": {
+   "journeys": []
+  }
+ },
+ "effect": {
+  "name": "@effect/language-service",
+  "namespaceImportPackages": [
+   "@effect/platform-node",
+   "effect"
+  ],
+  "effectFn": [
+   "span",
+   "inferred-span",
+   "suggested-span"
+  ],
+  "diagnosticSeverity": {
+   "abortControllerInEffect": "error",
+   "runEffectInsideEffect": "error",
+   "flatMapConditionalToFilterOrFail": "error",
+   "catchConditionalRefailToCatchIf": "error",
+   "tryCatchInEffectGen": "error",
+   "schemaStructWithTag": "error",
+   "preferTypedSchemaDecoder": "error",
+   "catchUnfailableEffect": "error",
+   "raceFirstWithSleepToTimeout": "error",
+   "redundantMapError": "error",
+   "optionMatchToFromOption": "error",
+   "catchToIgnore": "error",
+   "unnecessaryEffectGen": "error",
+   "allOfMapToForEach": "error",
+   "catchToOrElseSucceed": "error",
+   "unnecessaryFailYieldableError": "error",
+   "preferSucceedSomeOrNone": "error",
+   "effectSucceedWithVoid": "error",
+   "provideLayerSucceedToProvideService": "error",
+   "flatMapIgnoredParamToAndThen": "error",
+   "mapSomeToAsSome": "error",
+   "unnecessaryPipeChain": "error",
+   "returnEffectInGen": "off",
+   "effectFnOpportunity": "error",
+   "anyUnknownInErrorContext": "error",
+   "unsafeEffectTypeAssertion": "error",
+   "instanceOfSchema": "error",
+   "deterministicKeys": "error",
+   "strictEffectProvide": "off",
+   "unstableApiUsage": "off",
+   "experimentalApiUsage": "off",
+   "missingEffectServiceDependency": "error",
+   "leakingRequirements": "error",
+   "globalErrorInEffectCatch": "error",
+   "globalErrorInEffectFailure": "error",
+   "unknownInEffectCatch": "error",
+   "strictBooleanExpressions": "off",
+   "lazyEffect": "off",
+   "globalJsonInEffect": "error",
+   "schemaSyncInEffect": "error",
+   "cryptoRandomUUID": "error",
+   "cryptoRandomUUIDInEffect": "error",
+   "nodeBuiltinImport": "error",
+   "globalDate": "error",
+   "globalDateInEffect": "error",
+   "globalConsole": "error",
+   "globalConsoleInEffect": "error",
+   "globalRandom": "error",
+   "globalRandomInEffect": "error",
+   "globalTimers": "error",
+   "globalTimersInEffect": "error",
+   "globalFetch": "error",
+   "globalFetchInEffect": "error",
+   "acquireReleaseDisposable": "error",
+   "catchAllTagDispatchToCatchTag": "error",
+   "catchAllToMapError": "error",
+   "catchChainToFirstSuccessOf": "error",
+   "catchDieToOrDie": "error",
+   "catchIfTagToCatchTag": "error",
+   "catchRefailToTapError": "error",
+   "catchTagToCatchReason": "error",
+   "effectMapFlatten": "error",
+   "effectMapVoid": "error",
+   "effectSleepZeroToYieldNow": "error",
+   "effectSucceedWithUndefined": "error",
+   "errorPayloadShadowsName": "error",
+   "failCauseToConstructor": "error",
+   "flatMapIdentityToFlatten": "error",
+   "flatMapToMap": "error",
+   "flatMapToTap": "error",
+   "manualMetricTapToTrack": "error",
+   "mapConstToAs": "error",
+   "mapSomeCatchNoSuchElement": "error",
+   "matchBooleanToIsSuccess": "error",
+   "matchEffectToMapBoth": "error",
+   "matchEffectToMatch": "error",
+   "matchToResultOrOption": "error",
+   "multipleCatchTag": "error",
+   "preferUnsafeConstructor": "error",
+   "redundantOrDie": "error",
+   "redundantSchemaTagIdentifier": "error",
+   "resultMatchToFromResult": "error",
+   "runOfExitToRunExit": "error",
+   "suspendFailToFailSync": "error",
+   "syncToSucceed": "error",
+   "timeoutCatchTagToTimeoutOrElse": "error",
+   "unnecessaryPipe": "error",
+   "unnecessaryTypeofType": "error",
+   "effectTryWithoutCatch": "error",
+   "processEnvInEffect": "error",
+   "preferSchemaTaggedError": "error",
+   "extendsNativeError": "error",
+   "schemaNumber": "off"
+  },
+  "overrides": [
+   {
+    "include": [
+     "**/*.test.ts",
+     "**/*.test.tsx"
+    ],
+    "options": {
+     "diagnosticSeverity": {
+      "globalJsonInEffect": "off",
+      "effectFnOpportunity": "off"
+     }
+    }
+   },
+   {
+    "include": [
+     "**/*.spec.ts",
+     "**/*.spec.tsx",
+     "**/*.testkit.ts",
+     "**/*.testkit.tsx",
+     "**/test/**/*",
+     "**/tests/**/*",
+     "**/testkit/**/*",
+     "**/testing/**/*",
+     "**/fixtures/**/*",
+     "**/integration/**/*",
+     "packages/provider-testing/**/*"
+    ],
+    "options": {
+     "diagnosticSeverity": {
+      "effectFnOpportunity": "off"
+     }
+    }
+   }
+  ]
+ },
+ "lint": {
+  "ignorePatterns": [
+   "**/node_modules",
+   "/dist",
+   "/.build",
+   "/.tools",
+   "/arch/lint",
+   "/scripts",
+   "apps/*/dist"
+  ],
+  "plugins": [
+   "eslint",
+   "oxc",
+   "typescript",
+   "unicorn",
+   "react",
+   "import",
+   "vitest"
+  ],
+  "jsPlugins": [
+   "./arch/lint/index.ts"
+  ],
+  "categories": {
+   "correctness": "error",
+   "suspicious": "error",
+   "perf": "error"
+  },
+  "options": {
+   "typeAware": true,
+   "reportUnusedDisableDirectives": "error"
+  },
+  "rules": {
+   "typescript/no-explicit-any": "error",
+   "typescript/no-non-null-assertion": "error",
+   "typescript/consistent-type-assertions": [
+    "error",
+    {
+     "assertionStyle": "never"
+    }
+   ],
+   "typescript/no-unsafe-type-assertion": "error",
+   "typescript/no-unsafe-argument": "error",
+   "typescript/no-unsafe-assignment": "error",
+   "typescript/no-unsafe-call": "error",
+   "typescript/no-unsafe-member-access": "error",
+   "typescript/no-unsafe-return": "error",
+   "typescript/switch-exhaustiveness-check": [
+    "error",
+    {
+     "allowDefaultCaseForExhaustiveSwitch": false,
+     "considerDefaultExhaustiveForUnions": false,
+     "requireDefaultForNonUnion": true
+    }
+   ],
+   "typescript/no-floating-promises": [
+    "error",
+    {
+     "ignoreVoid": false
+    }
+   ],
+   "typescript/no-misused-promises": "error",
+   "eslint/no-restricted-globals": [
+    "error",
+    {
+     "name": "setTimeout",
+     "message": "Raw timers aren't allowed: use Effect.sleep or a Schedule, which can be interrupted and tested with TestClock."
+    },
+    {
+     "name": "setInterval",
+     "message": "Raw timers aren't allowed: use Effect.repeat with a Schedule, which can be interrupted and tested with TestClock."
+    },
+    {
+     "name": "setImmediate",
+     "message": "Raw timers aren't allowed: use an Effect (Effect.yieldNow), which can be interrupted and tested."
+    },
+    {
+     "name": "queueMicrotask",
+     "message": "Raw scheduling isn't allowed: use an Effect, which can be interrupted and tested."
+    }
+   ],
+   "typescript/ban-ts-comment": [
+    "error",
+    {
+     "ts-expect-error": true,
+     "ts-ignore": true,
+     "ts-nocheck": true,
+     "ts-check": false
+    }
+   ],
+   "typescript/triple-slash-reference": [
+    "error",
+    {
+     "lib": "never",
+     "path": "never",
+     "types": "never"
+    }
+   ],
+   "typescript/no-deprecated": "error",
+   "eslint/no-restricted-imports": [
+    "error",
+    {
+     "paths": [
+      {
+       "name": "@effect/vitest",
+       "importNames": [
+        "effect",
+        "live",
+        "scoped",
+        "flakyTest",
+        "prop"
+       ],
+       "message": "Register Effect tests as it.effect, it.live or it.scoped, which the assertion check (vitest/expect-expect) knows; flaky tests are fixed, not retried."
+      }
+     ]
+    }
+   ],
+   "bstack/module-boundaries": "error",
+   "bstack/no-ambient-declarations": "error",
+   "bstack/no-module-state": "error",
+   "typescript/no-require-imports": "error",
+   "typescript/no-namespace": "error",
+   "import/no-commonjs": "error",
+   "eslint/no-eval": "error",
+   "eslint/no-new-func": "error",
+   "typescript/no-implied-eval": "error",
+   "bstack/typed-ui-identifiers": "error",
+   "bstack/typed-identifiers": "error",
+   "bstack/no-io-globals": "error",
+   "bstack/no-unchecked-narrowing": "error",
+   "vitest/no-restricted-matchers": [
+    "error",
+    {
+     "toMatchObject": "Assert the whole value with toEqual (or toBe, toStrictEqual, toBeInstanceOf), so a change the test didn't expect fails it. If the whole value can't be pinned down, stop and report.",
+     "toHaveProperty": "Assert the whole value with toEqual (or toBe, toStrictEqual, toBeInstanceOf), so a change the test didn't expect fails it. If the whole value can't be pinned down, stop and report.",
+     "toBeTruthy": "Assert the whole value with toEqual (or toBe, toStrictEqual, toBeInstanceOf), so a change the test didn't expect fails it. If the whole value can't be pinned down, stop and report.",
+     "toBeFalsy": "Assert the whole value with toEqual (or toBe, toStrictEqual, toBeInstanceOf), so a change the test didn't expect fails it. If the whole value can't be pinned down, stop and report.",
+     "toBeDefined": "Assert the whole value with toEqual (or toBe, toStrictEqual, toBeInstanceOf), so a change the test didn't expect fails it. If the whole value can't be pinned down, stop and report.",
+     "toContain": "Assert the whole value with toEqual (or toBe, toStrictEqual, toBeInstanceOf), so a change the test didn't expect fails it. If the whole value can't be pinned down, stop and report.",
+     "toContainEqual": "Assert the whole value with toEqual (or toBe, toStrictEqual, toBeInstanceOf), so a change the test didn't expect fails it. If the whole value can't be pinned down, stop and report.",
+     "toMatch": "Assert the whole value with toEqual (or toBe, toStrictEqual, toBeInstanceOf), so a change the test didn't expect fails it. If the whole value can't be pinned down, stop and report."
+    }
+   ],
+   "eslint/no-restricted-properties": [
+    "error",
+    {
+     "object": "expect",
+     "property": "objectContaining",
+     "message": "Assert the whole value with toEqual (or toBe, toStrictEqual, toBeInstanceOf), so a change the test didn't expect fails it. If the whole value can't be pinned down, stop and report."
+    },
+    {
+     "object": "expect",
+     "property": "arrayContaining",
+     "message": "Assert the whole value with toEqual (or toBe, toStrictEqual, toBeInstanceOf), so a change the test didn't expect fails it. If the whole value can't be pinned down, stop and report."
+    },
+    {
+     "object": "expect",
+     "property": "stringContaining",
+     "message": "Assert the whole value with toEqual (or toBe, toStrictEqual, toBeInstanceOf), so a change the test didn't expect fails it. If the whole value can't be pinned down, stop and report."
+    },
+    {
+     "object": "expect",
+     "property": "stringMatching",
+     "message": "Assert the whole value with toEqual (or toBe, toStrictEqual, toBeInstanceOf), so a change the test didn't expect fails it. If the whole value can't be pinned down, stop and report."
+    },
+    {
+     "object": "expect",
+     "property": "any",
+     "message": "Assert the whole value with toEqual (or toBe, toStrictEqual, toBeInstanceOf), so a change the test didn't expect fails it. If the whole value can't be pinned down, stop and report."
+    },
+    {
+     "object": "expect",
+     "property": "anything",
+     "message": "Assert the whole value with toEqual (or toBe, toStrictEqual, toBeInstanceOf), so a change the test didn't expect fails it. If the whole value can't be pinned down, stop and report."
+    }
+   ],
+   "vitest/expect-expect": [
+    "error",
+    {
+     "assertFunctionNames": [
+      "expect"
+     ],
+     "additionalTestBlockFunctions": [
+      "it.effect",
+      "it.live",
+      "it.scoped"
+     ]
+    }
+   ],
+   "bstack/no-skipped-tests": "error",
+   "vitest/no-standalone-expect": [
+    "error",
+    {
+     "additionalTestBlockFunctions": [
+      "it.effect",
+      "it.live",
+      "it.scoped"
+     ]
+    }
+   ],
+   "react/react-in-jsx-scope": "off",
+   "typescript/consistent-return": "off",
+   "eslint/no-underscore-dangle": "off",
+   "eslint/no-unused-vars": [
+    "error",
+    {
+     "argsIgnorePattern": "^_",
+     "varsIgnorePattern": "^_",
+     "caughtErrorsIgnorePattern": "^_"
+    }
+   ]
+  }
+ },
+ "test": {
+  "projects": [
+   {
+    "test": {
+     "name": "unit",
+     "include": [
+      "{packages,apps}/*/tests/**/*.test.{ts,tsx}",
+      "packages/*/*/tests/**/*.test.{ts,tsx}"
+     ],
+     "environment": "node",
+     "allowOnly": false,
+     "retry": 0,
+     "fakeTimers": {
+      "toFake": [
+       "setTimeout",
+       "clearTimeout",
+       "setInterval",
+       "clearInterval",
+       "setImmediate",
+       "clearImmediate",
+       "Date",
+       "performance"
+      ]
+     }
+    }
+   },
+   {
+    "test": {
+     "name": "journeys",
+     "include": [
+      "apps/desktop/journeys/**/*.journey.ts"
+     ],
+     "environment": "node",
+     "allowOnly": false,
+     "retry": 0,
+     "testTimeout": 60000,
+     "fileParallelism": false
+    }
+   }
+  ],
+  "passWithNoTests": false
+ },
+ "workspace": {
+  "hoist": false,
+  "publicHoistPattern": [],
+  "allowBuilds": {
+   "electron-winstaller": false
+  },
+  "overrides": {
+   "vite": "npm:@voidzero-dev/vite-plus-core@1.4.0"
+  }
+ },
+ "codeowners": [
+  "/CODEOWNERS",
+  "/.github/",
+  "/AGENTS.md",
+  "/CLAUDE.md",
+  "/.claude/",
+  "/package.json",
+  "/pnpm-workspace.yaml",
+  "/pnpm-lock.yaml",
+  "/tools.toml",
+  "/tsconfig.base.json",
+  "/tsconfig.effect.json",
+  "/vite.config.ts",
+  "/apps/desktop/vite.config.ts",
+  "/apps/web/vite.config.ts",
+  "/arch/",
+  "/scripts/",
+  "/feature-map/",
+  "/apps/desktop/journeys/",
+  "/packages/fixtures/",
+  "/.githooks/",
+  "/.agents/",
+  "/apps/desktop/src/",
+  "/apps/web/src/main.tsx"
+ ]
+}

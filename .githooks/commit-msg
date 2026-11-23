@@ -1,0 +1,5 @@
+#!/bin/sh
+# Observe mode: add a "Checked:" trailer saying whether check.py passed on the committed files. Never blocks,
+# even if the helper itself is broken.
+python3 "$(git rev-parse --show-toplevel)/scripts/handback.py" stamp "$1" || true
+exit 0

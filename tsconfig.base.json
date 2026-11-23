@@ -1,0 +1,32 @@
+{
+  // Shared by every role's config in arch/tsconfig/ (protected). Packages extend their role's config and set nothing.
+  // Starts from T3 Code's tsconfig.base.json; the Effect language service settings are in tsconfig.effect.json.
+  "extends": "./tsconfig.effect.json",
+  "compilerOptions": {
+    "target": "ES2024",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "rewriteRelativeImportExtensions": true,
+    "erasableSyntaxOnly": true,
+    "verbatimModuleSyntax": true,
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "noImplicitOverride": true,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true,
+    "noPropertyAccessFromIndexSignature": true,
+    "useUnknownInCatchVariables": true,
+    "useDefineForClassFields": true,
+    "forceConsistentCasingInFileNames": true,
+    "allowJs": false,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "lib": ["ES2024"],
+    "types": [],
+    "rootDir": "${configDir}"
+  },
+  "include": ["${configDir}/src", "${configDir}/tests"]
+}

@@ -1,0 +1,19 @@
+id = "tally"
+summary = "Count named items; the tally is saved between runs, and a failed save keeps the old one."
+modules = ["tally"]
+
+[[journeys]]
+name = "tally_is_saved_across_runs"
+proves = "Adds count up in the window and survive closing and reopening the app."
+
+[[journeys]]
+name = "failed_save_keeps_the_old_tally"
+proves = "When the data folder can't be written, adding shows an error and the saved tally is unchanged after a relaunch."
+
+[[journeys]]
+name = "bad_name_is_refused"
+proves = "An invalid name is refused with the rule for names, and nothing is saved."
+
+[[journeys]]
+name = "saved_tally_is_shown_at_start"
+proves = "A tally saved before the app starts (the fixtures package writes it) is listed, sorted, when the window opens."

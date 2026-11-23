@@ -1,0 +1,7 @@
+{
+  // Journeys (apps/desktop/journeys): Node.js and Playwright driving the built app. Plain TypeScript checks without
+  // the Effect diagnostics, which are about Effect code; journeys have none.
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": { "types": ["node"], "plugins": [] },
+  "include": ["${configDir}"]
+}

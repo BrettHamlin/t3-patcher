@@ -1,0 +1,12 @@
+{
+  // The renderer: the page and React, no Node.js and no Electron. It reaches the main process only through the
+  // bridge type in contracts.
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "module": "Preserve",
+    "moduleResolution": "Bundler",
+    "jsx": "react-jsx",
+    "lib": ["ES2024", "DOM", "DOM.Iterable"]
+  },
+  "include": ["${configDir}/src", "${configDir}/tests"]
+}

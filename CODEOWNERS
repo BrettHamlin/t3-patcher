@@ -1,0 +1,36 @@
+# Enforcement surface: changes need a human code owner.
+# Pair with branch protection: "Require review from Code Owners".
+# Replace @OWNER with a real GitHub user or team.
+
+/CODEOWNERS               @OWNER
+/.github/                 @OWNER
+/AGENTS.md                @OWNER
+/CLAUDE.md                @OWNER
+/.claude/                 @OWNER
+/.agents/                 @OWNER
+/.githooks/               @OWNER
+
+# Workspace, tools and the dependency lock
+/package.json             @OWNER
+/pnpm-workspace.yaml      @OWNER
+/pnpm-lock.yaml           @OWNER
+/tools.toml               @OWNER
+
+# Compiler, lint and test settings
+/tsconfig.base.json       @OWNER
+/tsconfig.effect.json     @OWNER
+/vite.config.ts           @OWNER
+/apps/desktop/vite.config.ts  @OWNER
+/apps/web/vite.config.ts      @OWNER
+
+# Module shape, per-role compiler settings, lint rules; gates
+/arch/                    @OWNER
+/scripts/                 @OWNER
+
+# Verification: journeys and what they prove
+/feature-map/             @OWNER
+/apps/desktop/journeys/   @OWNER
+/packages/fixtures/       @OWNER
+# The composition roots: which real services each process wires in
+/apps/desktop/src/        @OWNER
+/apps/web/src/main.tsx    @OWNER

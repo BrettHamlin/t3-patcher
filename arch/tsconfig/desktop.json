@@ -1,0 +1,6 @@
+{
+  // Electron's main process and preload: the composition root for real services.
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": { "types": ["node"] },
+  "include": ["${configDir}/src", "${configDir}/tests"]
+}

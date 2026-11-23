@@ -1,0 +1,15 @@
+# Pinned tools, downloaded by scripts/tools.py into the tools folder and verified by SHA-256. Nothing is installed
+# globally. Packages (TypeScript checker, linter, test runner, Electron) are pinned in package.json and
+# pnpm-lock.yaml, whose integrity hashes pnpm checks on install.
+
+[node]
+version = "26.13.1"
+url = "https://nodejs.org/dist/v26.13.1/node-v26.13.1-darwin-arm64.tar.gz"
+sha256 = "aec2514ea1ceb2ba52455e9ec65986f6749a06dd759e5db2a72e6889668c9735"
+binary = "node-v26.13.1-darwin-arm64/bin/node"
+
+[pnpm]
+version = "12.14.0"
+url = "https://registry.npmjs.org/@pnpm/exe.darwin-arm64/-/exe.darwin-arm64-12.14.0.tgz"
+sha256 = "06136920c9cccad4f615bb080e054d9ac086fedfc32497bd87a892b7a4586f6f"
+binary = "package/pnpm"

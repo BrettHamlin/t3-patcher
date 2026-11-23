@@ -1,0 +1,4 @@
+{
+  // No DOM and no Node.js: files, network, timers, process and the page don't exist here.
+  "extends": "../../tsconfig.base.json"
+}

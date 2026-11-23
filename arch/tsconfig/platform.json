@@ -1,0 +1,5 @@
+{
+  // Node.js: real I/O, implementing the services features declare.
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": { "types": ["node"] }
+}
