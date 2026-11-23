@@ -57,6 +57,11 @@ export interface Screen {
   readonly close: () => Promise<void>;
 }
 
+/** The part of Electron's main-process module the visibility check uses. */
+interface MainProcess {
+  readonly BrowserWindow: { readonly getAllWindows: () => ReadonlyArray<{ readonly isVisible: () => boolean }> };
+}
+
 const find = (page: Page, id: UiId): Locator => page.getByTestId(id.value);
 
 /** Start the app on `data`, the way a user would open it. */
@@ -84,7 +89,9 @@ export const launch = async (journey: string, data: string): Promise<Screen> => 
     close: async () => {
       // Journeys run in the background (--background): a window on screen would get in the user's way.
       try {
-        const shown = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().some((window) => window.isVisible()));
+        const shown = await app.evaluate((electron: MainProcess) =>
+          electron.BrowserWindow.getAllWindows().some((window) => window.isVisible()),
+        );
         if (shown) throw new Error("a window was shown on screen; journeys must stay in the background");
       } finally {
         await app.close();
