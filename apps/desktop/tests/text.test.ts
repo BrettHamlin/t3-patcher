@@ -100,12 +100,16 @@ describe("text", () => {
 });
 
 describe("build environment", () => {
-  it("puts the checkout's node_modules/.bin before the given PATH and every cache under the folder", () => {
+  it("puts the checkout's node_modules/.bin before the given PATH, names the system compilers, and puts every cache under the folder", () => {
     expect(buildEnv("/w/build-env", "/tools/node/bin:/usr/bin:/bin").split("\n")).toEqual([
       "# Source from the checkout root. Written by `t3-patcher init`; keeps the build's caches under $BE.",
       "BE='/w/build-env'",
       `export PATH="$PWD/node_modules/.bin":'/tools/node/bin:/usr/bin:/bin'`,
       "unset pnpm_config_virtual_store_dir npm_config_virtual_store_dir",
+      "export CC=/usr/bin/cc",
+      "export CXX=/usr/bin/c++",
+      "export CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER=/usr/bin/cc",
+      "export CARGO_TARGET_X86_64_APPLE_DARWIN_LINKER=/usr/bin/cc",
       `export TMPDIR="$BE/tmp"`,
       `export XDG_CACHE_HOME="$BE/xdg-cache"`,
       `export ELECTRON_CACHE="$BE/electron-cache"`,
@@ -116,7 +120,8 @@ describe("build environment", () => {
       `export npm_config_cache="$BE/npm-cache"`,
       `export COREPACK_HOME="$BE/corepack"`,
       `export electron_config_cache="$BE/electron-cache"`,
-      `mkdir -p "$TMPDIR" "$XDG_CACHE_HOME" "$ELECTRON_CACHE" "$ELECTRON_BUILDER_CACHE" "$pnpm_config_store_dir" "$pnpm_config_cache_dir" "$CARGO_HOME" "$npm_config_cache" "$COREPACK_HOME" "$electron_config_cache"`,
+      `export PLAYWRIGHT_BROWSERS_PATH="$BE/ms-playwright"`,
+      `mkdir -p "$TMPDIR" "$XDG_CACHE_HOME" "$ELECTRON_CACHE" "$ELECTRON_BUILDER_CACHE" "$pnpm_config_store_dir" "$pnpm_config_cache_dir" "$CARGO_HOME" "$npm_config_cache" "$COREPACK_HOME" "$electron_config_cache" "$PLAYWRIGHT_BROWSERS_PATH"`,
       "",
     ]);
   });

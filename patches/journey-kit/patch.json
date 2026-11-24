@@ -1,8 +1,8 @@
 {
   "id": "journey-kit",
   "title": "Journey kit",
-  "summary": "patcher/journeys/support.mjs launches the built app for patch journeys: a throwaway HOME and T3CODE_HOME seeded with the release launch fixture, Chromium's mock keychain, no Dock icon and no window ever shown or focused (a journey fails if one is), telemetry and auto-update off, logs and screenshots into $T3_PATCHER_EVIDENCE. Every other patch's journeys use it.",
-  "version": 1,
+  "summary": "patcher/journeys/support.mjs launches the built app for patch journeys: a throwaway HOME and T3CODE_HOME seeded with the release launch fixture, Chromium's mock keychain, no Dock icon and no window ever shown or focused (a journey fails if one is), telemetry and auto-update off, logs and screenshots into $T3_PATCHER_EVIDENCE. Every other patch's journeys use it. T3's browser tests run in full headless Chromium, which draws frames on a locked Mac.",
+  "version": 2,
   "base": {
     "version": "0.1.11",
     "commit": "59651c1761f6c63e9b6056839067066968e6a406"

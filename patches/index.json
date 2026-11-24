@@ -3,13 +3,19 @@
     {
       "id": "journey-kit",
       "title": "Journey kit",
-      "summary": "patcher/journeys/support.mjs launches the built app for patch journeys: a throwaway HOME and T3CODE_HOME seeded with the release launch fixture, Chromium's mock keychain, no Dock icon and no window ever shown or focused (a journey fails if one is), telemetry and auto-update off, logs and screenshots into $T3_PATCHER_EVIDENCE. Every other patch's journeys use it.",
-      "version": 1
+      "summary": "patcher/journeys/support.mjs launches the built app for patch journeys: a throwaway HOME and T3CODE_HOME seeded with the release launch fixture, Chromium's mock keychain, no Dock icon and no window ever shown or focused (a journey fails if one is), telemetry and auto-update off, logs and screenshots into $T3_PATCHER_EVIDENCE. Every other patch's journeys use it. T3's browser tests run in full headless Chromium, which draws frames on a locked Mac.",
+      "version": 2
     },
     {
       "id": "patch-updates",
       "title": "Patch updates",
       "summary": "On a build made by T3 Patcher (with <T3 home>/userdata/patcher/installed.json), the sidebar's update pill offers newer versions of the installed patches from the patcher's feed, and new T3 Code versions, and Update runs the patcher's update command (rebuild with every patch, check, install, relaunch) instead of electron-updater, showing its steps live. T3CODE_PATCH_UPDATE_FEED overrides the feed.",
+      "version": 1
+    },
+    {
+      "id": "picks",
+      "title": "Picks",
+      "summary": "Agents ask the owner for human judgments in T3 Code itself. A new MCP tool, request_picks, takes a batch of 1-200 questions, each with 2-4 image or video options (absolute paths, copied into the attachments store) and an optional exact display box; it returns pending at once. The server shuffles each question's options and the Picks inbox (a sidebar item with the open count, and a /picks page across connected environments) shows them by place only, one question at a time, with keys 1-4, 0 for can't tell, N for a note and arrows. Each answer is saved as it is made; Done records the batch answered and wakes the asking thread with one message listing every answer unblinded, plus the same as JSON. Batches are a pick_request turn item on the asking thread, closed without a wake when the thread is stopped, settled, archived or deleted. The open-batch partial index is created idempotently at startup rather than as a numbered migration, so the patch never collides with upstream's migration ids.",
       "version": 1
     }
   ]

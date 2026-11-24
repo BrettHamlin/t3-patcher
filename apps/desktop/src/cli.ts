@@ -29,6 +29,7 @@ import {
   changeStack,
   defaultUserdata,
   installedVersion,
+  linkElectronCache,
   servicesFor,
   settingsFile,
   settingsIn,
@@ -123,6 +124,7 @@ const init = Effect.fn("init")(function* (userdata: string, home: string, line: 
     yield* fs.writeFileString(env, buildEnv(folder, yield* Config.String("PATH")));
     yield* Console.log(`build environment: wrote ${env}`);
   }
+  yield* Console.log(yield* linkElectronCache(home, path.join(folder, "electron-cache")));
   yield* Console.log("T3 Code's build also needs `cargo` on that file's PATH: add it there if it isn't.");
 });
 
