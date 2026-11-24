@@ -182,10 +182,10 @@ index 280c5ad6c6716e082df03dcae7787ee17ef7d158..e966124dfcc53bedaffc2eb85760fedc
      install: () => ipcRenderer.invoke(IpcChannels.CLI_COMMAND_INSTALL_CHANNEL),
 diff --git a/apps/desktop/src/updates/DesktopPatchUpdates.test.ts b/apps/desktop/src/updates/DesktopPatchUpdates.test.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..e5e641bbf9cc4c2ad36c2b961c24253b2b2974e2
+index 0000000000000000000000000000000000000000..94114298acea1344a29a8b4b4024443de12f56cf
 --- /dev/null
 +++ b/apps/desktop/src/updates/DesktopPatchUpdates.test.ts
-@@ -0,0 +1,668 @@
+@@ -0,0 +1,715 @@
 +import * as NodeServices from "@effect/platform-node/NodeServices";
 +import { assert, describe, it } from "@effect/vitest";
 +import type { DesktopPatchUpdateState, DesktopPatchUpdateStep } from "@t3tools/contracts";
@@ -270,6 +270,8 @@ index 0000000000000000000000000000000000000000..e5e641bbf9cc4c2ad36c2b961c24253b
 +  readonly feedGate?: Deferred.Deferred<void>;
 +  /** The patcher can't be started. */
 +  readonly launchFails?: boolean;
++  /** When given, starting the patcher waits for it. */
++  readonly launchGate?: Deferred.Deferred<void>;
 +  readonly env?: Record<string, string>;
 +}) {
 +  const files = new Map<string, string>();
@@ -328,10 +330,17 @@ index 0000000000000000000000000000000000000000..e5e641bbf9cc4c2ad36c2b961c24253b
 +                  cause: "ENOENT",
 +                }),
 +              )
-+            : Effect.sync(() => {
-+                launches.push(input);
-+                return { exited: Deferred.await(exit) };
-+              }),
++            : (options.launchGate === undefined
++                ? Effect.void
++                : Deferred.await(options.launchGate)
++              ).pipe(
++                Effect.andThen(
++                  Effect.sync(() => {
++                    launches.push(input);
++                    return { exited: Deferred.await(exit) };
++                  }),
++                ),
++              ),
 +      }),
 +    ),
 +    Layer.provide(
@@ -754,6 +763,44 @@ index 0000000000000000000000000000000000000000..e5e641bbf9cc4c2ad36c2b961c24253b
 +  );
 +
 +  it.effect(
++    "reserves the run before starting the patcher: a check in that gap neither reads the feed nor overwrites it",
++    () =>
++      Effect.gen(function* () {
++        const launchGate = yield* Deferred.make<void>();
++        const { service, fetched, launches } = yield* setup({
++          installed: installedRecord,
++          feed: () => Response.json(feedOf({ "journey-kit": 2, picks: 1 })),
++          launchGate,
++        });
++        const running = yield* Effect.forkChild(service.run({ t3Version: null }));
++        yield* Effect.yieldNow;
++        const inTheGap = withoutTime(yield* service.check("poll"));
++        const afterCheck = withoutTime(yield* service.getState);
++        yield* Deferred.succeed(launchGate, undefined);
++        const ran = yield* Fiber.join(running);
++        const updating: DesktopPatchUpdateState = { ...idle, status: "updating", logPath: LOG };
++        assert.deepStrictEqual(
++          {
++            inTheGap,
++            afterCheck,
++            ran: { accepted: ran.accepted, state: withoutTime(ran.state) },
++            now: withoutTime(yield* service.getState),
++            fetched: fetched.length,
++            launched: launches.length,
++          },
++          {
++            inTheGap: updating,
++            afterCheck: updating,
++            ran: { accepted: true, state: updating },
++            now: updating,
++            fetched: 0,
++            launched: 1,
++          },
++        );
++      }),
++  );
++
++  it.effect(
 +    "shows the end of the run's log when the patcher stops without reporting a failed step",
 +    () =>
 +      Effect.gen(function* () {
@@ -856,10 +903,10 @@ index 0000000000000000000000000000000000000000..e5e641bbf9cc4c2ad36c2b961c24253b
 +});
 diff --git a/apps/desktop/src/updates/DesktopPatchUpdates.ts b/apps/desktop/src/updates/DesktopPatchUpdates.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..352c42fbbccd07a6969893168331c61847d1e6ea
+index 0000000000000000000000000000000000000000..76a7330eac9a8eca507366fb004b5a5246541dc4
 --- /dev/null
 +++ b/apps/desktop/src/updates/DesktopPatchUpdates.ts
-@@ -0,0 +1,445 @@
+@@ -0,0 +1,465 @@
 +// Patch updates on a build made by T3 Patcher, which writes <T3 home>/userdata/patcher/installed.json. Only then
 +// are the feed's newer versions of the installed patches offered; the patcher's update rebuilds and installs the
 +// app, quitting it first and opening it again after.
@@ -1124,21 +1171,30 @@ index 0000000000000000000000000000000000000000..352c42fbbccd07a6969893168331c618
 +          status: "idle",
 +          runnable: installed.value.update !== undefined,
 +        };
-+  const stateRef = yield* Ref.make(initial);
++  // The state, and its generation: each update run starts a new one, and a check started in an earlier one is out of
++  // date when it ends. One Ref, so a run's reservation and a check's start or result are each one atomic step.
++  const core = yield* Ref.make({ state: initial, generation: 0 });
++  const getState = Ref.get(core).pipe(Effect.map(({ state }) => state));
++  const publish = (state: DesktopPatchUpdateState) =>
++    electronWindow.sendAll(IpcChannels.PATCH_UPDATE_STATE_CHANNEL, state);
 +  const setState = (state: DesktopPatchUpdateState) =>
-+    Ref.set(stateRef, state).pipe(
-+      Effect.andThen(electronWindow.sendAll(IpcChannels.PATCH_UPDATE_STATE_CHANNEL, state)),
-+    );
++    Ref.update(core, (held) => ({ ...held, state })).pipe(Effect.andThen(publish(state)));
 +  const now = DateTime.now.pipe(Effect.map(DateTime.formatIso));
-+  // Each update run starts a new generation; a check started in an earlier one is out of date when it ends.
-+  const generation = yield* Ref.make(0);
 +
 +  const check = Effect.fn("desktop.patchUpdates.check")(function* (reason: string) {
-+    const state = yield* Ref.get(stateRef);
-+    if (Option.isNone(installed) || Option.isNone(feedUrl)) return state;
-+    if (state.status === "disabled" || state.status === "updating") return state;
-+    const started = yield* Ref.get(generation);
-+    yield* setState({ ...state, status: "checking" });
++    if (Option.isNone(installed) || Option.isNone(feedUrl)) return yield* getState;
++    // Not while a run is reserved or going; otherwise "checking", in this generation.
++    const started = yield* Ref.modify(core, (held) => {
++      if (held.state.status === "disabled" || held.state.status === "updating")
++        return [undefined, held];
++      const checking: DesktopPatchUpdateState = { ...held.state, status: "checking" };
++      return [
++        { generation: held.generation, state: checking },
++        { ...held, state: checking },
++      ];
++    });
++    if (started === undefined) return yield* getState;
++    yield* publish(started.state);
 +    yield* logInfo("checking for patch updates", { reason });
 +    const fetched = yield* httpClient
 +      .get(feedUrl.value)
@@ -1149,31 +1205,37 @@ index 0000000000000000000000000000000000000000..352c42fbbccd07a6969893168331c618
 +        Effect.result,
 +      );
 +    const checkedAt = yield* now;
-+    const current = yield* Ref.get(stateRef);
-+    // An update started while the feed was read (running, or already failed or done): its state stands.
-+    if ((yield* Ref.get(generation)) !== started) return current;
-+    if (fetched._tag === "Failure") {
++    if (fetched._tag === "Failure")
 +      yield* logWarning("could not read the patch update feed", { reason });
-+      const failed: DesktopPatchUpdateState = {
++    const record = installed.value;
++    const result = (current: DesktopPatchUpdateState): DesktopPatchUpdateState => {
++      if (fetched._tag === "Failure") {
++        return {
++          ...current,
++          status: "error",
++          message: "Could not check for patch updates.",
++          errorContext: "check",
++          checkedAt,
++        };
++      }
++      const updates = patchUpdatesFrom(record, fetched.success);
++      return {
 +        ...current,
-+        status: "error",
-+        message: "Could not check for patch updates.",
-+        errorContext: "check",
++        status: updates.length > 0 ? "available" : "up-to-date",
++        updates,
++        message: null,
++        errorContext: null,
 +        checkedAt,
 +      };
-+      yield* setState(failed);
-+      return failed;
-+    }
-+    const updates = patchUpdatesFrom(installed.value, fetched.success);
-+    const next: DesktopPatchUpdateState = {
-+      ...current,
-+      status: updates.length > 0 ? "available" : "up-to-date",
-+      updates,
-+      message: null,
-+      errorContext: null,
-+      checkedAt,
 +    };
-+    yield* setState(next);
++    // Published only if no run started since this check did (reserved, going, failed or done): its state stands.
++    const next = yield* Ref.modify(core, (held) => {
++      if (held.generation !== started.generation) return [undefined, held];
++      const checked = result(held.state);
++      return [checked, { ...held, state: checked }];
++    });
++    if (next === undefined) return yield* getState;
++    yield* publish(next);
 +    return next;
 +  });
 +
@@ -1192,7 +1254,7 @@ index 0000000000000000000000000000000000000000..352c42fbbccd07a6969893168331c618
 +      const report = yield* decodeRunReport(text.value).pipe(Effect.option);
 +      if (Option.isNone(report)) return;
 +      const message = failedStepMessage(report.value.steps);
-+      const state = yield* Ref.get(stateRef);
++      const state = yield* getState;
 +      yield* setState({
 +        ...state,
 +        steps: report.value.steps,
@@ -1205,7 +1267,7 @@ index 0000000000000000000000000000000000000000..352c42fbbccd07a6969893168331c618
 +      readReport.pipe(Effect.andThen(Effect.sleep(REPORT_POLL_INTERVAL)), Effect.forever),
 +    );
 +    yield* readReport;
-+    const state = yield* Ref.get(stateRef);
++    const state = yield* getState;
 +    if (state.status !== "updating") return;
 +    if (code === 0) {
 +      yield* setState({ ...state, status: "up-to-date", updates: [], message: null });
@@ -1228,10 +1290,8 @@ index 0000000000000000000000000000000000000000..352c42fbbccd07a6969893168331c618
 +  const run = Effect.fn("desktop.patchUpdates.run")(function* (options: {
 +    readonly t3Version: string | null;
 +  }) {
-+    const state = yield* Ref.get(stateRef);
++    const state = yield* getState;
 +    if (Option.isNone(installed)) return { accepted: false, state };
-+    if (state.status === "updating") return { accepted: true, state };
-+    yield* Ref.update(generation, (count) => count + 1);
 +    const update = installed.value.update;
 +    if (update === undefined) {
 +      const refused: DesktopPatchUpdateState = {
@@ -1240,6 +1300,24 @@ index 0000000000000000000000000000000000000000..352c42fbbccd07a6969893168331c618
 +      };
 +      return { accepted: false, state: refused };
 +    }
++    // Reserve the run before any I/O, in one step: a new generation and "updating", with no steps yet. Checks are
++    // refused from here on, and one already going can't publish.
++    const updating = yield* Ref.modify(core, (held) => {
++      if (held.state.status === "updating") return [undefined, held];
++      const reserved: DesktopPatchUpdateState = {
++        ...held.state,
++        status: "updating",
++        t3Version: options.t3Version,
++        changes: null,
++        steps: [],
++        message: null,
++        errorContext: null,
++        logPath,
++      };
++      return [reserved, { state: reserved, generation: held.generation + 1 }];
++    });
++    if (updating === undefined) return { accepted: true, state: yield* getState };
++    yield* publish(updating);
 +    const before = yield* fileSystem.readFileString(reportPath).pipe(Effect.option);
 +    yield* fileSystem.makeDirectory(userdata, { recursive: true }).pipe(Effect.ignore);
 +    const launched = yield* launcher
@@ -1253,7 +1331,7 @@ index 0000000000000000000000000000000000000000..352c42fbbccd07a6969893168331c618
 +      .pipe(Effect.result);
 +    if (launched._tag === "Failure") {
 +      const failed: DesktopPatchUpdateState = {
-+        ...state,
++        ...updating,
 +        status: "error",
 +        message: launched.failure.message,
 +        errorContext: "update",
@@ -1262,17 +1340,6 @@ index 0000000000000000000000000000000000000000..352c42fbbccd07a6969893168331c618
 +      yield* setState(failed);
 +      return { accepted: false, state: failed };
 +    }
-+    const updating: DesktopPatchUpdateState = {
-+      ...state,
-+      status: "updating",
-+      t3Version: options.t3Version,
-+      changes: null,
-+      steps: [],
-+      message: null,
-+      errorContext: null,
-+      logPath,
-+    };
-+    yield* setState(updating);
 +    yield* logInfo("started the patcher's update", { t3Version: options.t3Version ?? "unchanged" });
 +    yield* follow(before, launched.success.exited).pipe(
 +      Effect.catchCause((cause) =>
@@ -1287,9 +1354,9 @@ index 0000000000000000000000000000000000000000..352c42fbbccd07a6969893168331c618
 +
 +  return DesktopPatchUpdates.of({
 +    installed,
-+    getState: Ref.get(stateRef),
++    getState,
 +    configure: Effect.gen(function* () {
-+      const state = yield* Ref.get(stateRef);
++      const state = yield* getState;
 +      if (state.status === "disabled") return;
 +      yield* Effect.sleep(STARTUP_DELAY).pipe(
 +        Effect.andThen(check("startup")),
