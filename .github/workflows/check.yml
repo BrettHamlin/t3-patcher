@@ -40,9 +40,15 @@ jobs:
       BSTACK_UPDATE_URL: ${{ vars.UPDATE_URL }}
     steps:
       - uses: actions/checkout@v7.0.1
+        with:
+          # The whole history, so the patch version check can compare with the base branch.
+          fetch-depth: 0
       - uses: actions/setup-python@v7.1.0
         with:
           python-version: "3.13"
+      - name: A patch whose content changed has a newer version than on the base branch
+        if: github.event_name == 'pull_request'
+        run: python3 scripts/check_patch_versions.py "origin/${{ github.base_ref }}"
       - name: Cache folder for tools and build output
         run: |
           mkdir -p "$RUNNER_TEMP/bstack-cache"
