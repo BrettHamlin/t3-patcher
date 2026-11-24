@@ -1,5 +1,5 @@
 import { Commit, StepFailed } from "@app/contracts";
-import { Source, type Workspace } from "@app/apply";
+import { PublishedPatches, Source, type Workspace } from "@app/apply";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -225,6 +225,70 @@ export const gitSource = (input: {
             .pipe(Effect.mapError(() => notReady))).split("\n");
           if (version === "" || sha !== (yield* head(folder))) return yield* notReady;
           return { workspace: workspace(folder, base, ready), version };
+        }),
+      };
+    }),
+  );
+
+/**
+ * The published patches in `clone`: a clone of the `origin` of the repository `source` (a patches folder) is in, at
+ * the same place in it as `source`.
+ */
+export const gitPublishedPatches = (input: {
+  readonly source: string;
+  readonly clone: string;
+}): Layer.Layer<PublishedPatches, never, ChildProcessSpawner | FileSystem.FileSystem | Path.Path> =>
+  Layer.effect(PublishedPatches)(
+    Effect.gen(function* () {
+      const spawner = yield* ChildProcessSpawner;
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const attempt = (cwd: string, args: ReadonlyArray<string>) => run(spawner, "git", args, { cwd, env: ENV });
+      const git = (cwd: string, args: ReadonlyArray<string>): Effect.Effect<string, StepFailed> =>
+        attempt(cwd, args).pipe(
+          Effect.flatMap((output) =>
+            output.code === 0
+              ? Effect.succeed(output.stdout.trim())
+              : Effect.fail(
+                  stepFailed(
+                    `git ${args[0] ?? ""} failed in ${cwd} (exit ${output.code}): ${lastLines(output.stderr === "" ? output.stdout : output.stderr, 5)}`,
+                  ),
+                ),
+          ),
+        );
+      const folder = git(input.source, ["rev-parse", "--show-prefix"]).pipe(
+        Effect.map((prefix) => path.join(input.clone, prefix)),
+        Effect.mapError(() => stepFailed(`${input.source} isn't in a git repository: updates come from its origin`)),
+      );
+      return {
+        folder,
+        sync: Effect.fn("PublishedPatches.sync")(function* (branch: string) {
+          const origin = yield* attempt(input.source, ["remote", "get-url", "origin"]);
+          if (origin.code !== 0) {
+            return yield* stepFailed(`the patches repository at ${input.source} has no origin: updates come from its origin's ${branch}`);
+          }
+          const url = origin.stdout.trim();
+          const cloned = yield* fs.exists(path.join(input.clone, ".git")).pipe(Effect.mapError(couldnt(`read ${input.clone}`)));
+          if (!cloned) {
+            yield* fs.remove(input.clone, { recursive: true, force: true }).pipe(Effect.mapError(couldnt(`remove ${input.clone}`)));
+            yield* fs.makeDirectory(path.dirname(input.clone), { recursive: true }).pipe(Effect.mapError(couldnt(`make ${input.clone}`)));
+            yield* git(path.dirname(input.clone), ["clone", "--quiet", "--branch", branch, url, input.clone]);
+            return { url, from: null, to: yield* git(input.clone, ["rev-parse", "HEAD"]), reset: false };
+          }
+          yield* git(input.clone, ["remote", "set-url", "origin", url]);
+          yield* git(input.clone, ["fetch", "--quiet", "origin", branch]);
+          const from = (yield* attempt(input.clone, ["rev-parse", "--verify", "--quiet", "HEAD"])).stdout.trim();
+          const forward = yield* attempt(input.clone, ["merge", "--ff-only", "--quiet", "FETCH_HEAD"]);
+          // It's a cache: when it can't fast-forward, is ahead of the published branch (a fast-forward "succeeds"
+          // then), or has changes, it becomes the published branch again.
+          const dirty = (yield* git(input.clone, ["status", "--porcelain"])) !== "";
+          const ahead = (yield* git(input.clone, ["rev-parse", "HEAD"])) !== (yield* git(input.clone, ["rev-parse", "FETCH_HEAD"]));
+          const reset = forward.code !== 0 || dirty || ahead;
+          if (reset) {
+            yield* git(input.clone, ["reset", "--quiet", "--hard", "FETCH_HEAD"]);
+            yield* git(input.clone, ["clean", "-ffdxq"]);
+          }
+          return { url, from: from === "" ? null : from, to: yield* git(input.clone, ["rev-parse", "HEAD"]), reset };
         }),
       };
     }),

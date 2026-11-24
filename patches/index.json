@@ -1,0 +1,16 @@
+{
+  "patches": [
+    {
+      "id": "journey-kit",
+      "title": "Journey kit",
+      "summary": "patcher/journeys/support.mjs launches the built app for patch journeys: a throwaway HOME and T3CODE_HOME seeded with the release launch fixture, Chromium's mock keychain, no Dock icon and no window ever shown or focused (a journey fails if one is), telemetry and auto-update off, logs and screenshots into $T3_PATCHER_EVIDENCE. Every other patch's journeys use it.",
+      "version": 1
+    },
+    {
+      "id": "patch-updates",
+      "title": "Patch updates",
+      "summary": "On a build made by T3 Patcher (with <T3 home>/userdata/patcher/installed.json), the sidebar's update pill offers newer versions of the installed patches from the patcher's feed, and new T3 Code versions, and Update runs the patcher's update command (rebuild with every patch, check, install, relaunch) instead of electron-updater, showing its steps live. T3CODE_PATCH_UPDATE_FEED overrides the feed.",
+      "version": 1
+    }
+  ]
+}

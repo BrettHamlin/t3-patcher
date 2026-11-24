@@ -7,12 +7,13 @@ import * as Schema from "effect/Schema";
 
 const decodeManifest = Schema.decodeUnknownEffect(PatchManifest);
 
-/** A patch named `id`, with a one-line diff naming it. */
-export const patch = (id: string): Effect.Effect<Patch> =>
+/** A patch named `id` (version 1 unless given), with a one-line diff naming it. */
+export const patch = (id: string, version = 1): Effect.Effect<Patch> =>
   decodeManifest({
     id,
     title: `Patch ${id}`,
     summary: `Changes ${id}`,
+    version,
     base: { version: "0.1.0", commit: "0".repeat(40) },
     checks: [],
     journeys: [{ name: "opens", proves: "it opens", run: "true" }],

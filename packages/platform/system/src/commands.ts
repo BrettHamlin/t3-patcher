@@ -23,7 +23,7 @@ export const commandShell = (logs: string): Layer.Layer<Shell, never, ChildProce
           const log = path.join(logs, `${fileName(command.name)}.log`);
           const result = yield* runLogged(spawner, fs, { folder, script: command.run, env, log });
           if (result.code !== 0) {
-            return yield* stepFailed(`${command.name} failed (exit ${result.code}): ${lastLines(result.output)}`);
+            return yield* stepFailed(`${command.name} failed (exit ${result.code}; log ${log}): ${lastLines(result.output)}`);
           }
         }),
       };
@@ -76,14 +76,15 @@ export const commandResolver = (input: {
           yield* fs.makeDirectory(input.logs, { recursive: true }).pipe(Effect.mapError(couldnt(`make ${input.logs}`)));
           const file = path.join(input.logs, `resolve-${patch.id}.md`);
           yield* fs.writeFileString(file, prompt(patch, files)).pipe(Effect.mapError(couldnt(`write ${file}`)));
+          const log = path.join(input.logs, `resolve-${patch.id}.log`);
           const result = yield* runLogged(spawner, fs, {
             folder: workspace,
             script: input.command,
             env: { T3_PATCHER_PROMPT: file },
-            log: path.join(input.logs, `resolve-${patch.id}.log`),
+            log,
           });
           if (result.code !== 0) {
-            return yield* stepFailed(`resolver failed (exit ${result.code}): ${lastLines(result.output)}`);
+            return yield* stepFailed(`resolver failed (exit ${result.code}; log ${log}): ${lastLines(result.output)}`);
           }
         }),
       };

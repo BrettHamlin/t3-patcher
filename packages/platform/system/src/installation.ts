@@ -1,7 +1,11 @@
 import { Installation } from "@app/apply";
+import type { StepFailed } from "@app/contracts";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
+import * as Result from "effect/Result";
 import * as Path from "effect/Path";
 import { ChildProcessSpawner } from "effect/process/ChildProcessSpawner";
 
@@ -9,10 +13,36 @@ import { couldnt, lastLines, run, stepFailed } from "./process.ts";
 
 const regex = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
-/** The installed macOS app at `installed`; replaced apps are kept in `backups`. */
+/** Whether process `pid` is running: signal 0 checks without sending; EPERM means it runs as someone else. */
+const alive = (pid: number): boolean => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error: unknown) {
+    return error instanceof Error && "code" in error && error.code === "EPERM";
+  }
+};
+
+/** Ask process `pid` to quit (SIGTERM); false if it had already gone. */
+const terminate = (pid: number): boolean => {
+  try {
+    process.kill(pid, "SIGTERM");
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * The installed macOS app at `installed`; replaced apps are kept in `backups`. An install that relaunches waits up to
+ * `quitTimeout` (default 60 seconds) for the app to quit.
+ */
 export const macInstallation = (input: {
   readonly installed: string;
   readonly backups: string;
+  readonly quitTimeout?: Duration.Input;
+  /** The command that opens the installed app again, its path appended (default `open -a`). */
+  readonly opener?: readonly [string, ...Array<string>];
 }): Layer.Layer<Installation, never, ChildProcessSpawner | FileSystem.FileSystem | Path.Path> =>
   Layer.effect(Installation)(
     Effect.gen(function* () {
@@ -65,27 +95,75 @@ export const macInstallation = (input: {
         }
       });
 
+      const executables = regex(path.join(input.installed, "Contents", "MacOS") + "/");
+      const running = run(spawner, "pgrep", ["-f", executables]).pipe(Effect.map((output) => output.code === 0));
+      const timeout = Duration.fromInputUnsafe(input.quitTimeout ?? "60 seconds");
+
+      /** SIGTERM to `pid`, then wait until it and every process running the app's executables have exited. */
+      const quit = Effect.fn("Installation.quit")(function* (pid: number) {
+        terminate(pid);
+        const gone = yield* Effect.gen(function* () {
+          while (alive(pid) || (yield* running)) yield* Effect.sleep("200 millis");
+        }).pipe(Effect.timeoutOption(timeout));
+        if (Option.isNone(gone)) return yield* stepFailed(`${name} didn't quit within ${Duration.format(timeout)}`);
+      });
+
+      const [opener, ...openArgs] = input.opener ?? ["open", "-a"];
+      const reopen = run(spawner, opener, [...openArgs, input.installed]).pipe(
+        Effect.flatMap((output) =>
+          output.code === 0
+            ? Effect.void
+            : Effect.fail(stepFailed(`couldn't open ${input.installed}: ${lastLines(output.stderr, 5)}`)),
+        ),
+      );
+
+      const swap = Effect.fn("Installation.swap")(function* (built: string) {
+        if (yield* running) return yield* stepFailed(`quit ${name} first`);
+        const backup = yield* backupPath;
+        yield* move(input.installed, backup);
+        yield* ditto(built, input.installed).pipe(
+          Effect.tapError(() =>
+            fs.remove(input.installed, { recursive: true, force: true }).pipe(
+              Effect.ignore,
+              Effect.andThen(move(backup, input.installed).pipe(Effect.ignore)),
+            ),
+          ),
+        );
+        return backup;
+      });
+
       return {
         version,
-        install: Effect.fn("Installation.install")(function* (built: string, expected: string) {
+        install: Effect.fn("Installation.install")(function* (
+          built: string,
+          expected: string,
+          options: { readonly relaunch?: number; readonly installed?: Effect.Effect<void, StepFailed> } = {},
+        ) {
           const installedVersion = yield* version;
           if (installedVersion !== expected) {
             return yield* stepFailed(`${name} is now ${installedVersion}, not ${expected}: apply again`);
           }
-          const running = yield* run(spawner, "pgrep", ["-f", regex(path.join(input.installed, "Contents", "MacOS") + "/")]);
-          if (running.code === 0) return yield* stepFailed(`quit ${name} first`);
           if (!(yield* exists(built))) return yield* stepFailed(`no built app at ${built}`);
-          const backup = yield* backupPath;
-          yield* move(input.installed, backup);
-          yield* ditto(built, input.installed).pipe(
-            Effect.tapError(() =>
-              fs.remove(input.installed, { recursive: true, force: true }).pipe(
-                Effect.ignore,
-                Effect.andThen(move(backup, input.installed).pipe(Effect.ignore)),
-              ),
-            ),
+          const recorded = (options.installed ?? Effect.void).pipe(
+            Effect.mapError((failure) => stepFailed(`installed, but couldn't record the install: ${failure.reason}`)),
           );
-          return `installed; the previous app is at ${backup}`;
+          const relaunch = options.relaunch;
+          if (relaunch === undefined) {
+            const backup = yield* swap(built);
+            yield* recorded;
+            return `installed; the previous app is at ${backup}`;
+          }
+          yield* quit(relaunch);
+          // The new app reads the install's record when it opens, so the record comes first. Whatever happens to the
+          // swap or the record, the app (new, or the old one put back) opens again.
+          const backup = yield* swap(built).pipe(
+            Effect.tap(() => recorded),
+            Effect.tapError(() => reopen.pipe(Effect.ignore)),
+          );
+          const reopened = yield* reopen.pipe(Effect.result);
+          return Result.isSuccess(reopened)
+            ? `installed and reopened; the previous app is at ${backup}`
+            : `installed, but ${reopened.failure.reason}; the previous app is at ${backup}`;
         }),
       };
     }),

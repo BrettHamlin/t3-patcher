@@ -9,7 +9,8 @@ Gates:
   arch      the package graph against the module shape (arch/shape.json), config files, suppression comments
   settings  the enforcement settings in effect (compiler, Effect diagnostics, lint, tests, workspace, CODEOWNERS)
             match arch/settings.json (scripts/settings.py)
-  tests     every unit and property test (vp test, the `unit` project); a skipped or todo test fails
+  tests     every unit and property test (vp test, the `unit` project); a skipped or todo test fails; and the
+            scripts' own tests (scripts/test_*.py, unittest)
   verify    the feature map is complete, and every journey passes against the built app (scripts/verify.py)
 
 Before the gates, the locked packages are installed (pnpm install --frozen-lockfile) if anything changed. Each gate's
@@ -82,7 +83,8 @@ def tests(env: dict) -> tuple[bool, str]:
     if skipped:
         return False, '\n'.join([output, '[tests-always-run] every test runs; these didn\'t:', *skipped,
                                  'If a test can\'t pass, fix the code or the test, or stop and report.'])
-    return ok, output
+    scripts_ok, scripts_output = run([sys.executable, '-m', 'unittest', 'discover', '-s', 'scripts', '-p', 'test_*.py'], env)
+    return ok and scripts_ok, '\n'.join([output, scripts_output])
 
 
 def gate(name: str, env: dict) -> tuple[bool, str]:

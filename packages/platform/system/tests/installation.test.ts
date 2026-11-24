@@ -7,6 +7,7 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
+import * as Ref from "effect/Ref";
 import * as ChildProcess from "effect/process/ChildProcess";
 import { ChildProcessSpawner } from "effect/process/ChildProcessSpawner";
 
@@ -120,4 +121,182 @@ describe("macInstallation", () => {
       );
       expect([yield* marker(installed), yield* exists(backups)]).toEqual(["0.1.12", false]);
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)));
+
+  it.live("with relaunch, quits the running app, replaces it, records the install, then opens it, in that order", () =>
+    Effect.gen(function* () {
+      const { root, installed, backups, built, marker, join } = yield* setup;
+      const events = join(root, "events.txt");
+      yield* launchable(installed, "0.1.11", join(root, "opened.txt"));
+      const installation = yield* Installation.useSync((service) => service).pipe(
+        Effect.provide(
+          macInstallation({
+            installed,
+            backups,
+            quitTimeout: "10 seconds",
+            opener: ["/bin/sh", "-c", `echo "opened $1" >> '${events}'`, "sh"],
+          }).pipe(Layer.provide(NodeServices.layer)),
+        ),
+      );
+      const running = yield* stay(installed);
+      // At the record: whether the old app still runs, and which app is in place.
+      const record = Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const line = `recorded: running ${yield* running.isRunning}, installed ${yield* marker(installed)}\n`;
+        yield* fs.writeFileString(events, line, { flag: "a" });
+      }).pipe(Effect.orDie, Effect.provide(NodeServices.layer));
+      const note = yield* installation.install(built, "0.1.11", { relaunch: running.pid, installed: record });
+      expect([note, yield* read(events), yield* marker(join(backups, "T3 Code-0.1.11-1.app"))]).toEqual([
+        `installed and reopened; the previous app is at ${join(backups, "T3 Code-0.1.11-1.app")}`,
+        `recorded: running false, installed 0.1.12\nopened ${installed}\n`,
+        "0.1.11",
+      ]);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)));
+
+  it.live("with relaunch, keeps the install and its record when the app can't be opened again, and says so", () =>
+    Effect.gen(function* () {
+      const { root, installed, backups, built, marker, join } = yield* setup;
+      const opened = join(root, "opened.txt");
+      yield* launchable(installed, "0.1.11", opened);
+      const installation = yield* Installation.useSync((service) => service).pipe(
+        Effect.provide(
+          macInstallation({ installed, backups, quitTimeout: "10 seconds", opener: ["/bin/sh", "-c", "echo no display >&2; exit 1", "sh"] }).pipe(
+            Layer.provide(NodeServices.layer),
+          ),
+        ),
+      );
+      const running = yield* stay(installed);
+      const recorded = yield* Ref.make(false);
+      const note = yield* installation.install(built, "0.1.11", { relaunch: running.pid, installed: Ref.set(recorded, true) });
+      expect([note, yield* Ref.get(recorded), yield* marker(installed)]).toEqual([
+        `installed, but couldn't open ${installed}: no display; the previous app is at ${join(backups, "T3 Code-0.1.11-1.app")}`,
+        true,
+        "0.1.12",
+      ]);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)));
+
+  it.live("records the install right after replacing the app, and says when the record can't be saved", () =>
+    Effect.gen(function* () {
+      const { installed, backups, built, installation, marker, join } = yield* setup;
+      const atRecord = yield* Ref.make("");
+      const note = yield* installation.install(built, "0.1.11", {
+        installed: marker(installed).pipe(
+          Effect.flatMap((found) => Ref.set(atRecord, found)),
+          Effect.provide(NodeServices.layer),
+        ),
+      });
+      yield* fakeApp(built, "0.1.13");
+      const failed = yield* Effect.flip(
+        installation.install(built, "0.1.12", { installed: Effect.fail(new StepFailed({ reason: "disk full" })) }),
+      );
+      expect([note, yield* Ref.get(atRecord), failed, yield* marker(installed)]).toEqual([
+        `installed; the previous app is at ${join(backups, "T3 Code-0.1.11-1.app")}`,
+        "0.1.12",
+        new StepFailed({ reason: "installed, but couldn't record the install: disk full" }),
+        "0.1.13",
+      ]);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)));
+
+  it.live("with relaunch, fails changing nothing when the app doesn't quit in time", () =>
+    Effect.gen(function* () {
+      const { root, installed, backups, built, marker, join } = yield* setup;
+      const opened = join(root, "opened.txt");
+      yield* launchable(installed, "0.1.11", opened);
+      // Should this ever reach the reopen, it must not ask LaunchServices to open a stand-in (it could show a dialog).
+      const installation = yield* Installation.useSync((service) => service).pipe(
+        Effect.provide(
+          macInstallation({ installed, backups, quitTimeout: "1 second", opener: ["/usr/bin/true"] }).pipe(
+            Layer.provide(NodeServices.layer),
+          ),
+        ),
+      );
+      const stubborn = yield* stay(installed, "ignore");
+      expect(yield* Effect.flip(installation.install(built, "0.1.11", { relaunch: stubborn.pid }))).toEqual(
+        new StepFailed({ reason: "T3 Code didn't quit within 1s" }),
+      );
+      expect([yield* stubborn.isRunning, yield* marker(installed), yield* exists(backups), yield* exists(opened)]).toEqual([
+        true,
+        "0.1.11",
+        false,
+        false,
+      ]);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)));
 });
+
+/**
+ * A stand-in app that can be opened: a background-only bundle (no window or Dock icon) whose executable, opened with
+ * no arguments, appends its version to `opened`; with `stay`, it runs until it's sent SIGTERM (or, with `ignore`, it
+ * ignores SIGTERM and quits by itself after 2 seconds).
+ */
+const launchable = (app: string, version: string, opened: string) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    yield* write(
+      path.join(app, "Contents", "Info.plist"),
+      [
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
+        '<plist version="1.0">',
+        "<dict>",
+        "  <key>CFBundleIdentifier</key>",
+        `  <string>dev.t3-patcher.test.${path.basename(path.dirname(path.dirname(app)))}.${version.replaceAll(".", "-")}</string>`,
+        "  <key>CFBundleExecutable</key>",
+        "  <string>x</string>",
+        "  <key>CFBundlePackageType</key>",
+        "  <string>APPL</string>",
+        "  <key>LSBackgroundOnly</key>",
+        "  <true/>",
+        "  <key>CFBundleShortVersionString</key>",
+        `  <string>${version}</string>`,
+        "</dict>",
+        "</plist>",
+        "",
+      ].join("\n"),
+    );
+    yield* write(path.join(app, "Contents", "Resources", "marker"), version);
+    const executable = path.join(app, "Contents", "MacOS", "x");
+    yield* write(
+      executable,
+      [
+        "#!/bin/sh",
+        'if [ "$1" = stay ]; then',
+        '  if [ "$2" = ignore ]; then trap "" TERM; : > "$READY"; sleep 2; exit 0; fi',
+        '  trap "exit 0" TERM',
+        '  : > "$READY"',
+        "  while :; do sleep 0.1; done",
+        "fi",
+        `echo ${version} >> '${opened}'`,
+        "",
+      ].join("\n"),
+    );
+    yield* fs.chmod(executable, 0o755);
+  }).pipe(Effect.orDie);
+
+/** The installed stand-in running from its executable until the test's scope closes, once its traps are set. */
+const stay = (app: string, mode: "quit" | "ignore" = "quit") =>
+  Effect.gen(function* () {
+    const spawner = yield* ChildProcessSpawner;
+    const path = yield* Path.Path;
+    // In the test's own folder (<root>/Applications/<app>), so no other test or run has made it already.
+    const ready = `${path.dirname(path.dirname(app))}/ready-${mode}`;
+    const handle = yield* spawner.spawn(
+      ChildProcess.make(path.join(app, "Contents", "MacOS", "x"), ["stay", mode], {
+        stdin: "ignore",
+        env: { READY: ready },
+        extendEnv: true,
+      }),
+    );
+    yield* waitFor(ready);
+    return handle;
+  });
+
+/** `file`'s content once it exists, waiting up to 10 seconds; "(never)" if it doesn't appear. */
+const waitFor = (file: string) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    for (let tries = 0; tries < 100; tries += 1) {
+      if (yield* fs.exists(file)) return yield* fs.readFileString(file);
+      yield* Effect.sleep("100 millis");
+    }
+    return "(never)";
+  }).pipe(Effect.orDie);

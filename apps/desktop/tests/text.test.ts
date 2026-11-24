@@ -3,7 +3,7 @@ import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vite-plus/test";
 
 import { defaultUserdata, userdataFolder } from "../src/services.ts";
-import { buildEnv, outcome, parse, stackLines, stepLine } from "../src/text.ts";
+import { buildEnv, outcome, parse, stackLines, stepLine, updatingLine } from "../src/text.ts";
 
 const id = Schema.decodeSync(PatchId);
 
@@ -11,6 +11,7 @@ const manifest = (name: string, title: string): PatchManifest => ({
   id: id(name),
   title,
   summary: "s",
+  version: 1,
   base: { version: "1.0.0", commit: Schema.decodeSync(Commit)("0".repeat(40)) },
   checks: [],
   journeys: [{ name: "j", proves: "p", run: "true" }],
@@ -41,6 +42,34 @@ describe("command line", () => {
 });
 
 describe("text", () => {
+  it("says what an update changes", () => {
+    expect([
+      updatingLine([
+        { name: "T3 Code", from: "0.1.11", to: "0.1.12" },
+        { name: "picks", from: "1", to: "2" },
+        { name: "notes", from: "", to: "3" },
+        { name: "old", from: "2", to: "removed" },
+      ]),
+      updatingLine([]),
+    ]).toEqual([
+      "updating: T3 Code 0.1.11 → 0.1.12, picks 1 → 2, notes added, version 3, old 2 → removed",
+      "updating: nothing new (rebuilding)",
+    ]);
+  });
+
+  it("reads --t3 and --relaunch as valued options", () => {
+    const line = parse(["update", "--t3", "0.1.12", "--relaunch", "42", "--userdata", "/u"]);
+    expect({ words: line.words, options: [...line.options], flags: [...line.flags] }).toEqual({
+      words: ["update"],
+      options: [
+        ["t3", "0.1.12"],
+        ["relaunch", "42"],
+        ["userdata", "/u"],
+      ],
+      flags: [],
+    });
+  });
+
   it("lists the stack in order with on/off and titles", () => {
     const view: LibraryView = {
       stack: { entries: [{ id: id("bb"), enabled: true }, { id: id("aa"), enabled: false }] },

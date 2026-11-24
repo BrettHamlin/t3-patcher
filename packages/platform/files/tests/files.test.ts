@@ -1,16 +1,29 @@
-import { PatchManifest, StepFailed, StorageFailed, type Patch, type RunReport, type Stack } from "@app/contracts";
+import {
+  FEED_URL,
+  PatchManifest,
+  StepFailed,
+  StorageFailed,
+  type InstalledRecord,
+  type Patch,
+  type RunReport,
+  type Stack,
+} from "@app/contracts";
 import { PatchWriter } from "@app/apply";
 import {
   defaultSettings,
+  feedText,
   fileLibrary,
   filePatchWriter,
   fileStackStore,
+  loadInstalled,
   loadReport,
   loadSettings,
+  saveFeed,
+  saveInstalled,
   saveReport,
   saveSettings,
 } from "@app/files";
-import { Library, StackStore } from "@app/stack";
+import { feedIndex, Library, StackStore } from "@app/stack";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
@@ -49,6 +62,18 @@ const writePatch = (folder: string, patch: Patch) =>
     yield* (yield* PatchWriter).write(patch);
   }).pipe(Effect.provide(filePatchWriter(folder)));
 
+/** patch.json for patch a, with `version` (none when undefined). */
+const manifestWith = (version: unknown): string =>
+  JSON.stringify({
+    id: "a",
+    title: "Patch a",
+    summary: "Changes a",
+    ...(version === undefined ? {} : { version }),
+    base: { version: "0.1.0", commit: "a".repeat(40) },
+    checks: [],
+    journeys: [{ name: "opens", proves: "it opens", run: "true" }],
+  });
+
 describe("patches", () => {
   it.effect("round-trip through the writer and the library, sorted by id, ignoring folders without patch.json", () =>
     Effect.gen(function* () {
@@ -67,6 +92,7 @@ describe("patches", () => {
             id: "a",
             title: "Patch a",
             summary: "Changes a",
+            version: 1,
             base: { version: "0.1.0", commit: "a".repeat(40) },
             checks: [{ name: "types", run: "bun typecheck" }],
             journeys: [{ name: "opens", proves: "it opens", run: "true" }],
@@ -76,6 +102,24 @@ describe("patches", () => {
         )}\n`,
       );
       expect((yield* fs.readDirectory(at("patches", "a"))).toSorted()).toEqual(["changes.patch", "patch.json"]);
+    }).pipe(Effect.provide(NodeServices.layer)));
+
+  it.effect("a patch.json without a version is version 1, and a version that isn't a whole number from 1 fails", () =>
+    Effect.gen(function* () {
+      const { fs, at } = yield* temporary;
+      yield* fs.makeDirectory(at("a"));
+      yield* fs.writeFileString(at("a", "changes.patch"), "diff a\n");
+      const loaded = [];
+      for (const version of [undefined, 7, 0, 1.5, "2"]) {
+        yield* fs.writeFileString(at("a", "patch.json"), manifestWith(version));
+        loaded.push(
+          yield* patches(at()).pipe(
+            Effect.map((found) => found.map((each) => each.manifest.version)),
+            Effect.catchTag("StorageFailed", (failed) => Effect.succeed(failed.what)),
+          ),
+        );
+      }
+      expect(loaded).toEqual([[1], [7], "patch a", "patch a", "patch a"]);
     }).pipe(Effect.provide(NodeServices.layer)));
 
   it.effect("a missing folder is an empty library", () =>
@@ -113,6 +157,68 @@ describe("patches", () => {
           reason: `couldn't save patch a: BadResource: FileSystem.makeDirectory (${at("blocked", "a")})`,
         }),
       );
+    }).pipe(Effect.provide(NodeServices.layer)));
+});
+
+describe("feed", () => {
+  it.effect("is written to <folder>/index.json, sorted by id", () =>
+    Effect.gen(function* () {
+      const { fs, at } = yield* temporary;
+      const b = { manifest: { ...(yield* manifest("b")), version: 2 }, diff: "" };
+      const a = { manifest: yield* manifest("a"), diff: "" };
+      const file = yield* saveFeed(at("patches"), feedIndex([b, a]));
+      expect([file, yield* fs.readFileString(file)]).toEqual([
+        at("patches", "index.json"),
+        `${JSON.stringify(
+          {
+            patches: [
+              { id: "a", title: "Patch a", summary: "Changes a", version: 1 },
+              { id: "b", title: "Patch b", summary: "Changes b", version: 2 },
+            ],
+          },
+          null,
+          2,
+        )}\n`,
+      ]);
+      expect(yield* patches(at("patches"))).toEqual([]);
+    }).pipe(Effect.provide(NodeServices.layer)));
+
+  it.effect("committed in patches/index.json, matches the patches folder (run `python3 scripts/patcher.py index`)", () =>
+    Effect.gen(function* () {
+      const { fs } = yield* temporary;
+      const folder = (yield* Path.Path).join(import.meta.dirname, "../../../../patches");
+      const expected = yield* feedText(feedIndex(yield* patches(folder)));
+      expect(yield* fs.readFileString(`${folder}/index.json`)).toEqual(expected);
+    }).pipe(Effect.provide(NodeServices.layer)));
+});
+
+describe("installed record", () => {
+  it.effect("round-trips; missing is none; malformed fails", () =>
+    Effect.gen(function* () {
+      const { fs, at } = yield* temporary;
+      const record: InstalledRecord = {
+        t3Version: "0.1.11",
+        patches: [{ id: (yield* manifest("a")).id, version: 2 }],
+        installedAt: "2026-11-24T10:00:00.000Z",
+        feed: FEED_URL,
+        update: {
+          command: ["/usr/bin/python3", "/repo/scripts/patcher.py", "update"],
+          cwd: "/repo",
+          path: "/opt/homebrew/bin:/usr/bin:/bin",
+        },
+      };
+      const missing = yield* loadInstalled(at("user"));
+      yield* saveInstalled(at("user"), record);
+      const loaded = yield* loadInstalled(at("user"));
+      const text = yield* fs.readFileString(at("user", "installed.json"));
+      yield* fs.writeFileString(at("user", "installed.json"), '{"t3Version":"0.1.11"}');
+      const malformed = yield* Effect.flip(loadInstalled(at("user")));
+      expect([missing, loaded, text, malformed]).toEqual([
+        Option.none(),
+        Option.some(record),
+        `${JSON.stringify(record, null, 2)}\n`,
+        new StorageFailed({ what: "the installed record" }),
+      ]);
     }).pipe(Effect.provide(NodeServices.layer)));
 });
 

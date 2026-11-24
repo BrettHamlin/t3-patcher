@@ -8,10 +8,17 @@ export interface InstallationShape {
   /** The installed version, e.g. "0.1.11". */
   readonly version: Effect.Effect<string, StepFailed>;
   /**
-   * Replace the installed app with the built one at `built`, keeping a backup. Fails if the app is running, or if
-   * the installed version is no longer `version` (the one the build was made from).
+   * Replace the installed app with the built one at `built`, keeping a backup, then run `options.installed` (which
+   * records the install). Fails if the installed version is no longer `installed` (the one read when the run
+   * started), or if the app is running. With `options.relaunch`, the app's process with that pid is asked to quit
+   * first, and the installed app is opened again after the install is recorded; failing to open it is reported in
+   * the note, but the install and its record stay.
    */
-  readonly install: (built: string, version: string) => Effect.Effect<string, StepFailed>;
+  readonly install: (
+    built: string,
+    installed: string,
+    options?: { readonly relaunch?: number; readonly installed?: Effect.Effect<void, StepFailed> },
+  ) => Effect.Effect<string, StepFailed>;
 }
 export class Installation extends Context.Service<Installation, InstallationShape>()("@app/apply/services/Installation") {}
 
@@ -75,6 +82,34 @@ export interface PatchWriterShape {
   readonly write: (patch: Patch) => Effect.Effect<void, StepFailed>;
 }
 export class PatchWriter extends Context.Service<PatchWriter, PatchWriterShape>()("@app/apply/services/PatchWriter") {}
+
+/** What a sync of the published patches did. */
+export interface Synced {
+  /** Where the published repository was cloned from: the patches repository's `origin`. */
+  readonly url: string;
+  /** The clone's commit before, or null when this sync made the clone. */
+  readonly from: string | null;
+  readonly to: string;
+  /** Whether the clone couldn't fast-forward and was reset to the published branch. */
+  readonly reset: boolean;
+}
+
+/**
+ * The published patches: a clone, kept by the patcher and edited by nothing else, of the patches repository's
+ * `origin`. Updates use it, so the repository authors work in (on any branch, with any changes) never holds them up.
+ */
+export interface PublishedPatchesShape {
+  /** The patches folder in the clone (it may not exist yet). */
+  readonly folder: Effect.Effect<string, StepFailed>;
+  /**
+   * Bring the clone to `origin`'s `branch`: clone it the first time, then fetch and fast-forward, or reset when it
+   * can't fast-forward. Fails if the patches repository has no `origin`, or it can't be reached.
+   */
+  readonly sync: (branch: string) => Effect.Effect<Synced, StepFailed>;
+}
+export class PublishedPatches extends Context.Service<PublishedPatches, PublishedPatchesShape>()(
+  "@app/apply/services/PublishedPatches",
+) {}
 
 /** Hears about a run as it goes: called with the whole report after every change. */
 export interface ProgressShape {

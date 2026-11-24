@@ -1,4 +1,6 @@
 import {
+  Feed,
+  InstalledRecord,
   PatchManifest,
   RunReport,
   Settings,
@@ -35,6 +37,8 @@ const manifestJson = jsonFile(PatchManifest);
 const stackJson = jsonFile(Stack);
 const settingsJson = jsonFile(Settings);
 const reportJson = jsonFile(RunReport);
+const feedJson = jsonFile(Feed);
+const installedJson = jsonFile(InstalledRecord);
 
 const io = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
@@ -157,6 +161,40 @@ export const saveReport = (
   Effect.gen(function* () {
     const { path, save } = yield* io;
     yield* save(path.join(userdata, "last-run.json"), reportJson, report, "the last run");
+  });
+
+/** The feed's text, as `saveFeed` writes it to patches/index.json. */
+export const feedText = (feed: Feed): Effect.Effect<string, StorageFailed> =>
+  feedJson.encode(feed).pipe(Effect.mapError(() => new StorageFailed({ what: "the feed" })));
+
+/** Write `<folder>/index.json`, the feed of the patches in `folder`; returns its path. */
+export const saveFeed = (
+  folder: string,
+  feed: Feed,
+): Effect.Effect<string, StorageFailed, FileSystem.FileSystem | Path.Path> =>
+  Effect.gen(function* () {
+    const { path, save } = yield* io;
+    const file = path.join(folder, "index.json");
+    yield* save(file, feedJson, feed, "the feed");
+    return file;
+  });
+
+/** The record of the last install, `<userdata>/installed.json`; none before the first. */
+export const loadInstalled = (
+  userdata: string,
+): Effect.Effect<Option.Option<InstalledRecord>, StorageFailed, FileSystem.FileSystem | Path.Path> =>
+  Effect.gen(function* () {
+    const { path, load } = yield* io;
+    return yield* load(path.join(userdata, "installed.json"), installedJson, "the installed record");
+  });
+
+export const saveInstalled = (
+  userdata: string,
+  record: InstalledRecord,
+): Effect.Effect<void, StorageFailed, FileSystem.FileSystem | Path.Path> =>
+  Effect.gen(function* () {
+    const { path, save } = yield* io;
+    yield* save(path.join(userdata, "installed.json"), installedJson, record, "the installed record");
   });
 
 export const defaultSettings = (input: { readonly patches: string; readonly work: string }): Settings => ({

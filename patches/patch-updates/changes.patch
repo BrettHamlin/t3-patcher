@@ -1,0 +1,3559 @@
+diff --git a/apps/desktop/src/app/DesktopApp.test.ts b/apps/desktop/src/app/DesktopApp.test.ts
+index cc5fca3f42ab43cbecca59413a0c0283670da5d5..ff0e5213951088a425bc3cd2665c1f68dccf15c7 100644
+--- a/apps/desktop/src/app/DesktopApp.test.ts
++++ b/apps/desktop/src/app/DesktopApp.test.ts
+@@ -47,6 +47,7 @@ import * as DesktopAppSettings from "../settings/DesktopAppSettings.ts";
+ import * as DesktopShellEnvironment from "../shell/DesktopShellEnvironment.ts";
+ import * as DesktopSnapShot from "../snapShot/DesktopSnapShot.ts";
+ import * as DesktopRendererHistory from "../telemetry/DesktopRendererHistory.ts";
++import * as DesktopPatchUpdates from "../updates/DesktopPatchUpdates.ts";
+ import * as DesktopUpdates from "../updates/DesktopUpdates.ts";
+ import * as DesktopApplicationMenu from "../window/DesktopApplicationMenu.ts";
+ import * as DesktopWindow from "../window/DesktopWindow.ts";
+@@ -151,6 +152,9 @@ const runStubbedDesktop = (stub: StubbedDesktop) =>
+         Effect.provideService(DesktopUpdates.DesktopUpdates, {
+           configure: Effect.void,
+         } as unknown as DesktopUpdates.DesktopUpdates["Service"]),
++        Effect.provideService(DesktopPatchUpdates.DesktopPatchUpdates, {
++          configure: Effect.void,
++        } as unknown as DesktopPatchUpdates.DesktopPatchUpdates["Service"]),
+         Effect.provideService(DesktopLinuxUrlHandler.DesktopLinuxUrlHandler, {
+           register: stub.registerLinuxUrlHandler,
+         }),
+diff --git a/apps/desktop/src/app/DesktopConfig.ts b/apps/desktop/src/app/DesktopConfig.ts
+index ef2909045bb4f68019e1572d38f78ffc6e7de8e5..99843dcf575d5272dbb17105138026d521cf052e 100644
+--- a/apps/desktop/src/app/DesktopConfig.ts
++++ b/apps/desktop/src/app/DesktopConfig.ts
+@@ -59,6 +59,8 @@ export const DesktopConfig = Config.all({
+   appImagePath: trimmedString("APPIMAGE"),
+   disableAutoUpdate: optionalBoolean("T3CODE_DISABLE_AUTO_UPDATE"),
+   mockUpdates: optionalBoolean("T3CODE_DESKTOP_MOCK_UPDATES"),
++  /** Replaces the patch update feed of a patched build's installed record (tests and journeys). */
++  patchUpdateFeed: trimmedString("T3CODE_PATCH_UPDATE_FEED"),
+   mockUpdateServerPort: Config.Port("T3CODE_DESKTOP_MOCK_UPDATE_SERVER_PORT").pipe(
+     Config.withDefault(3000),
+   ),
+diff --git a/apps/desktop/src/ipc/DesktopIpcHandlers.ts b/apps/desktop/src/ipc/DesktopIpcHandlers.ts
+index fe65edd0ee1e9b9bbff7bd8cc4bbdf7fdd9ccf3a..2fbe601c09bceae93bc6f32f616207b70f987622 100644
+--- a/apps/desktop/src/ipc/DesktopIpcHandlers.ts
++++ b/apps/desktop/src/ipc/DesktopIpcHandlers.ts
+@@ -34,6 +34,7 @@ import {
+   installUpdate,
+   setUpdateChannel,
+ } from "./methods/updates.ts";
++import { getPatchUpdateState, runPatchUpdate } from "./methods/patchUpdates.ts";
+ import {
+   getAppBranding,
+   getLocalEnvironmentBootstraps,
+@@ -170,6 +171,8 @@ export const installDesktopIpcHandlers = Effect.fn("desktop.ipc.installHandlers"
+   yield* ipc.handle(downloadUpdate);
+   yield* ipc.handle(installUpdate);
+   yield* ipc.handle(checkForUpdate);
++  yield* ipc.handle(getPatchUpdateState);
++  yield* ipc.handle(runPatchUpdate);
+   yield* ipc.handle(getCliCommandState);
+   yield* ipc.handle(installCliCommand);
+   yield* ipc.handle(uninstallCliCommand);
+diff --git a/apps/desktop/src/ipc/channels.ts b/apps/desktop/src/ipc/channels.ts
+index 4a99d52b0e79dc62da23705379b5cd90c22511c5..5e5c3cd7c8e9fd35c833ab9bde291461b5593f0b 100644
+--- a/apps/desktop/src/ipc/channels.ts
++++ b/apps/desktop/src/ipc/channels.ts
+@@ -30,6 +30,9 @@ export const UPDATE_SET_CHANNEL_CHANNEL = "desktop:update-set-channel";
+ export const UPDATE_DOWNLOAD_CHANNEL = "desktop:update-download";
+ export const UPDATE_INSTALL_CHANNEL = "desktop:update-install";
+ export const UPDATE_CHECK_CHANNEL = "desktop:update-check";
++export const PATCH_UPDATE_STATE_CHANNEL = "desktop:patch-update-state";
++export const PATCH_UPDATE_GET_STATE_CHANNEL = "desktop:patch-update-get-state";
++export const PATCH_UPDATE_RUN_CHANNEL = "desktop:patch-update-run";
+ export const CLI_COMMAND_GET_STATE_CHANNEL = "desktop:cli-command-get-state";
+ export const CLI_COMMAND_INSTALL_CHANNEL = "desktop:cli-command-install";
+ export const CLI_COMMAND_UNINSTALL_CHANNEL = "desktop:cli-command-uninstall";
+diff --git a/apps/desktop/src/ipc/methods/patchUpdates.ts b/apps/desktop/src/ipc/methods/patchUpdates.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..627b092fea4f1949dbfbb20d75e12f78ef95e7cb
+--- /dev/null
++++ b/apps/desktop/src/ipc/methods/patchUpdates.ts
+@@ -0,0 +1,36 @@
++import {
++  DesktopPatchUpdateActionResultSchema,
++  DesktopPatchUpdateStateSchema,
++} from "@t3tools/contracts";
++import * as Effect from "effect/Effect";
++import * as Schema from "effect/Schema";
++
++import * as DesktopPatchUpdates from "../../updates/DesktopPatchUpdates.ts";
++import * as DesktopUpdates from "../../updates/DesktopUpdates.ts";
++import * as IpcChannels from "../channels.ts";
++import * as DesktopIpc from "../DesktopIpc.ts";
++
++export const getPatchUpdateState = DesktopIpc.makeIpcMethod({
++  channel: IpcChannels.PATCH_UPDATE_GET_STATE_CHANNEL,
++  payload: Schema.Void,
++  result: DesktopPatchUpdateStateSchema,
++  handler: Effect.fn("desktop.ipc.patchUpdates.getState")(function* () {
++    const patchUpdates = yield* DesktopPatchUpdates.DesktopPatchUpdates;
++    return yield* patchUpdates.getState;
++  }),
++});
++
++/** Every patch update, with the T3 Code update the app's own check offers, if any. */
++export const runPatchUpdate = DesktopIpc.makeIpcMethod({
++  channel: IpcChannels.PATCH_UPDATE_RUN_CHANNEL,
++  payload: Schema.Void,
++  result: DesktopPatchUpdateActionResultSchema,
++  handler: Effect.fn("desktop.ipc.patchUpdates.run")(function* () {
++    const patchUpdates = yield* DesktopPatchUpdates.DesktopPatchUpdates;
++    const app = yield* (yield* DesktopUpdates.DesktopUpdates).getState;
++    const offered = app.status === "available" || app.status === "downloaded";
++    return yield* patchUpdates.run({
++      t3Version: offered ? (app.downloadedVersion ?? app.availableVersion) : null,
++    });
++  }),
++});
+diff --git a/apps/desktop/src/ipc/methods/updates.ts b/apps/desktop/src/ipc/methods/updates.ts
+index ca85ee8b0c417ba11a532becf9344c74c66132ef..ceb302c2ef06c0127194446ec0d0ae5f4e2f641a 100644
+--- a/apps/desktop/src/ipc/methods/updates.ts
++++ b/apps/desktop/src/ipc/methods/updates.ts
+@@ -7,6 +7,7 @@ import {
+ import * as Effect from "effect/Effect";
+ import * as Schema from "effect/Schema";
+ 
++import * as DesktopPatchUpdates from "../../updates/DesktopPatchUpdates.ts";
+ import * as DesktopUpdates from "../../updates/DesktopUpdates.ts";
+ import * as IpcChannels from "../channels.ts";
+ import * as DesktopIpc from "../DesktopIpc.ts";
+@@ -63,6 +64,10 @@ export const checkForUpdate = DesktopIpc.makeIpcMethod({
+   result: DesktopUpdateCheckResultSchema,
+   handler: Effect.fn("desktop.ipc.updates.check")(function* () {
+     const updates = yield* DesktopUpdates.DesktopUpdates;
+-    return yield* updates.check("web-ui");
++    const patchUpdates = yield* DesktopPatchUpdates.DesktopPatchUpdates;
++    const [result] = yield* Effect.all([updates.check("web-ui"), patchUpdates.check("web-ui")], {
++      concurrency: "unbounded",
++    });
++    return result;
+   }),
+ });
+diff --git a/apps/desktop/src/main.ts b/apps/desktop/src/main.ts
+index 9c79b66d06ad978c03cab38d163fbc2e0cd79abe..a1e6661f7db58f48d72ff95b9c47f5cfcd58179d 100644
+--- a/apps/desktop/src/main.ts
++++ b/apps/desktop/src/main.ts
+@@ -68,6 +68,7 @@ import * as DesktopLegacyLocalStorage from "./app/DesktopLegacyLocalStorage.ts";
+ import * as DesktopTelemetryPublisher from "./telemetry/DesktopTelemetryPublisher.ts";
+ import * as DesktopRendererHistory from "./telemetry/DesktopRendererHistory.ts";
+ import * as DesktopUpdatePolicy from "./updates/DesktopUpdatePolicy.ts";
++import * as DesktopPatchUpdates from "./updates/DesktopPatchUpdates.ts";
+ import * as DesktopUpdates from "./updates/DesktopUpdates.ts";
+ import * as BrowserImport from "./preview/BrowserImport/BrowserImport.ts";
+ import * as LinuxBrowserSecret from "./preview/BrowserImport/LinuxBrowserSecret.ts";
+@@ -222,6 +223,9 @@ const layerDesktopApplication = Layer.mergeAll(
+       Layer.provide(DesktopUpdatePolicy.layer),
+       // The same layer as the foundation's, so the policy is still read once.
+       Layer.provide(DesktopManagedPolicy.layer),
++      Layer.provideMerge(
++        DesktopPatchUpdates.layer.pipe(Layer.provide(DesktopPatchUpdates.layerPatcherLauncher)),
++      ),
+     ),
+   ),
+   // Updates closes the same tunnels the SSH IPC opens before quitAndInstall.
+diff --git a/apps/desktop/src/preload.ts b/apps/desktop/src/preload.ts
+index 280c5ad6c6716e082df03dcae7787ee17ef7d158..e966124dfcc53bedaffc2eb85760fedc2d63f6cf 100644
+--- a/apps/desktop/src/preload.ts
++++ b/apps/desktop/src/preload.ts
+@@ -330,6 +330,19 @@ contextBridge.exposeInMainWorld("desktopBridge", {
+   downloadUpdate: () => ipcRenderer.invoke(IpcChannels.UPDATE_DOWNLOAD_CHANNEL),
+   installUpdate: (expectedVersion) =>
+     ipcRenderer.invoke(IpcChannels.UPDATE_INSTALL_CHANNEL, expectedVersion),
++  getPatchUpdateState: () => ipcRenderer.invoke(IpcChannels.PATCH_UPDATE_GET_STATE_CHANNEL),
++  runPatchUpdate: () => ipcRenderer.invoke(IpcChannels.PATCH_UPDATE_RUN_CHANNEL),
++  onPatchUpdateState: (listener) => {
++    const wrappedListener = (_event: Electron.IpcRendererEvent, state: unknown) => {
++      if (typeof state !== "object" || state === null) return;
++      listener(state as Parameters<typeof listener>[0]);
++    };
++
++    ipcRenderer.on(IpcChannels.PATCH_UPDATE_STATE_CHANNEL, wrappedListener);
++    return () => {
++      ipcRenderer.removeListener(IpcChannels.PATCH_UPDATE_STATE_CHANNEL, wrappedListener);
++    };
++  },
+   cliCommand: {
+     getState: () => ipcRenderer.invoke(IpcChannels.CLI_COMMAND_GET_STATE_CHANNEL),
+     install: () => ipcRenderer.invoke(IpcChannels.CLI_COMMAND_INSTALL_CHANNEL),
+diff --git a/apps/desktop/src/updates/DesktopPatchUpdates.test.ts b/apps/desktop/src/updates/DesktopPatchUpdates.test.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..94114298acea1344a29a8b4b4024443de12f56cf
+--- /dev/null
++++ b/apps/desktop/src/updates/DesktopPatchUpdates.test.ts
+@@ -0,0 +1,715 @@
++import * as NodeServices from "@effect/platform-node/NodeServices";
++import { assert, describe, it } from "@effect/vitest";
++import type { DesktopPatchUpdateState, DesktopPatchUpdateStep } from "@t3tools/contracts";
++import * as Deferred from "effect/Deferred";
++import * as Effect from "effect/Effect";
++import * as Fiber from "effect/Fiber";
++import * as FileSystem from "effect/FileSystem";
++import * as Layer from "effect/Layer";
++import * as Option from "effect/Option";
++import * as PlatformError from "effect/PlatformError";
++import * as HttpClient from "effect/http/HttpClient";
++import * as HttpClientResponse from "effect/http/HttpClientResponse";
++import * as TestClock from "effect/testing/TestClock";
++
++import * as DesktopConfig from "../app/DesktopConfig.ts";
++import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
++import * as ElectronWindow from "../electron/ElectronWindow.ts";
++import * as DesktopPatchUpdates from "./DesktopPatchUpdates.ts";
++
++const FEED = "https://raw.githubusercontent.com/BrettHamlin/t3-patcher/main/patches/index.json";
++const HOME = "/t3-home";
++const USERDATA = `${HOME}/userdata/patcher`;
++const REPORT = `${USERDATA}/last-run.json`;
++const LOG = `${USERDATA}/update.log`;
++
++const installedRecord: DesktopPatchUpdates.InstalledRecord = {
++  t3Version: "0.1.11",
++  patches: [
++    { id: "journey-kit", version: 1 },
++    { id: "picks", version: 1 },
++  ],
++  installedAt: "2026-11-24T10:00:00.000Z",
++  feed: FEED,
++  update: {
++    command: [
++      "/opt/homebrew/bin/python3",
++      "/repo/scripts/patcher.py",
++      "update",
++      "--userdata",
++      "/u",
++    ],
++    cwd: "/repo",
++    path: "/repo/node_modules/.bin:/opt/homebrew/bin:/usr/bin:/bin",
++  },
++};
++
++const feedOf = (versions: Record<string, number>) => ({
++  patches: Object.entries(versions).map(([id, version]) => ({
++    id,
++    title: `Title ${id}`,
++    summary: `Summary ${id}`,
++    version,
++  })),
++});
++
++interface Launch {
++  readonly command: string;
++  readonly args: ReadonlyArray<string>;
++  readonly cwd: string;
++  readonly path: string;
++  readonly log: string;
++}
++
++const idle: DesktopPatchUpdateState = {
++  status: "idle",
++  updates: [],
++  runnable: true,
++  t3Version: null,
++  changes: null,
++  steps: [],
++  message: null,
++  errorContext: null,
++  logPath: null,
++  checkedAt: null,
++};
++
++/** A T3 home in memory, with `installed` as the patcher's record, and fakes for the feed and the launch. */
++const setup = Effect.fn("setup")(function* (options: {
++  readonly installed?: DesktopPatchUpdates.InstalledRecord;
++  readonly feed?: () => Response;
++  /** When given, reading the feed waits for it. */
++  readonly feedGate?: Deferred.Deferred<void>;
++  /** The patcher can't be started. */
++  readonly launchFails?: boolean;
++  /** When given, starting the patcher waits for it. */
++  readonly launchGate?: Deferred.Deferred<void>;
++  readonly env?: Record<string, string>;
++}) {
++  const files = new Map<string, string>();
++  if (options.installed !== undefined) {
++    files.set(`${USERDATA}/installed.json`, JSON.stringify(options.installed));
++  }
++  const fetched: string[] = [];
++  const launches: Launch[] = [];
++  const sent: DesktopPatchUpdateState[] = [];
++  const exit = yield* Deferred.make<number>();
++  const env = { T3CODE_HOME: HOME, ...options.env };
++  const layer = DesktopPatchUpdates.layer.pipe(
++    Layer.provide(
++      FileSystem.layerNoop({
++        readFileString: (path) => {
++          const text = files.get(path);
++          return text === undefined
++            ? Effect.fail(
++                PlatformError.systemError({
++                  module: "FileSystem",
++                  method: "readFileString",
++                  _tag: "NotFound",
++                  pathOrDescriptor: path,
++                }),
++              )
++            : Effect.succeed(text);
++        },
++        makeDirectory: () => Effect.void,
++      }),
++    ),
++    Layer.provide(
++      Layer.succeed(
++        HttpClient.HttpClient,
++        HttpClient.make((request) =>
++          (options.feedGate === undefined ? Effect.void : Deferred.await(options.feedGate)).pipe(
++            Effect.andThen(
++              Effect.sync(() => {
++                fetched.push(request.url);
++                return HttpClientResponse.fromWeb(
++                  request,
++                  options.feed?.() ?? Response.json(feedOf({ "journey-kit": 1, picks: 1 })),
++                );
++              }),
++            ),
++          ),
++        ),
++      ),
++    ),
++    Layer.provide(
++      Layer.succeed(DesktopPatchUpdates.PatcherLauncher, {
++        launch: (input) =>
++          options.launchFails === true
++            ? Effect.fail(
++                new DesktopPatchUpdates.PatcherLaunchError({
++                  command: input.command,
++                  cause: "ENOENT",
++                }),
++              )
++            : (options.launchGate === undefined
++                ? Effect.void
++                : Deferred.await(options.launchGate)
++              ).pipe(
++                Effect.andThen(
++                  Effect.sync(() => {
++                    launches.push(input);
++                    return { exited: Deferred.await(exit) };
++                  }),
++                ),
++              ),
++      }),
++    ),
++    Layer.provide(
++      Layer.mock(ElectronWindow.ElectronWindow, {
++        sendAll: (_channel, state) =>
++          Effect.sync(() => {
++            sent.push(state as DesktopPatchUpdateState);
++          }),
++      }),
++    ),
++    Layer.provide(
++      DesktopEnvironment.layer({
++        dirname: "/repo/apps/desktop/src",
++        homeDirectory: HOME,
++        platform: "darwin",
++        processArch: "arm64",
++        appVersion: "0.1.11",
++        appPath: "/repo",
++        isPackaged: true,
++        resourcesPath: "/missing/resources",
++        runningUnderArm64Translation: false,
++      }).pipe(Layer.provide(Layer.mergeAll(NodeServices.layer, DesktopConfig.layerTest(env)))),
++    ),
++    Layer.provide(DesktopConfig.layerTest(env)),
++  );
++  const service = yield* DesktopPatchUpdates.DesktopPatchUpdates.pipe(Effect.provide(layer));
++  const writeReport = (report: unknown) => files.set(REPORT, JSON.stringify(report));
++  const writeLog = (text: string) => files.set(LOG, text);
++  /** Lets the report follower read once more, and run what that wakes. */
++  const poll = TestClock.adjust("500 millis").pipe(Effect.andThen(Effect.yieldNow));
++  return { service, fetched, launches, sent, exit, writeReport, writeLog, poll };
++});
++
++const withoutTime = (state: DesktopPatchUpdateState): DesktopPatchUpdateState => ({
++  ...state,
++  checkedAt: null,
++});
++
++const step = (
++  kind: string,
++  name: string,
++  status: DesktopPatchUpdateStep["status"],
++  note = "",
++): DesktopPatchUpdateStep => ({
++  kind,
++  name,
++  status,
++  note,
++});
++
++describe("DesktopPatchUpdates", () => {
++  it.effect("is off on a build the patcher didn't install: no record, nothing checked or run", () =>
++    Effect.gen(function* () {
++      const { service, fetched, launches } = yield* setup({});
++      const checked = yield* service.check("web-ui");
++      const ran = yield* service.run({ t3Version: "0.1.12" });
++      assert.deepStrictEqual(
++        { installed: service.installed, checked, ran: ran.accepted, fetched, launches },
++        {
++          installed: Option.none(),
++          checked: { ...idle, status: "disabled", runnable: false },
++          ran: false,
++          fetched: [],
++          launches: [],
++        },
++      );
++    }),
++  );
++
++  it.effect("offers the feed's newer versions of installed patches only", () =>
++    Effect.gen(function* () {
++      const { service, fetched, sent } = yield* setup({
++        installed: installedRecord,
++        feed: () => Response.json(feedOf({ "journey-kit": 1, picks: 2, "not-installed": 5 })),
++      });
++      const checked = yield* service.check("web-ui");
++      const offered: DesktopPatchUpdateState = {
++        ...idle,
++        status: "available",
++        updates: [{ id: "picks", title: "Title picks", installedVersion: 1, availableVersion: 2 }],
++      };
++      assert.deepStrictEqual(
++        {
++          installed: service.installed,
++          checked: withoutTime(checked),
++          sent: sent.map(withoutTime),
++          fetched,
++        },
++        {
++          installed: Option.some(installedRecord),
++          checked: offered,
++          sent: [{ ...idle, status: "checking" }, offered],
++          fetched: [FEED],
++        },
++      );
++      assert.isTrue(checked.checkedAt !== null && !Number.isNaN(Date.parse(checked.checkedAt)));
++    }),
++  );
++
++  it.effect(
++    "is up to date when the feed has no newer versions, and reads the feed the env names",
++    () =>
++      Effect.gen(function* () {
++        const { service, fetched } = yield* setup({
++          installed: installedRecord,
++          env: { T3CODE_PATCH_UPDATE_FEED: "http://127.0.0.1:9/index.json" },
++        });
++        const checked = yield* service.check("web-ui");
++        assert.deepStrictEqual(
++          { checked: withoutTime(checked), fetched },
++          {
++            checked: { ...idle, status: "up-to-date" },
++            fetched: ["http://127.0.0.1:9/index.json"],
++          },
++        );
++      }),
++  );
++
++  it.effect("shows a feed that fails or isn't a feed as a quiet check error", () =>
++    Effect.gen(function* () {
++      const failing = yield* setup({
++        installed: installedRecord,
++        feed: () => new Response("nope", { status: 500 }),
++      });
++      const malformed = yield* setup({
++        installed: installedRecord,
++        feed: () => Response.json({ patches: "no" }),
++      });
++      const checkError: DesktopPatchUpdateState = {
++        ...idle,
++        status: "error",
++        message: "Could not check for patch updates.",
++        errorContext: "check",
++      };
++      assert.deepStrictEqual(
++        [
++          withoutTime(yield* failing.service.check("web-ui")),
++          withoutTime(yield* malformed.service.check("web-ui")),
++        ],
++        [checkError, checkError],
++      );
++    }),
++  );
++
++  it.effect("checks 15 seconds after start, then every 4 hours", () =>
++    Effect.gen(function* () {
++      const { service, fetched } = yield* setup({ installed: installedRecord });
++      yield* service.configure;
++      const counts = [fetched.length];
++      yield* TestClock.adjust("15 seconds");
++      counts.push(fetched.length);
++      yield* TestClock.adjust("4 hours");
++      counts.push(fetched.length);
++      assert.deepStrictEqual(counts, [0, 1, 2]);
++    }).pipe(Effect.scoped),
++  );
++
++  it.effect("stays off when auto-update checks are disabled", () =>
++    Effect.gen(function* () {
++      const { service, fetched } = yield* setup({
++        installed: installedRecord,
++        env: { T3CODE_DISABLE_AUTO_UPDATE: "true" },
++      });
++      yield* service.configure;
++      yield* TestClock.adjust("15 seconds");
++      assert.deepStrictEqual(
++        { state: yield* service.getState, fetched },
++        {
++          state: {
++            ...idle,
++            status: "disabled",
++            runnable: false,
++            message: "Patch updates are disabled by the T3CODE_DISABLE_AUTO_UPDATE setting.",
++          },
++          fetched: [],
++        },
++      );
++    }).pipe(Effect.scoped),
++  );
++
++  it.effect(
++    "runs the record's update command with the T3 version and its pid, and shows the report's steps until it passes",
++    () =>
++      Effect.gen(function* () {
++        const { service, launches, exit, writeReport, poll } = yield* setup({
++          installed: installedRecord,
++          feed: () => Response.json(feedOf({ "journey-kit": 2, picks: 1 })),
++        });
++        writeReport({ version: "0.1.10", install: true, steps: [step("source", "old", "passed")] });
++        yield* service.check("web-ui");
++        const ran = yield* service.run({ t3Version: "0.1.12" });
++        const again = yield* service.run({ t3Version: null });
++        const updates = [
++          {
++            id: "journey-kit",
++            title: "Title journey-kit",
++            installedVersion: 1,
++            availableVersion: 2,
++          },
++        ];
++        const updating: DesktopPatchUpdateState = {
++          ...idle,
++          status: "updating",
++          updates,
++          t3Version: "0.1.12",
++          logPath: LOG,
++        };
++        assert.deepStrictEqual(
++          { ran: { ...ran, state: withoutTime(ran.state) }, again: again.accepted, launches },
++          {
++            ran: { accepted: true, state: updating },
++            again: true,
++            launches: [
++              {
++                command: "/opt/homebrew/bin/python3",
++                args: [
++                  "/repo/scripts/patcher.py",
++                  "update",
++                  "--userdata",
++                  "/u",
++                  "--t3",
++                  "0.1.12",
++                  "--relaunch",
++                  String(process.pid),
++                ],
++                cwd: "/repo",
++                path: "/repo/node_modules/.bin:/opt/homebrew/bin:/usr/bin:/bin",
++                log: LOG,
++              },
++            ],
++          },
++        );
++
++        // The report left by an earlier run isn't this one's.
++        yield* poll;
++        yield* poll;
++        const unchanged = withoutTime(yield* service.getState);
++        const running = [
++          step("pull", "patches", "passed", "abc → def"),
++          step("build", "app", "running"),
++        ];
++        writeReport({ version: "0.1.12", install: true, steps: running });
++        yield* poll;
++        const following = withoutTime(yield* service.getState);
++        const done = [step("pull", "patches", "passed"), step("install", "install", "passed")];
++        writeReport({ version: "0.1.12", install: true, steps: done });
++        yield* Deferred.succeed(exit, 0);
++        yield* Effect.yieldNow;
++        assert.deepStrictEqual(
++          { unchanged, following, finished: withoutTime(yield* service.getState) },
++          {
++            unchanged: updating,
++            following: { ...updating, steps: running },
++            finished: { ...updating, status: "up-to-date", updates: [], steps: done },
++          },
++        );
++      }),
++  );
++
++  it.effect("shows the failed step and the log when the update fails", () =>
++    Effect.gen(function* () {
++      const { service, launches, exit, writeReport, poll } = yield* setup({
++        installed: installedRecord,
++      });
++      yield* service.run({ t3Version: null });
++      const steps = [
++        step("pull", "patches", "passed"),
++        step("build", "app", "failed", "app failed (exit 1; log /w/logs/app.log): boom"),
++        step("install", "install", "skipped"),
++      ];
++      writeReport({ version: "0.1.11", install: true, steps });
++      yield* poll;
++      const failed = withoutTime(yield* service.getState);
++      yield* Deferred.succeed(exit, 1);
++      yield* Effect.yieldNow;
++      const shown: DesktopPatchUpdateState = {
++        ...idle,
++        status: "error",
++        steps,
++        message: "failed at app: app failed (exit 1; log /w/logs/app.log): boom",
++        errorContext: "update",
++        logPath: LOG,
++      };
++      assert.deepStrictEqual(
++        {
++          failed,
++          afterExit: withoutTime(yield* service.getState),
++          args: launches.map((launch) => launch.args),
++        },
++        {
++          failed: shown,
++          afterExit: shown,
++          args: [
++            [
++              "/repo/scripts/patcher.py",
++              "update",
++              "--userdata",
++              "/u",
++              "--relaunch",
++              String(process.pid),
++            ],
++          ],
++        },
++      );
++    }),
++  );
++
++  it.effect("says the patcher stopped when it exits before reporting a result", () =>
++    Effect.gen(function* () {
++      const { service, exit } = yield* setup({ installed: installedRecord });
++      yield* service.run({ t3Version: null });
++      yield* Deferred.succeed(exit, 2);
++      yield* Effect.yieldNow;
++      assert.deepStrictEqual(withoutTime(yield* service.getState), {
++        ...idle,
++        status: "error",
++        message: "T3 Patcher stopped (exit 2) before finishing.",
++        errorContext: "update",
++        logPath: LOG,
++      });
++    }),
++  );
++});
++
++describe("DesktopPatchUpdates while an update runs", () => {
++  it.effect(
++    "shows what the run itself updates, from its report, removals included, not the earlier offer",
++    () =>
++      Effect.gen(function* () {
++        const { service, writeReport, poll } = yield* setup({
++          installed: installedRecord,
++          feed: () => Response.json(feedOf({ "journey-kit": 2, picks: 1 })),
++        });
++        yield* service.check("web-ui");
++        yield* service.run({ t3Version: null });
++        const changes = [
++          { name: "journey-kit", from: "1", to: "3" },
++          { name: "picks", from: "1", to: "removed" },
++        ];
++        writeReport({
++          version: "0.1.11",
++          install: true,
++          updating: changes,
++          steps: [step("pull", "patches", "passed"), step("build", "app", "running")],
++        });
++        yield* poll;
++        const state = withoutTime(yield* service.getState);
++        assert.deepStrictEqual(
++          {
++            status: state.status,
++            changes: state.changes,
++            offered: state.updates.map((each) => each.availableVersion),
++          },
++          { status: "updating", changes, offered: [2] },
++        );
++      }),
++  );
++
++  it.effect("drops a feed check that finishes during the run, and starts none while it runs", () =>
++    Effect.gen(function* () {
++      const gate = yield* Deferred.make<void>();
++      const { service, fetched } = yield* setup({
++        installed: installedRecord,
++        feed: () => Response.json(feedOf({ "journey-kit": 2, picks: 1 })),
++        feedGate: gate,
++      });
++      const started = yield* Effect.forkChild(service.check("poll"));
++      yield* Effect.yieldNow;
++      const ran = yield* service.run({ t3Version: null });
++      yield* Deferred.succeed(gate, undefined);
++      const finished = withoutTime(yield* Fiber.join(started));
++      const again = withoutTime(yield* service.check("web-ui"));
++      const updating: DesktopPatchUpdateState = { ...idle, status: "updating", logPath: LOG };
++      assert.deepStrictEqual(
++        {
++          ran: withoutTime(ran.state),
++          finished,
++          again,
++          now: withoutTime(yield* service.getState),
++          fetched: fetched.length,
++        },
++        { ran: updating, finished: updating, again: updating, now: updating, fetched: 1 },
++      );
++    }),
++  );
++
++  it.effect(
++    "keeps a quick failure: a feed check from before the run that ends after it changes nothing",
++    () =>
++      Effect.gen(function* () {
++        const gate = yield* Deferred.make<void>();
++        const { service, fetched } = yield* setup({
++          installed: installedRecord,
++          feed: () => Response.json(feedOf({ "journey-kit": 2, picks: 1 })),
++          feedGate: gate,
++          launchFails: true,
++        });
++        const started = yield* Effect.forkChild(service.check("poll"));
++        yield* Effect.yieldNow;
++        const ran = yield* service.run({ t3Version: null });
++        yield* Deferred.succeed(gate, undefined);
++        yield* Fiber.join(started);
++        const failed: DesktopPatchUpdateState = {
++          ...idle,
++          status: "error",
++          message: "Could not start T3 Patcher (/opt/homebrew/bin/python3).",
++          errorContext: "update",
++          logPath: LOG,
++        };
++        assert.deepStrictEqual(
++          {
++            accepted: ran.accepted,
++            ran: withoutTime(ran.state),
++            now: withoutTime(yield* service.getState),
++            fetched: fetched.length,
++          },
++          { accepted: false, ran: failed, now: failed, fetched: 1 },
++        );
++      }),
++  );
++
++  it.effect(
++    "reserves the run before starting the patcher: a check in that gap neither reads the feed nor overwrites it",
++    () =>
++      Effect.gen(function* () {
++        const launchGate = yield* Deferred.make<void>();
++        const { service, fetched, launches } = yield* setup({
++          installed: installedRecord,
++          feed: () => Response.json(feedOf({ "journey-kit": 2, picks: 1 })),
++          launchGate,
++        });
++        const running = yield* Effect.forkChild(service.run({ t3Version: null }));
++        yield* Effect.yieldNow;
++        const inTheGap = withoutTime(yield* service.check("poll"));
++        const afterCheck = withoutTime(yield* service.getState);
++        yield* Deferred.succeed(launchGate, undefined);
++        const ran = yield* Fiber.join(running);
++        const updating: DesktopPatchUpdateState = { ...idle, status: "updating", logPath: LOG };
++        assert.deepStrictEqual(
++          {
++            inTheGap,
++            afterCheck,
++            ran: { accepted: ran.accepted, state: withoutTime(ran.state) },
++            now: withoutTime(yield* service.getState),
++            fetched: fetched.length,
++            launched: launches.length,
++          },
++          {
++            inTheGap: updating,
++            afterCheck: updating,
++            ran: { accepted: true, state: updating },
++            now: updating,
++            fetched: 0,
++            launched: 1,
++          },
++        );
++      }),
++  );
++
++  it.effect(
++    "shows the end of the run's log when the patcher stops without reporting a failed step",
++    () =>
++      Effect.gen(function* () {
++        const { service, exit, writeLog } = yield* setup({ installed: installedRecord });
++        yield* service.run({ t3Version: null });
++        writeLog(
++          [
++            "one",
++            "two",
++            "three",
++            "",
++            "four",
++            "five",
++            "t3-patcher: the cache folder /Volumes/MicroBay/Downloads/b-stack-cache isn't available",
++            "",
++          ].join("\n"),
++        );
++        yield* Deferred.succeed(exit, 1);
++        yield* Effect.yieldNow;
++        assert.deepStrictEqual(withoutTime(yield* service.getState), {
++          ...idle,
++          status: "error",
++          message: [
++            "T3 Patcher stopped (exit 1) before finishing: two",
++            "three",
++            "four",
++            "five",
++            "t3-patcher: the cache folder /Volumes/MicroBay/Downloads/b-stack-cache isn't available",
++          ].join("\n"),
++          errorContext: "update",
++          logPath: LOG,
++        });
++      }),
++  );
++});
++
++describe("DesktopPatchUpdates without an update command", () => {
++  it.effect(
++    "isn't runnable: Update is refused with the command to run, and nothing is started",
++    () =>
++      Effect.gen(function* () {
++        const { update: _update, ...withoutCommand } = installedRecord;
++        const { service, launches } = yield* setup({
++          installed: withoutCommand,
++          feed: () => Response.json(feedOf({ "journey-kit": 2, picks: 1 })),
++        });
++        const checked = withoutTime(yield* service.check("web-ui"));
++        const ran = yield* service.run({ t3Version: "0.1.12" });
++        assert.deepStrictEqual(
++          {
++            runnable: checked.runnable,
++            status: checked.status,
++            accepted: ran.accepted,
++            message: ran.state.message,
++            launches,
++          },
++          {
++            runnable: false,
++            status: "available",
++            accepted: false,
++            message: `This build updates from the command line: ${DesktopPatchUpdates.COMMAND_LINE_UPDATE}`,
++            launches: [],
++          },
++        );
++      }),
++  );
++});
++
++describe("layerPatcherLauncher", () => {
++  it.live(
++    "runs the command in its folder with the recorded PATH, appending its output to the log",
++    () =>
++      Effect.gen(function* () {
++        const fileSystem = yield* FileSystem.FileSystem;
++        const root = yield* fileSystem.realPath(
++          yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-patcher-launch-" }),
++        );
++        const log = `${root}/update.log`;
++        yield* fileSystem.writeFileString(log, "earlier\n");
++        const launcher = yield* DesktopPatchUpdates.PatcherLauncher.pipe(
++          Effect.provide(DesktopPatchUpdates.layerPatcherLauncher),
++        );
++        const launched = yield* launcher.launch({
++          command: "/bin/sh",
++          args: ["-c", 'printf "%s|%s|%s\\n" "$PATH" "$(pwd -P)" "$1"', "sh", "--relaunch"],
++          cwd: root,
++          path: "/patcher/tools:/opt/homebrew/bin:/usr/bin:/bin",
++          log,
++        });
++        const code = yield* launched.exited;
++        assert.deepStrictEqual(
++          { code, log: yield* fileSystem.readFileString(log) },
++          {
++            code: 0,
++            log: `earlier\n/patcher/tools:/opt/homebrew/bin:/usr/bin:/bin|${root}|--relaunch\n`,
++          },
++        );
++      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
++  );
++});
+diff --git a/apps/desktop/src/updates/DesktopPatchUpdates.ts b/apps/desktop/src/updates/DesktopPatchUpdates.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..76a7330eac9a8eca507366fb004b5a5246541dc4
+--- /dev/null
++++ b/apps/desktop/src/updates/DesktopPatchUpdates.ts
+@@ -0,0 +1,465 @@
++// Patch updates on a build made by T3 Patcher, which writes <T3 home>/userdata/patcher/installed.json. Only then
++// are the feed's newer versions of the installed patches offered; the patcher's update rebuilds and installs the
++// app, quitting it first and opening it again after.
++import type {
++  DesktopPatchUpdateItem,
++  DesktopPatchUpdateState,
++  DesktopPatchUpdateStep,
++} from "@t3tools/contracts";
++import { DesktopPatchUpdateChangeSchema, DesktopPatchUpdateStepSchema } from "@t3tools/contracts";
++import * as Cause from "effect/Cause";
++import * as Context from "effect/Context";
++import * as DateTime from "effect/DateTime";
++import * as Effect from "effect/Effect";
++import * as FileSystem from "effect/FileSystem";
++import * as Layer from "effect/Layer";
++import * as Option from "effect/Option";
++import * as Ref from "effect/Ref";
++import * as Schema from "effect/Schema";
++import * as Scope from "effect/Scope";
++import * as HttpClient from "effect/http/HttpClient";
++import * as HttpClientResponse from "effect/http/HttpClientResponse";
++import { ChildProcess, ChildProcessSpawner } from "effect/process";
++
++import * as DesktopConfig from "../app/DesktopConfig.ts";
++import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
++import * as DesktopObservability from "../app/DesktopObservability.ts";
++import * as ElectronWindow from "../electron/ElectronWindow.ts";
++import * as IpcChannels from "../ipc/channels.ts";
++
++const STARTUP_DELAY = "15 seconds";
++const POLL_INTERVAL = "4 hours";
++const FEED_TIMEOUT = "20 seconds";
++const REPORT_POLL_INTERVAL = "500 millis";
++
++/** <T3 home>/userdata/patcher/installed.json, as the patcher writes it. */
++export const InstalledRecord = Schema.Struct({
++  t3Version: Schema.String,
++  patches: Schema.Array(Schema.Struct({ id: Schema.String, version: Schema.Number })),
++  installedAt: Schema.String,
++  feed: Schema.String,
++  /** Missing when the patcher was installed without a command to update it: update from the command line. */
++  update: Schema.optionalKey(
++    Schema.Struct({
++      command: Schema.NonEmptyArray(Schema.String),
++      cwd: Schema.String,
++      /** The PATH the patcher ran with, which the command runs with. */
++      path: Schema.String,
++    }),
++  ),
++});
++export type InstalledRecord = typeof InstalledRecord.Type;
++
++/** patches/index.json on the patcher's main branch. */
++export const PatchFeed = Schema.Struct({
++  patches: Schema.Array(
++    Schema.Struct({
++      id: Schema.String,
++      title: Schema.String,
++      summary: Schema.String,
++      version: Schema.Number,
++    }),
++  ),
++});
++export type PatchFeed = typeof PatchFeed.Type;
++
++/** <userdata>/last-run.json: the patcher's report of its run, rewritten as each step changes. */
++const RunReport = Schema.Struct({
++  version: Schema.String,
++  install: Schema.Boolean,
++  updating: Schema.optionalKey(Schema.Array(DesktopPatchUpdateChangeSchema)),
++  steps: Schema.Array(DesktopPatchUpdateStepSchema),
++});
++const decodeInstalledRecord = Schema.decodeUnknownEffect(Schema.fromJsonString(InstalledRecord));
++const decodeRunReport = Schema.decodeUnknownEffect(Schema.fromJsonString(RunReport));
++
++export class PatcherLaunchError extends Schema.TaggedError<PatcherLaunchError>()(
++  "PatcherLaunchError",
++  { command: Schema.String, cause: Schema.Defect() },
++) {
++  override get message(): string {
++    return `Could not start T3 Patcher (${this.command}).`;
++  }
++}
++
++/** Starts the patcher's update so it outlives this app: the patcher quits the app before replacing it. */
++export class PatcherLauncher extends Context.Service<
++  PatcherLauncher,
++  {
++    /**
++     * Starts `command` with `args` in `cwd` and `path` as its PATH, its output appended to `log`; `exited` waits for
++     * its exit code.
++     */
++    readonly launch: (input: {
++      readonly command: string;
++      readonly args: ReadonlyArray<string>;
++      readonly cwd: string;
++      readonly path: string;
++      readonly log: string;
++    }) => Effect.Effect<{ readonly exited: Effect.Effect<number> }, PatcherLaunchError>;
++  }
++>()("@t3tools/desktop/updates/DesktopPatchUpdates/PatcherLauncher") {}
++
++/**
++ * A detached process in its own scope that nothing closes, so the app's shutdown never kills it. `/bin/sh` appends
++ * its output to the log and execs it.
++ */
++export const layerPatcherLauncher = Layer.effect(
++  PatcherLauncher,
++  Effect.gen(function* () {
++    const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
++    return PatcherLauncher.of({
++      launch: Effect.fn("desktop.patchUpdates.launch")(function* (input) {
++        const outliving = yield* Scope.make();
++        const handle = yield* spawner
++          .spawn(
++            ChildProcess.make(
++              "/bin/sh",
++              [
++                "-c",
++                'log=$1; shift; exec "$@" >>"$log" 2>&1',
++                "sh",
++                input.log,
++                input.command,
++                ...input.args,
++              ],
++              {
++                cwd: input.cwd,
++                // The PATH the patcher ran with: this app's own (from Finder, /usr/bin:/bin) lacks its tools.
++                env: { PATH: input.path },
++                extendEnv: true,
++                detached: true,
++                stdin: "ignore",
++                stdout: "ignore",
++                stderr: "ignore",
++              },
++            ),
++          )
++          .pipe(
++            Scope.provide(outliving),
++            Effect.mapError((cause) => new PatcherLaunchError({ command: input.command, cause })),
++          );
++        return { exited: handle.exitCode.pipe(Effect.orElseSucceed(() => -1)) };
++      }),
++    });
++  }),
++);
++
++export class DesktopPatchUpdates extends Context.Service<
++  DesktopPatchUpdates,
++  {
++    /** The patcher's installed record: present only on a patched build. */
++    readonly installed: Option.Option<InstalledRecord>;
++    readonly getState: Effect.Effect<DesktopPatchUpdateState>;
++    /** Starts the feed checks: 15 seconds after start, then every 4 hours, as for app updates. */
++    readonly configure: Effect.Effect<void, never, Scope.Scope>;
++    readonly check: (reason: string) => Effect.Effect<DesktopPatchUpdateState>;
++    /**
++     * Runs the patcher's update for every patch update, and for T3 Code `t3Version` when given. Refused (not
++     * accepted) on an unpatched build; accepted without starting another while one runs.
++     */
++    readonly run: (options: {
++      readonly t3Version: string | null;
++    }) => Effect.Effect<{ readonly accepted: boolean; readonly state: DesktopPatchUpdateState }>;
++  }
++>()("@t3tools/desktop/updates/DesktopPatchUpdates") {}
++
++const { logInfo, logWarning } = DesktopObservability.makeComponentLogger("desktop-patch-updates");
++
++/** Without an update command in the installed record, the popover says to run this instead. */
++export const COMMAND_LINE_UPDATE = "python3 scripts/patcher.py update";
++
++const disabledPatchUpdateState: DesktopPatchUpdateState = {
++  status: "disabled",
++  updates: [],
++  runnable: false,
++  t3Version: null,
++  changes: null,
++  steps: [],
++  message: null,
++  errorContext: null,
++  logPath: null,
++  checkedAt: null,
++};
++
++/** The feed's newer versions of the installed patches; patches that aren't installed are never offered. */
++function patchUpdatesFrom(
++  installed: InstalledRecord,
++  feed: PatchFeed,
++): ReadonlyArray<DesktopPatchUpdateItem> {
++  return installed.patches.flatMap((patch) => {
++    const published = feed.patches.find((entry) => entry.id === patch.id);
++    return published !== undefined && published.version > patch.version
++      ? [
++          {
++            id: patch.id,
++            title: published.title,
++            installedVersion: patch.version,
++            availableVersion: published.version,
++          },
++        ]
++      : [];
++  });
++}
++
++/** The arguments the update runs with: the record's command, the T3 Code version to build, and this app's pid. */
++function patcherUpdateArgs(
++  command: ReadonlyArray<string>,
++  t3Version: string | null,
++  pid: number,
++): ReadonlyArray<string> {
++  return [
++    ...command.slice(1),
++    ...(t3Version === null ? [] : ["--t3", t3Version]),
++    "--relaunch",
++    String(pid),
++  ];
++}
++
++/** The last `count` lines of `text` with something on them, joined. */
++function lastLines(text: string, count: number): string {
++  return text
++    .split("\n")
++    .filter((line) => line.trim() !== "")
++    .slice(-count)
++    .join("\n");
++}
++
++/** "failed at <step>: <note>", or null while no step has failed. */
++function failedStepMessage(steps: ReadonlyArray<DesktopPatchUpdateStep>): string | null {
++  const failed = steps.find((step) => step.status === "failed");
++  return failed === undefined ? null : `failed at ${failed.name}: ${failed.note}`;
++}
++
++const make = Effect.gen(function* () {
++  const config = yield* DesktopConfig.DesktopConfig;
++  const environment = yield* DesktopEnvironment.DesktopEnvironment;
++  const fileSystem = yield* FileSystem.FileSystem;
++  const httpClient = yield* HttpClient.HttpClient;
++  const launcher = yield* PatcherLauncher;
++  const electronWindow = yield* ElectronWindow.ElectronWindow;
++  const path = environment.path;
++
++  const userdata = path.join(environment.baseDir, "userdata", "patcher");
++  const installed = yield* fileSystem
++    .readFileString(path.join(userdata, "installed.json"))
++    .pipe(Effect.flatMap(decodeInstalledRecord), Effect.option);
++  const feedUrl = Option.map(installed, (record) =>
++    Option.getOrElse(config.patchUpdateFeed, () => record.feed),
++  );
++  const reportPath = path.join(userdata, "last-run.json");
++  const logPath = path.join(userdata, "update.log");
++
++  const initial: DesktopPatchUpdateState = Option.isNone(installed)
++    ? disabledPatchUpdateState
++    : config.disableAutoUpdate
++      ? {
++          ...disabledPatchUpdateState,
++          message: "Patch updates are disabled by the T3CODE_DISABLE_AUTO_UPDATE setting.",
++        }
++      : {
++          ...disabledPatchUpdateState,
++          status: "idle",
++          runnable: installed.value.update !== undefined,
++        };
++  // The state, and its generation: each update run starts a new one, and a check started in an earlier one is out of
++  // date when it ends. One Ref, so a run's reservation and a check's start or result are each one atomic step.
++  const core = yield* Ref.make({ state: initial, generation: 0 });
++  const getState = Ref.get(core).pipe(Effect.map(({ state }) => state));
++  const publish = (state: DesktopPatchUpdateState) =>
++    electronWindow.sendAll(IpcChannels.PATCH_UPDATE_STATE_CHANNEL, state);
++  const setState = (state: DesktopPatchUpdateState) =>
++    Ref.update(core, (held) => ({ ...held, state })).pipe(Effect.andThen(publish(state)));
++  const now = DateTime.now.pipe(Effect.map(DateTime.formatIso));
++
++  const check = Effect.fn("desktop.patchUpdates.check")(function* (reason: string) {
++    if (Option.isNone(installed) || Option.isNone(feedUrl)) return yield* getState;
++    // Not while a run is reserved or going; otherwise "checking", in this generation.
++    const started = yield* Ref.modify(core, (held) => {
++      if (held.state.status === "disabled" || held.state.status === "updating")
++        return [undefined, held];
++      const checking: DesktopPatchUpdateState = { ...held.state, status: "checking" };
++      return [
++        { generation: held.generation, state: checking },
++        { ...held, state: checking },
++      ];
++    });
++    if (started === undefined) return yield* getState;
++    yield* publish(started.state);
++    yield* logInfo("checking for patch updates", { reason });
++    const fetched = yield* httpClient
++      .get(feedUrl.value)
++      .pipe(
++        Effect.flatMap(HttpClientResponse.filterStatusOk),
++        Effect.flatMap(HttpClientResponse.schemaBodyJson(PatchFeed)),
++        Effect.timeout(FEED_TIMEOUT),
++        Effect.result,
++      );
++    const checkedAt = yield* now;
++    if (fetched._tag === "Failure")
++      yield* logWarning("could not read the patch update feed", { reason });
++    const record = installed.value;
++    const result = (current: DesktopPatchUpdateState): DesktopPatchUpdateState => {
++      if (fetched._tag === "Failure") {
++        return {
++          ...current,
++          status: "error",
++          message: "Could not check for patch updates.",
++          errorContext: "check",
++          checkedAt,
++        };
++      }
++      const updates = patchUpdatesFrom(record, fetched.success);
++      return {
++        ...current,
++        status: updates.length > 0 ? "available" : "up-to-date",
++        updates,
++        message: null,
++        errorContext: null,
++        checkedAt,
++      };
++    };
++    // Published only if no run started since this check did (reserved, going, failed or done): its state stands.
++    const next = yield* Ref.modify(core, (held) => {
++      if (held.generation !== started.generation) return [undefined, held];
++      const checked = result(held.state);
++      return [checked, { ...held, state: checked }];
++    });
++    if (next === undefined) return yield* getState;
++    yield* publish(next);
++    return next;
++  });
++
++  /** Follows the patcher's run report until the process exits, showing each step. */
++  const follow = Effect.fn("desktop.patchUpdates.follow")(function* (
++    before: Option.Option<string>,
++    exited: Effect.Effect<number>,
++  ) {
++    const seen = yield* Ref.make(before);
++    const readReport = Effect.gen(function* () {
++      const text = yield* fileSystem.readFileString(reportPath).pipe(Effect.option);
++      if (Option.isNone(text)) return;
++      // The report still there from an earlier run isn't this one's.
++      const previous = yield* Ref.getAndSet(seen, text);
++      if (Option.isSome(previous) && previous.value === text.value) return;
++      const report = yield* decodeRunReport(text.value).pipe(Effect.option);
++      if (Option.isNone(report)) return;
++      const message = failedStepMessage(report.value.steps);
++      const state = yield* getState;
++      yield* setState({
++        ...state,
++        steps: report.value.steps,
++        changes: report.value.updating ?? state.changes,
++        ...(message === null ? {} : { status: "error", message, errorContext: "update" }),
++      });
++    });
++    const code = yield* Effect.raceFirst(
++      exited,
++      readReport.pipe(Effect.andThen(Effect.sleep(REPORT_POLL_INTERVAL)), Effect.forever),
++    );
++    yield* readReport;
++    const state = yield* getState;
++    if (state.status !== "updating") return;
++    if (code === 0) {
++      yield* setState({ ...state, status: "up-to-date", updates: [], message: null });
++      return;
++    }
++    // No step failed, so the patcher stopped before or outside its run (e.g. the cache drive isn't mounted): its log
++    // says why.
++    const log = yield* fileSystem.readFileString(logPath).pipe(
++      Effect.map((text) => lastLines(text, 5)),
++      Effect.orElseSucceed(() => ""),
++    );
++    yield* setState({
++      ...state,
++      status: "error",
++      message: `T3 Patcher stopped (exit ${code}) before finishing${log === "" ? "." : `: ${log}`}`,
++      errorContext: "update",
++    });
++  });
++
++  const run = Effect.fn("desktop.patchUpdates.run")(function* (options: {
++    readonly t3Version: string | null;
++  }) {
++    const state = yield* getState;
++    if (Option.isNone(installed)) return { accepted: false, state };
++    const update = installed.value.update;
++    if (update === undefined) {
++      const refused: DesktopPatchUpdateState = {
++        ...state,
++        message: `This build updates from the command line: ${COMMAND_LINE_UPDATE}`,
++      };
++      return { accepted: false, state: refused };
++    }
++    // Reserve the run before any I/O, in one step: a new generation and "updating", with no steps yet. Checks are
++    // refused from here on, and one already going can't publish.
++    const updating = yield* Ref.modify(core, (held) => {
++      if (held.state.status === "updating") return [undefined, held];
++      const reserved: DesktopPatchUpdateState = {
++        ...held.state,
++        status: "updating",
++        t3Version: options.t3Version,
++        changes: null,
++        steps: [],
++        message: null,
++        errorContext: null,
++        logPath,
++      };
++      return [reserved, { state: reserved, generation: held.generation + 1 }];
++    });
++    if (updating === undefined) return { accepted: true, state: yield* getState };
++    yield* publish(updating);
++    const before = yield* fileSystem.readFileString(reportPath).pipe(Effect.option);
++    yield* fileSystem.makeDirectory(userdata, { recursive: true }).pipe(Effect.ignore);
++    const launched = yield* launcher
++      .launch({
++        command: update.command[0],
++        args: patcherUpdateArgs(update.command, options.t3Version, process.pid),
++        cwd: update.cwd,
++        path: update.path,
++        log: logPath,
++      })
++      .pipe(Effect.result);
++    if (launched._tag === "Failure") {
++      const failed: DesktopPatchUpdateState = {
++        ...updating,
++        status: "error",
++        message: launched.failure.message,
++        errorContext: "update",
++        logPath,
++      };
++      yield* setState(failed);
++      return { accepted: false, state: failed };
++    }
++    yield* logInfo("started the patcher's update", { t3Version: options.t3Version ?? "unchanged" });
++    yield* follow(before, launched.success.exited).pipe(
++      Effect.catchCause((cause) =>
++        Cause.hasInterruptsOnly(cause)
++          ? Effect.void
++          : logWarning("lost track of the patcher's update"),
++      ),
++      Effect.forkDetach,
++    );
++    return { accepted: true, state: updating };
++  });
++
++  return DesktopPatchUpdates.of({
++    installed,
++    getState,
++    configure: Effect.gen(function* () {
++      const state = yield* getState;
++      if (state.status === "disabled") return;
++      yield* Effect.sleep(STARTUP_DELAY).pipe(
++        Effect.andThen(check("startup")),
++        Effect.andThen(
++          Effect.sleep(POLL_INTERVAL).pipe(Effect.andThen(check("poll")), Effect.forever),
++        ),
++        Effect.forkScoped,
++      );
++    }),
++    check,
++    run,
++  });
++});
++
++export const layer = Layer.effect(DesktopPatchUpdates, make);
+diff --git a/apps/desktop/src/updates/DesktopRemoteUpdates.test.ts b/apps/desktop/src/updates/DesktopRemoteUpdates.test.ts
+index 5cdf2ba1b56dc80adc27db2a027e5ec19a5e7dbc..9eff984222b1a6dbde2cefec956c9483a5680097 100644
+--- a/apps/desktop/src/updates/DesktopRemoteUpdates.test.ts
++++ b/apps/desktop/src/updates/DesktopRemoteUpdates.test.ts
+@@ -142,6 +142,53 @@ describe("DesktopRemoteUpdates", () => {
+     );
+   });
+ 
++  it.effect(
++    "fails a remote prepare on a patched build, saying T3 Patcher installs its updates",
++    () => {
++      const harness = makeHarness({
++        env: { T3CODE_DESKTOP_MOCK_UPDATES: "false" },
++        patched: {
++          t3Version: "1.2.3",
++          patches: [{ id: "journey-kit", version: 1 }],
++          installedAt: "2026-11-24T10:00:00.000Z",
++          feed: "https://raw.githubusercontent.com/BrettHamlin/t3-patcher/main/patches/index.json",
++          update: {
++            command: ["/usr/bin/python3", "/repo/scripts/patcher.py", "update"],
++            cwd: "/repo",
++            path: "/usr/bin",
++          },
++        },
++      });
++
++      return runRemoteUpdatesTest(harness, ({ reports, requests }) =>
++        Effect.gen(function* () {
++          yield* Queue.offer(requests, request("req-patched"));
++          yield* settle;
++          harness.emit("update-available", { version: "1.2.4" });
++          yield* settle;
++          yield* TestClock.adjust("5 seconds");
++          yield* settle;
++          assert.deepStrictEqual(
++            {
++              terminals: terminalReports(reports).map((report) => [
++                report.requestId,
++                report.outcome,
++                report.reason,
++              ]),
++              downloads: harness.downloadCount(),
++              patcherRuns: harness.patcherRuns,
++            },
++            {
++              terminals: [["req-patched", "failed", DesktopUpdates.PATCHED_BUILD_UPDATES]],
++              downloads: 0,
++              patcherRuns: [],
++            },
++          );
++        }),
++      );
++    },
++  );
++
+   it.effect("does not renew the preparation lease when a retry recovers its token", () => {
+     const harness = makeHarness();
+ 
+diff --git a/apps/desktop/src/updates/DesktopRemoteUpdates.ts b/apps/desktop/src/updates/DesktopRemoteUpdates.ts
+index ce2f23ab3e781e724be26ae1f9fec05770d72e94..dc3ac1993cded49266d7f5d9977f82c5d49e9a06 100644
+--- a/apps/desktop/src/updates/DesktopRemoteUpdates.ts
++++ b/apps/desktop/src/updates/DesktopRemoteUpdates.ts
+@@ -291,6 +291,15 @@ export const listen: Effect.Effect<
+               );
+               return false;
+             case "download":
++              // Nothing to prepare on a patched build, and retrying won't change that.
++              if (updates.installsThroughPatcher) {
++                yield* publishReport(
++                  state,
++                  { outcome: "failed", reason: DesktopUpdates.PATCHED_BUILD_UPDATES },
++                  request.requestId,
++                );
++                return true;
++              }
+               attempts = { ...attempts, downloads: attempts.downloads + 1 };
+               yield* updates.download.pipe(
+                 Effect.flatMap((result) => {
+diff --git a/apps/desktop/src/updates/DesktopUpdates.patched.test.ts b/apps/desktop/src/updates/DesktopUpdates.patched.test.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..f37ffdc8741cbb8a4a98ba4cea8d75b4dcb78f54
+--- /dev/null
++++ b/apps/desktop/src/updates/DesktopUpdates.patched.test.ts
+@@ -0,0 +1,148 @@
++import { assert, describe, it } from "@effect/vitest";
++import * as Effect from "effect/Effect";
++
++import type * as DesktopPatchUpdates from "./DesktopPatchUpdates.ts";
++import * as DesktopUpdates from "./DesktopUpdates.ts";
++import { flushCallbacks, makeHarness } from "./updatesTestHarness.ts";
++
++const patched: DesktopPatchUpdates.InstalledRecord = {
++  t3Version: "1.2.3",
++  patches: [{ id: "journey-kit", version: 1 }],
++  installedAt: "2026-11-24T10:00:00.000Z",
++  feed: "https://raw.githubusercontent.com/BrettHamlin/t3-patcher/main/patches/index.json",
++  update: {
++    command: ["/usr/bin/python3", "/repo/scripts/patcher.py", "update"],
++    cwd: "/repo",
++    path: "/opt/homebrew/bin:/usr/bin:/bin",
++  },
++};
++
++// No app-update.yml and no mock feed, as in a build the patcher made.
++const noMockFeed = { T3CODE_DESKTOP_MOCK_UPDATES: "false" };
++
++describe("DesktopUpdates on a patched build", () => {
++  it.effect(
++    "checks T3 Code's GitHub releases, which a patched build has no app-update.yml for",
++    () => {
++      const harness = makeHarness({ patched, env: noMockFeed });
++      return Effect.scoped(
++        Effect.gen(function* () {
++          const updates = yield* DesktopUpdates.DesktopUpdates;
++          yield* updates.configure;
++          const checked = yield* updates.check("web-ui");
++          const state = yield* updates.getState;
++          assert.deepStrictEqual(
++            {
++              feeds: harness.feedUrls(),
++              checked: checked.checked,
++              checks: harness.checkCount(),
++              enabled: state.enabled,
++            },
++            {
++              feeds: [{ provider: "github", owner: "pingdotgg", repo: "t3code" }],
++              checked: true,
++              checks: 1,
++              enabled: true,
++            },
++          );
++        }),
++      ).pipe(Effect.provide(harness.layer));
++    },
++  );
++
++  it.effect(
++    "installs an offered T3 Code version through the patcher, never electron-updater's download or install",
++    () => {
++      const harness = makeHarness({ patched, env: noMockFeed });
++      return Effect.scoped(
++        Effect.gen(function* () {
++          const updates = yield* DesktopUpdates.DesktopUpdates;
++          yield* updates.configure;
++          harness.emit("update-available", { version: "1.2.4" });
++          yield* flushCallbacks;
++          const install = yield* updates.install;
++          const prepared = yield* updates.installPrepared("1.2.4");
++          assert.deepStrictEqual(
++            {
++              results: [install, prepared].map((result) => [
++                result.accepted,
++                result.completed,
++                result.state.status,
++                result.state.availableVersion,
++              ]),
++              patcherRuns: harness.patcherRuns,
++              downloads: harness.downloadCount(),
++              quitAndInstalls: harness.quitAndInstalls(),
++              restartMarkers: [...harness.updateRestartMarkers],
++            },
++            {
++              results: [
++                [true, false, "available", "1.2.4"],
++                [true, false, "available", "1.2.4"],
++              ],
++              patcherRuns: ["1.2.4", "1.2.4"],
++              downloads: 0,
++              quitAndInstalls: 0,
++              restartMarkers: [],
++            },
++          );
++        }),
++      ).pipe(Effect.provide(harness.layer));
++    },
++  );
++
++  it.effect(
++    "downloads nothing and starts no patcher run: it says the patcher installs updates",
++    () => {
++      const harness = makeHarness({ patched, env: noMockFeed });
++      return Effect.scoped(
++        Effect.gen(function* () {
++          const updates = yield* DesktopUpdates.DesktopUpdates;
++          yield* updates.configure;
++          harness.emit("update-available", { version: "1.2.4" });
++          yield* flushCallbacks;
++          const download = yield* updates.download;
++          assert.deepStrictEqual(
++            {
++              accepted: download.accepted,
++              completed: download.completed,
++              status: download.state.status,
++              message: download.state.message,
++              patcherRuns: harness.patcherRuns,
++              downloads: harness.downloadCount(),
++              stateAfter: (yield* updates.getState).status,
++            },
++            {
++              accepted: false,
++              completed: false,
++              status: "available",
++              message: DesktopUpdates.PATCHED_BUILD_UPDATES,
++              patcherRuns: [],
++              downloads: 0,
++              stateAfter: "available",
++            },
++          );
++        }),
++      ).pipe(Effect.provide(harness.layer));
++    },
++  );
++
++  it.effect("leaves an unpatched build without a feed off, as before", () => {
++    const harness = makeHarness({ env: noMockFeed });
++    return Effect.scoped(
++      Effect.gen(function* () {
++        const updates = yield* DesktopUpdates.DesktopUpdates;
++        yield* updates.configure;
++        const state = yield* updates.getState;
++        assert.deepStrictEqual(
++          { status: state.status, message: state.message, feeds: harness.feedUrls() },
++          {
++            status: "disabled",
++            message: "Automatic updates are not available because no update feed is configured.",
++            feeds: [],
++          },
++        );
++      }),
++    ).pipe(Effect.provide(harness.layer));
++  });
++});
+diff --git a/apps/desktop/src/updates/DesktopUpdates.ts b/apps/desktop/src/updates/DesktopUpdates.ts
+index 775a9ff6b04ffedb57c6a5c0f426e17cf32eb404..1946022e79900f53a6d0dd207a41dc589f6802dc 100644
+--- a/apps/desktop/src/updates/DesktopUpdates.ts
++++ b/apps/desktop/src/updates/DesktopUpdates.ts
+@@ -38,6 +38,7 @@ import * as ElectronWindow from "../electron/ElectronWindow.ts";
+ import * as IpcChannels from "../ipc/channels.ts";
+ import * as DesktopAppSettings from "../settings/DesktopAppSettings.ts";
+ import * as DesktopSshEnvironment from "../ssh/DesktopSshEnvironment.ts";
++import * as DesktopPatchUpdates from "./DesktopPatchUpdates.ts";
+ import * as DesktopUpdatePolicy from "./DesktopUpdatePolicy.ts";
+ import {
+   normalizeDesktopUpdateReleaseNotes,
+@@ -64,6 +65,9 @@ const CHANNEL_CHANGE_RETRIES = 30;
+ const AUTO_UPDATE_STARTUP_DELAY = "15 seconds";
+ const AUTO_UPDATE_POLL_INTERVAL = "4 hours";
+ const UPDATE_CHECK_WAIT = Duration.seconds(90);
++/** What a download says on a build made by T3 Patcher, which installs new versions itself. */
++export const PATCHED_BUILD_UPDATES =
++  "This build is updated by T3 Patcher: use Update in the sidebar's update menu to build and install it.";
+ 
+ type UpdateAction = "check" | "download" | "install" | "install-recovery" | "channel";
+ 
+@@ -193,6 +197,8 @@ export class DesktopUpdates extends Context.Service<
+   DesktopUpdates,
+   {
+     readonly getState: Effect.Effect<DesktopUpdateState>;
++    /** A build made by T3 Patcher: it downloads nothing, and installs new versions through the patcher. */
++    readonly installsThroughPatcher: boolean;
+     readonly isActionActive: Effect.Effect<boolean>;
+     readonly isInstallActive: Effect.Effect<boolean>;
+     readonly subscribe: Effect.Effect<
+@@ -386,6 +392,10 @@ export const make = Effect.gen(function* () {
+   const policy = yield* DesktopUpdatePolicy.DesktopUpdatePolicy;
+   // Any user can set the mock flag, so it never replaces an administrator's update source.
+   const mockUpdates = config.mockUpdates && policy.message === null;
++  // A build made by T3 Patcher: the plain app from electron-updater would drop its patches, so the patcher builds
++  // and installs a new T3 Code version, with every patch, instead. The check still runs, to offer the version.
++  const patchUpdates = yield* DesktopPatchUpdates.DesktopPatchUpdates;
++  const patched = Option.isSome(patchUpdates.installed);
+ 
+   const appUpdateYmlConfigRef = yield* Ref.make<Option.Option<AppUpdateYmlConfig>>(Option.none());
+   const activeUpdateActionRef = yield* Ref.make<Option.Option<UpdateAction>>(Option.none());
+@@ -467,7 +477,7 @@ export const make = Effect.gen(function* () {
+   const hasUpdateFeedConfig = Ref.get(appUpdateYmlConfigRef).pipe(
+     Effect.map(
+       (appUpdateYmlConfig) =>
+-        Option.isSome(appUpdateYmlConfig) || mockUpdates || policy.feedUrl !== undefined,
++        Option.isSome(appUpdateYmlConfig) || mockUpdates || policy.feedUrl !== undefined || patched,
+     ),
+   );
+ 
+@@ -1235,8 +1245,17 @@ export const make = Effect.gen(function* () {
+     );
+   });
+ 
++  // On a patched build, downloading or installing the offered version runs the patcher's update with it instead.
++  const updateThroughPatcher = Effect.gen(function* () {
++    const state = yield* Ref.get(updateStateRef);
++    const t3Version = isOffered(state) ? (state.downloadedVersion ?? state.availableVersion) : null;
++    const { accepted } = yield* patchUpdates.run({ t3Version });
++    return { accepted, completed: false, state: yield* Ref.get(updateStateRef) };
++  }).pipe(Effect.withSpan("desktop.updates.updateThroughPatcher"));
++
+   return DesktopUpdates.of({
+     getState: Ref.get(updateStateRef),
++    installsThroughPatcher: patched,
+     isActionActive: activeUpdateAction.pipe(Effect.map(Option.isSome)),
+     isInstallActive: activeUpdateAction.pipe(
+       Effect.map((action) => Option.isSome(action) && action.value === "install"),
+@@ -1260,6 +1279,7 @@ export const make = Effect.gen(function* () {
+         void Effect.runPromiseWith(context)(effect);
+       };
+ 
++      yield* patchUpdates.configure;
+       const appUpdateYmlConfig = yield* readAppUpdateYml;
+       yield* Ref.set(appUpdateYmlConfigRef, appUpdateYmlConfig);
+ 
+@@ -1283,6 +1303,13 @@ export const make = Effect.gen(function* () {
+           provider: "generic",
+           url: policy.feedUrl,
+         } as ElectronUpdater.ElectronUpdaterFeedUrl);
++      } else if (patched && Option.isNone(appUpdateYmlConfig)) {
++        // A patched build has no app-update.yml; it checks the releases the plain app would.
++        yield* electronUpdater.setFeedURL({
++          provider: "github",
++          owner: "pingdotgg",
++          repo: "t3code",
++        } as ElectronUpdater.ElectronUpdaterFeedUrl);
+       }
+ 
+       const settings = yield* desktopSettings.get;
+@@ -1423,6 +1450,15 @@ export const make = Effect.gen(function* () {
+       };
+     }),
+     download: Effect.gen(function* () {
++      // A patched build downloads nothing: its Update runs the patcher, which builds and installs the version.
++      if (patched) {
++        const state = yield* Ref.get(updateStateRef);
++        return {
++          accepted: false,
++          completed: false,
++          state: { ...state, message: PATCHED_BUILD_UPDATES },
++        };
++      }
+       const result = yield* downloadAvailableUpdate(true);
+       return {
+         accepted: result.accepted,
+@@ -1430,11 +1466,15 @@ export const make = Effect.gen(function* () {
+         state: yield* Ref.get(updateStateRef),
+       };
+     }).pipe(Effect.withSpan("desktop.updates.download")),
+-    install: installWithExpectedVersion().pipe(
+-      Effect.map(({ accepted, completed, state }) => ({ accepted, completed, state })),
+-    ),
++    install: patched
++      ? updateThroughPatcher
++      : installWithExpectedVersion().pipe(
++          Effect.map(({ accepted, completed, state }) => ({ accepted, completed, state })),
++        ),
+     installPrepared: Effect.fn("DesktopUpdates.installPrepared")(function (expectedVersion) {
+-      return installWithExpectedVersion(expectedVersion);
++      return patched
++        ? updateThroughPatcher.pipe(Effect.map((result) => ({ ...result, failed: false })))
++        : installWithExpectedVersion(expectedVersion);
+     }),
+   });
+ });
+diff --git a/apps/desktop/src/updates/updatesTestHarness.ts b/apps/desktop/src/updates/updatesTestHarness.ts
+index b118d15ced674981744cdfade5d62f97bd784e3c..c5060c40dbfa29e009aecd09a9ef545e8a8271d2 100644
+--- a/apps/desktop/src/updates/updatesTestHarness.ts
++++ b/apps/desktop/src/updates/updatesTestHarness.ts
+@@ -15,6 +15,7 @@ import * as ElectronWindow from "../electron/ElectronWindow.ts";
+ import * as DesktopAppSettings from "../settings/DesktopAppSettings.ts";
+ import * as DesktopSshEnvironment from "../ssh/DesktopSshEnvironment.ts";
+ import * as DesktopState from "../app/DesktopState.ts";
++import * as DesktopPatchUpdates from "./DesktopPatchUpdates.ts";
+ import * as DesktopUpdatePolicy from "./DesktopUpdatePolicy.ts";
+ import * as DesktopUpdates from "./DesktopUpdates.ts";
+ 
+@@ -44,6 +45,8 @@ export interface UpdatesHarnessOptions {
+   readonly savedChannel?: DesktopAppSettings.DesktopSettings["updateChannel"];
+   /** Adds a WSL backend beside the primary, as on a Windows host with WSL enabled. */
+   readonly wslBackend?: boolean;
++  /** A build made by T3 Patcher, with this installed record. */
++  readonly patched?: DesktopPatchUpdates.InstalledRecord;
+ }
+ 
+ export function makeHarness(options: UpdatesHarnessOptions = {}) {
+@@ -57,6 +60,7 @@ export function makeHarness(options: UpdatesHarnessOptions = {}) {
+   const listeners = new Map<string, Set<(...args: readonly unknown[]) => void>>();
+   const sentStates: DesktopUpdateState[] = [];
+   const installSteps: string[] = [];
++  const patcherRuns: Array<string | null> = [];
+ 
+   const addListener = (eventName: string, listener: (...args: readonly unknown[]) => void) => {
+     const eventListeners = listeners.get(eventName) ?? new Set();
+@@ -290,8 +294,34 @@ export function makeHarness(options: UpdatesHarnessOptions = {}) {
+       }),
+   });
+ 
++  const noPatchUpdates = {
++    status: "disabled",
++    updates: [],
++    runnable: false,
++    t3Version: null,
++    changes: null,
++    steps: [],
++    message: null,
++    errorContext: null,
++    logPath: null,
++    checkedAt: null,
++  } as const;
++  const layerPatchUpdates = Layer.succeed(DesktopPatchUpdates.DesktopPatchUpdates, {
++    installed: Option.fromNullishOr(options.patched),
++    getState: Effect.succeed(noPatchUpdates),
++    configure: Effect.void,
++    check: () => Effect.succeed(noPatchUpdates),
++    run: ({ t3Version }) =>
++      Effect.sync(() => {
++        patcherRuns.push(t3Version);
++        installSteps.push("patcher");
++        return { accepted: true, state: noPatchUpdates };
++      }),
++  } satisfies DesktopPatchUpdates.DesktopPatchUpdates["Service"]);
++
+   const layer = DesktopUpdates.layer.pipe(
+     Layer.provide(layerFileSystem),
++    Layer.provide(layerPatchUpdates),
+     Layer.provide(DesktopUpdatePolicy.layerTest(options.policy)),
+     Layer.provideMerge(layerUpdater),
+     Layer.provideMerge(layerWindow),
+@@ -316,6 +346,8 @@ export function makeHarness(options: UpdatesHarnessOptions = {}) {
+     checkCount: () => checkCount,
+     quitAndInstalls: () => quitAndInstallCount,
+     installSteps,
++    /** The T3 Code version of each patcher update a patched build ran, or null for patches only. */
++    patcherRuns,
+     updateRestartMarkers,
+     updateInProgressMarker: () =>
+       [...updateMarkerContents].find(([path]) => path.endsWith("/desktop-update-in-progress"))?.[1],
+diff --git a/apps/desktop/src/window/DesktopApplicationMenu.test.ts b/apps/desktop/src/window/DesktopApplicationMenu.test.ts
+index 8b2c4317bd20f3e18499d4be4f45ced198ca17c2..9bcc29a882bf5a702c80e4c786dca17b0b111057 100644
+--- a/apps/desktop/src/window/DesktopApplicationMenu.test.ts
++++ b/apps/desktop/src/window/DesktopApplicationMenu.test.ts
+@@ -77,6 +77,7 @@ const layerElectronDialog = ({ shownMessageBox }: MenuServices) =>
+ 
+ const layerDesktopUpdates = ({ checkResult }: MenuServices) =>
+   Layer.succeed(DesktopUpdates.DesktopUpdates, {
++    installsThroughPatcher: false,
+     getState: Effect.die("unexpected getState"),
+     isActionActive: Effect.succeed(false),
+     isInstallActive: Effect.succeed(false),
+diff --git a/apps/web/src/components/sidebar/SidebarPatchUpdatePill.browser.test.tsx b/apps/web/src/components/sidebar/SidebarPatchUpdatePill.browser.test.tsx
+new file mode 100644
+index 0000000000000000000000000000000000000000..db6c74ed4977f81b2e2d60c72a14407425d22632
+--- /dev/null
++++ b/apps/web/src/components/sidebar/SidebarPatchUpdatePill.browser.test.tsx
+@@ -0,0 +1,185 @@
++import type {
++  DesktopPatchUpdateActionResult,
++  DesktopPatchUpdateState,
++  DesktopUpdateState,
++} from "@t3tools/contracts";
++import { describe, expect, it, vi } from "vite-plus/test";
++import { page, userEvent } from "vite-plus/test/browser";
++
++import "~/index.css";
++import { render } from "../../../test/render";
++import { SidebarUpdatePill } from "./SidebarUpdatePill";
++
++const mocks = vi.hoisted(() => ({
++  patch: null as DesktopPatchUpdateState | null,
++  app: null as DesktopUpdateState | null,
++}));
++vi.mock("../../state/desktopPatchUpdate", () => ({
++  useDesktopPatchUpdateState: () => mocks.patch,
++}));
++vi.mock("../../state/desktopUpdate", async (importOriginal) => ({
++  ...(await importOriginal<typeof import("../../state/desktopUpdate")>()),
++  useDesktopUpdateState: () => mocks.app,
++}));
++vi.mock("../../env", async (importOriginal) => ({
++  ...(await importOriginal<typeof import("../../env")>()),
++  isElectron: true,
++}));
++
++const idle: DesktopPatchUpdateState = {
++  status: "idle",
++  updates: [],
++  runnable: true,
++  t3Version: null,
++  changes: null,
++  steps: [],
++  message: null,
++  errorContext: null,
++  logPath: null,
++  checkedAt: null,
++};
++
++const t3Available: DesktopUpdateState = {
++  enabled: true,
++  status: "available",
++  channel: "latest",
++  currentVersion: "0.1.11",
++  hostArch: "arm64",
++  appArch: "arm64",
++  runningUnderArm64Translation: false,
++  availableVersion: "0.1.12",
++  downloadedVersion: null,
++  releaseNotes: [],
++  omittedReleaseCount: 0,
++  downloadPercent: null,
++  checkedAt: null,
++  message: null,
++  errorContext: null,
++  canRetry: false,
++};
++
++/** The desktop bridge's runPatchUpdate on the window, until disposed. */
++function bridgeWith(runPatchUpdate: () => Promise<DesktopPatchUpdateActionResult>) {
++  Object.assign(window, { desktopBridge: { runPatchUpdate } });
++  return {
++    [Symbol.dispose]: () => {
++      Reflect.deleteProperty(window, "desktopBridge");
++    },
++  };
++}
++
++const texts = (testId: string) =>
++  [...document.querySelectorAll(`[data-testid="${testId}"]`)].map((element) =>
++    element.textContent?.trim(),
++  );
++
++describe("SidebarUpdatePill on a patched build", () => {
++  it("lists the T3 Code and patch updates, and Update runs the patcher for all of them", async () => {
++    mocks.app = t3Available;
++    mocks.patch = {
++      ...idle,
++      status: "available",
++      updates: [{ id: "picks", title: "Picks", installedVersion: 1, availableVersion: 2 }],
++    };
++    const runPatchUpdate = vi.fn<() => Promise<DesktopPatchUpdateActionResult>>(() =>
++      Promise.resolve({ accepted: true, state: { ...idle, status: "updating" } }),
++    );
++    using _bridge = bridgeWith(runPatchUpdate);
++    await using screen = await render(<SidebarUpdatePill />);
++
++    await userEvent.click(screen.getByRole("button", { name: "Updates available" }));
++    await expect.element(page.getByTestId("patch-update-popover")).toBeVisible();
++    expect(texts("patch-update-row")).toEqual(["T3 Code0.1.11 → 0.1.12", "Picks1 → 2"]);
++
++    await userEvent.click(page.getByRole("button", { name: "Update", exact: true }));
++    await vi.waitFor(() => expect(runPatchUpdate.mock.calls).toEqual([[]]));
++  });
++
++  it("shows each step of the run in words with its progress, and the failed step with the log", async () => {
++    mocks.app = null;
++    mocks.patch = {
++      ...idle,
++      status: "error",
++      errorContext: "update",
++      t3Version: "0.1.12",
++      updates: [{ id: "picks", title: "Picks", installedVersion: 1, availableVersion: 2 }],
++      steps: [
++        { kind: "pull", name: "patches", status: "passed", note: "" },
++        { kind: "source", name: "T3 Code source", status: "passed", note: "0.1.12 (v0.1.12)" },
++        { kind: "patch", name: "picks", status: "passed", note: "applied" },
++        { kind: "patch", name: "journey-kit", status: "passed", note: "applied" },
++        { kind: "check", name: "changed files", status: "passed", note: "" },
++        { kind: "build", name: "app", status: "failed", note: "boom" },
++        { kind: "journey", name: "picks: answers", status: "skipped", note: "" },
++        { kind: "save", name: "save patches", status: "skipped", note: "" },
++        { kind: "install", name: "install", status: "skipped", note: "" },
++      ],
++      message: "failed at app: boom",
++      logPath: "/home/.t3/userdata/patcher/update.log",
++    };
++    await using screen = await render(<SidebarUpdatePill />);
++
++    await userEvent.click(screen.getByRole("button", { name: "Updates available" }));
++    await expect.element(page.getByText("Step 9 of 9")).toBeVisible();
++    expect(texts("patch-update-step")).toEqual([
++      "✓Get patches",
++      "✓Get T3 Code 0.1.12 source",
++      "✓Apply Picks",
++      "✓Apply journey-kit",
++      "✓Check changed files",
++      "✕Build app",
++      "–Run journey picks: answers",
++      "–Save rebased patches",
++      "–Install",
++    ]);
++    await expect
++      .element(page.getByRole("alert"))
++      .toHaveTextContent("failed at app: boomLog: /home/.t3/userdata/patcher/update.log");
++  });
++
++  it("lists what the running update itself changes, removals included", async () => {
++    mocks.app = t3Available;
++    mocks.patch = {
++      ...idle,
++      status: "updating",
++      updates: [{ id: "picks", title: "Picks", installedVersion: 1, availableVersion: 2 }],
++      changes: [
++        { name: "picks", from: "1", to: "3" },
++        { name: "notes", from: "", to: "2" },
++        { name: "journey-kit", from: "1", to: "removed" },
++      ],
++    };
++    await using screen = await render(<SidebarUpdatePill />);
++    await userEvent.click(screen.getByRole("button", { name: "Updating with T3 Patcher…" }));
++    await expect.element(page.getByTestId("patch-update-popover")).toBeVisible();
++    expect(texts("patch-update-row")).toEqual([
++      "Picks1 → 3",
++      "notesadded, version 2",
++      "journey-kit1 → removed",
++    ]);
++  });
++
++  it("without an update command, says to update from the command line instead of offering Update", async () => {
++    mocks.app = null;
++    mocks.patch = {
++      ...idle,
++      status: "available",
++      runnable: false,
++      updates: [{ id: "picks", title: "Picks", installedVersion: 1, availableVersion: 2 }],
++    };
++    await using screen = await render(<SidebarUpdatePill />);
++    await userEvent.click(screen.getByRole("button", { name: "Updates available" }));
++    await expect.element(page.getByTestId("patch-update-popover")).toBeVisible();
++    expect([texts("patch-update-command"), texts("patch-update-button")]).toEqual([
++      ["Update from the command line: python3 scripts/patcher.py update"],
++      [],
++    ]);
++  });
++
++  it("keeps the app's own pill on an unpatched build", async () => {
++    mocks.app = t3Available;
++    mocks.patch = { ...idle, status: "disabled" };
++    await using _screen = await render(<SidebarUpdatePill />);
++    expect(document.querySelector('[data-testid="patch-update-pill"]')).toEqual(null);
++  });
++});
+diff --git a/apps/web/src/components/sidebar/SidebarPatchUpdatePill.tsx b/apps/web/src/components/sidebar/SidebarPatchUpdatePill.tsx
+new file mode 100644
+index 0000000000000000000000000000000000000000..9b4352833cb050ce81873699063149a8ab5013b7
+--- /dev/null
++++ b/apps/web/src/components/sidebar/SidebarPatchUpdatePill.tsx
+@@ -0,0 +1,200 @@
++import type {
++  DesktopPatchUpdateState,
++  DesktopPatchUpdateStep,
++  DesktopUpdateState,
++} from "@t3tools/contracts";
++import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
++import { T, useGT, Var } from "gt-react";
++import { useState } from "react";
++
++import { m } from "../../i18n/messages";
++import { cn } from "../../lib/utils";
++import { Button } from "../ui/button";
++import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
++import { SidebarMenuItem } from "../ui/sidebar";
++import { stackedThreadToast, toastManager } from "../ui/toast";
++import { DesktopUpdateStatusIcon } from "./DesktopUpdateStatusIcon";
++import { COMMAND_LINE_UPDATE, patchUpdateProgress, patchUpdateRows } from "./patchUpdate.logic";
++
++const STEP_MARK = {
++  pending: "○",
++  running: "◐",
++  passed: "✓",
++  failed: "✕",
++  skipped: "–",
++} as const;
++
++/** A step of the patcher's run in words: "Get patches", "Apply Picks", "Install". */
++function useStepLabel(patch: DesktopPatchUpdateState, app: DesktopUpdateState | null) {
++  const gt = useGT();
++  const version = patch.t3Version ?? app?.currentVersion ?? null;
++  return (step: DesktopPatchUpdateStep): string => {
++    switch (step.kind) {
++      case "pull":
++        return gt("Get patches");
++      case "source":
++        return version === null
++          ? gt("Get T3 Code source")
++          : gt("Get T3 Code {version} source", { version });
++      case "patch":
++        return gt("Apply {name}", {
++          name: patch.updates.find((update) => update.id === step.name)?.title ?? step.name,
++        });
++      case "check":
++        return gt("Check {name}", { name: step.name });
++      case "build":
++        return gt("Build {name}", { name: step.name });
++      case "journey":
++        return gt("Run journey {name}", { name: step.name });
++      case "save":
++        return gt("Save rebased patches");
++      case "install":
++        return gt("Install");
++      default:
++        return step.name;
++    }
++  };
++}
++
++/**
++ * A patched build's update pill: its popover lists the patch updates, and the T3 Code update when there is one,
++ * with one Update button that runs T3 Patcher for all of them and shows its steps as they go.
++ */
++export function SidebarPatchUpdatePill({
++  patch,
++  app,
++}: {
++  readonly patch: DesktopPatchUpdateState;
++  readonly app: DesktopUpdateState | null;
++}) {
++  const gt = useGT();
++  const [isStarting, setIsStarting] = useState(false);
++  const rows = patchUpdateRows(patch, app);
++  const updating = patch.status === "updating";
++  const failed = patch.errorContext === "update" && patch.status === "error";
++  const progress = patchUpdateProgress(patch.steps);
++  const stepLabel = useStepLabel(patch, app);
++  const label = updating ? gt("Updating with T3 Patcher…") : gt("Updates available");
++
++  const update = async () => {
++    const bridge = window.desktopBridge;
++    if (!bridge || updating || isStarting) return;
++    setIsStarting(true);
++    const outcome = await bridge.runPatchUpdate().then(
++      (result) => ({ started: result.accepted, reason: result.state.message }),
++      (error: unknown) => ({ started: false, reason: thrownErrorMessage(error, m) ?? null }),
++    );
++    setIsStarting(false);
++    if (outcome.started) return;
++    toastManager.add(
++      stackedThreadToast({
++        type: "error",
++        title: gt("Could not start the update"),
++        description: outcome.reason ?? gt("An unexpected error occurred."),
++      }),
++    );
++  };
++
++  return (
++    <SidebarMenuItem className="ml-auto shrink-0">
++      <Popover>
++        <PopoverTrigger
++          render={
++            <button
++              aria-label={label}
++              className="inline-flex size-8 cursor-pointer items-center justify-center rounded-full bg-sidebar-control-surface text-sidebar-foreground outline-hidden ring-ring transition-colors hover:bg-sidebar-row-hover focus-visible:ring-2 focus-visible:ring-inset"
++              data-testid="patch-update-pill"
++              type="button"
++            >
++              <DesktopUpdateStatusIcon status={updating ? "downloading" : "everything"} />
++            </button>
++          }
++        />
++        <PopoverPopup align="center" aria-label={label} side="top" tooltipStyle>
++          <div
++            className="flex w-fit min-w-56 max-w-[min(24rem,calc(100vw-2rem))] flex-col gap-2 px-1 text-left"
++            data-testid="patch-update-popover"
++          >
++            <div className="text-sm leading-5 font-medium">{label}</div>
++            {rows.length > 0 ? (
++              <ul className="space-y-1 text-xs leading-5">
++                {rows.map((row) => (
++                  <li
++                    className="flex justify-between gap-4"
++                    data-testid="patch-update-row"
++                    key={row.key}
++                  >
++                    <span className="truncate">{row.name}</span>
++                    <span className="shrink-0 text-muted-foreground tabular-nums">
++                      {row.added
++                        ? gt("added, version {version}", { version: row.to })
++                        : `${row.from} → ${row.removed ? gt("removed") : row.to}`}
++                    </span>
++                  </li>
++                ))}
++              </ul>
++            ) : null}
++            {patch.steps.length > 0 ? (
++              <div className="flex flex-col gap-1">
++                <div className="text-xs leading-4 text-muted-foreground tabular-nums">
++                  <T>
++                    Step <Var>{progress.done}</Var> of <Var>{progress.total}</Var>
++                  </T>
++                </div>
++                <ol className="max-h-48 space-y-0.5 overflow-y-auto text-xs leading-4">
++                  {patch.steps.map((step) => (
++                    <li
++                      className={cn(
++                        "flex gap-1.5",
++                        step.status === "failed" ? "text-destructive-foreground" : undefined,
++                        step.status === "pending" || step.status === "skipped"
++                          ? "text-muted-foreground"
++                          : undefined,
++                      )}
++                      data-testid="patch-update-step"
++                      key={`${step.kind} ${step.name}`}
++                    >
++                      <span aria-hidden>{STEP_MARK[step.status]}</span>
++                      <span className="truncate">{stepLabel(step)}</span>
++                    </li>
++                  ))}
++                </ol>
++              </div>
++            ) : null}
++            {failed && patch.message ? (
++              <div className="text-xs leading-4 text-destructive-foreground" role="alert">
++                <div className="break-words">{patch.message}</div>
++                {patch.logPath ? (
++                  <div className="mt-1 break-all text-muted-foreground">
++                    <T>
++                      Log: <Var>{patch.logPath}</Var>
++                    </T>
++                  </div>
++                ) : null}
++              </div>
++            ) : null}
++            {patch.runnable ? (
++              <Button
++                data-testid="patch-update-button"
++                disabled={updating || isStarting}
++                onClick={() => void update()}
++                size="sm"
++              >
++                {updating ? <T>Updating…</T> : <T>Update</T>}
++              </Button>
++            ) : (
++              <div
++                className="text-xs leading-4 text-muted-foreground"
++                data-testid="patch-update-command"
++              >
++                <T>
++                  Update from the command line: <Var>{COMMAND_LINE_UPDATE}</Var>
++                </T>
++              </div>
++            )}
++          </div>
++        </PopoverPopup>
++      </Popover>
++    </SidebarMenuItem>
++  );
++}
+diff --git a/apps/web/src/components/sidebar/SidebarUpdatePill.tsx b/apps/web/src/components/sidebar/SidebarUpdatePill.tsx
+index 71fce36f3ed4305e49f3252bbac18eca94a25308..0573a112f721f491cef47fef5c510de8848d7be3 100644
+--- a/apps/web/src/components/sidebar/SidebarUpdatePill.tsx
++++ b/apps/web/src/components/sidebar/SidebarUpdatePill.tsx
+@@ -11,6 +11,7 @@ import { m } from "../../i18n/messages";
+ import { useMediaQuery } from "../../hooks/useMediaQuery";
+ import { cn } from "../../lib/utils";
+ import { ensureLocalApi } from "../../localApi";
++import { useDesktopPatchUpdateState } from "../../state/desktopPatchUpdate";
+ import { useDesktopUpdateState } from "../../state/desktopUpdate";
+ import { usePrimaryManagedPolicy } from "../../state/managedPolicy";
+ import { stackedThreadToast, toastManager } from "../ui/toast";
+@@ -41,6 +42,8 @@ import {
+ } from "./DesktopUpdateStatusIcon";
+ import { SidebarUpdateReleaseNotes } from "./SidebarUpdateReleaseNotes";
+ import { SidebarUpdateCapsule } from "./SidebarUpdateCapsule";
++import { SidebarPatchUpdatePill } from "./SidebarPatchUpdatePill";
++import { showsPatchUpdates } from "./patchUpdate.logic";
+ import { UpdateEverythingDialog } from "./UpdateEverythingDialog";
+ import type { UpdateEverythingRun, UpdateRunLocalState } from "./updateEverything.logic";
+ import {
+@@ -197,6 +200,12 @@ export async function installLocalUpdate(
+ }
+ 
+ export function SidebarUpdatePill() {
++  const patch = useDesktopPatchUpdateState();
++  const app = useDesktopUpdateState();
++  // A patched build updates through T3 Patcher, which keeps its patches.
++  if (isElectron && showsPatchUpdates(patch, app)) {
++    return <SidebarPatchUpdatePill patch={patch} app={app} />;
++  }
+   return <SidebarUpdateControl />;
+ }
+ 
+diff --git a/apps/web/src/components/sidebar/patchUpdate.logic.test.ts b/apps/web/src/components/sidebar/patchUpdate.logic.test.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..84fb33963dc2da3b0e2d7ab5b97d13f1d2f149c4
+--- /dev/null
++++ b/apps/web/src/components/sidebar/patchUpdate.logic.test.ts
+@@ -0,0 +1,159 @@
++import type { DesktopPatchUpdateState, DesktopUpdateState } from "@t3tools/contracts";
++import { describe, expect, it } from "vite-plus/test";
++
++import {
++  offeredAppVersion,
++  patchUpdateProgress,
++  patchUpdateRows,
++  showsPatchUpdates,
++} from "./patchUpdate.logic";
++
++const idle: DesktopPatchUpdateState = {
++  status: "idle",
++  updates: [],
++  runnable: true,
++  t3Version: null,
++  changes: null,
++  steps: [],
++  message: null,
++  errorContext: null,
++  logPath: null,
++  checkedAt: null,
++};
++
++const picks = { id: "picks", title: "Picks", installedVersion: 1, availableVersion: 2 };
++
++const app = (status: DesktopUpdateState["status"], availableVersion: string | null) =>
++  ({
++    enabled: true,
++    status,
++    channel: "latest",
++    currentVersion: "0.1.11",
++    hostArch: "arm64",
++    appArch: "arm64",
++    runningUnderArm64Translation: false,
++    availableVersion,
++    downloadedVersion: null,
++    releaseNotes: [],
++    omittedReleaseCount: 0,
++    downloadPercent: null,
++    checkedAt: null,
++    message: null,
++    errorContext: null,
++    canRetry: false,
++  }) satisfies DesktopUpdateState;
++
++describe("patch update pill", () => {
++  it("shows on a patched build with a patch or T3 Code update, a run, or a failed run; never unpatched", () => {
++    expect([
++      showsPatchUpdates(null, app("available", "0.1.12")),
++      showsPatchUpdates({ ...idle, status: "disabled" }, app("available", "0.1.12")),
++      showsPatchUpdates(idle, app("up-to-date", null)),
++      showsPatchUpdates({ ...idle, status: "error", errorContext: "check" }, null),
++      showsPatchUpdates({ ...idle, status: "available", updates: [picks] }, null),
++      showsPatchUpdates(idle, app("available", "0.1.12")),
++      showsPatchUpdates({ ...idle, status: "updating" }, null),
++      showsPatchUpdates({ ...idle, status: "error", errorContext: "update" }, null),
++    ]).toEqual([false, false, false, false, true, true, true, true]);
++  });
++
++  it("lists T3 Code first, then each patch, from its version to the new one", () => {
++    expect([
++      patchUpdateRows(
++        { ...idle, status: "available", updates: [picks] },
++        app("available", "0.1.12"),
++      ),
++      patchUpdateRows(
++        { ...idle, status: "updating", updates: [picks], t3Version: null },
++        app("available", "0.1.12"),
++      ),
++      offeredAppVersion(app("downloading", "0.1.12")),
++    ]).toEqual([
++      [
++        {
++          key: "t3code",
++          name: "T3 Code",
++          from: "0.1.11",
++          to: "0.1.12",
++          added: false,
++          removed: false,
++        },
++        { key: "patch:picks", name: "Picks", from: "1", to: "2", added: false, removed: false },
++      ],
++      [{ key: "patch:picks", name: "Picks", from: "1", to: "2", added: false, removed: false }],
++      null,
++    ]);
++  });
++
++  it("once a run says what it updates, lists that instead of the offer, removals included", () => {
++    const changes = [
++      { name: "T3 Code", from: "0.1.11", to: "0.1.13" },
++      { name: "picks", from: "1", to: "3" },
++      { name: "journey-kit", from: "1", to: "removed" },
++    ];
++    const expected = [
++      {
++        key: "change:T3 Code",
++        name: "T3 Code",
++        from: "0.1.11",
++        to: "0.1.13",
++        added: false,
++        removed: false,
++      },
++      { key: "change:picks", name: "Picks", from: "1", to: "3", added: false, removed: false },
++      {
++        key: "change:journey-kit",
++        name: "journey-kit",
++        from: "1",
++        to: "removed",
++        added: false,
++        removed: true,
++      },
++    ];
++    const offered = { ...idle, updates: [picks], t3Version: "0.1.12" };
++    expect([
++      patchUpdateRows({ ...offered, status: "updating", changes }, app("available", "0.1.12")),
++      patchUpdateRows({ ...offered, status: "error", errorContext: "update", changes }, null),
++      patchUpdateRows({ ...offered, status: "updating" }, app("available", "0.1.12")),
++      patchUpdateRows({ ...offered, status: "updating", changes: [] }, app("available", "0.1.12")),
++      patchUpdateRows(
++        { ...offered, status: "updating", changes: [{ name: "notes", from: "", to: "2" }] },
++        null,
++      ),
++    ]).toEqual([
++      expected,
++      expected,
++      [
++        {
++          key: "t3code",
++          name: "T3 Code",
++          from: "0.1.11",
++          to: "0.1.12",
++          added: false,
++          removed: false,
++        },
++        { key: "patch:picks", name: "Picks", from: "1", to: "2", added: false, removed: false },
++      ],
++      [],
++      [{ key: "change:notes", name: "notes", from: "", to: "2", added: true, removed: false }],
++    ]);
++  });
++
++  it("counts finished steps out of all of them", () => {
++    const step = (status: "pending" | "running" | "passed" | "failed" | "skipped") => ({
++      kind: "check",
++      name: status,
++      status,
++      note: "",
++    });
++    expect(
++      patchUpdateProgress([
++        step("passed"),
++        step("failed"),
++        step("skipped"),
++        step("running"),
++        step("pending"),
++      ]),
++    ).toEqual({ done: 3, total: 5 });
++  });
++});
+diff --git a/apps/web/src/components/sidebar/patchUpdate.logic.ts b/apps/web/src/components/sidebar/patchUpdate.logic.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..54a20de7a0bf736a213dbc9bc5162fb91439faa0
+--- /dev/null
++++ b/apps/web/src/components/sidebar/patchUpdate.logic.ts
+@@ -0,0 +1,99 @@
++import type {
++  DesktopPatchUpdateState,
++  DesktopPatchUpdateStep,
++  DesktopUpdateState,
++} from "@t3tools/contracts";
++
++/** One thing the patcher's update changes: T3 Code or a patch, from one version to another, added or removed. */
++export interface PatchUpdateRow {
++  readonly key: string;
++  readonly name: string;
++  readonly from: string;
++  readonly to: string;
++  readonly added: boolean;
++  readonly removed: boolean;
++}
++
++/** What to run when the installed record has no update command. */
++export const COMMAND_LINE_UPDATE = "python3 scripts/patcher.py update";
++
++/** The T3 Code version the app's own check offers, or null when it offers none. */
++export function offeredAppVersion(app: DesktopUpdateState | null): string | null {
++  if (app === null || (app.status !== "available" && app.status !== "downloaded")) return null;
++  return app.downloadedVersion ?? app.availableVersion;
++}
++
++/**
++ * Whether a patched build's pill shows the patcher's update: a patch or T3 Code update is offered, one is running,
++ * or the last one failed. Unpatched builds (disabled) keep the app's own pill.
++ */
++export function showsPatchUpdates(
++  patch: DesktopPatchUpdateState | null,
++  app: DesktopUpdateState | null,
++): patch is DesktopPatchUpdateState {
++  if (patch === null || patch.status === "disabled") return false;
++  return (
++    patch.updates.length > 0 ||
++    patch.status === "updating" ||
++    patch.errorContext === "update" ||
++    offeredAppVersion(app) !== null
++  );
++}
++
++/**
++ * T3 Code first, when its version changes, then each patch: "Picks 1 → 2". Once a run has said what it updates
++ * (which can differ from the offer: a newer version, or a patch removed since), that's what's listed.
++ */
++export function patchUpdateRows(
++  patch: DesktopPatchUpdateState,
++  app: DesktopUpdateState | null,
++): ReadonlyArray<PatchUpdateRow> {
++  const ran = patch.status === "updating" || patch.errorContext === "update";
++  // A run's report says what it changes, even when that's nothing; until it does, the offer stands.
++  if (ran && patch.changes !== null) {
++    return patch.changes.map((change) => ({
++      key: `change:${change.name}`,
++      name: patch.updates.find((update) => update.id === change.name)?.title ?? change.name,
++      from: change.from,
++      to: change.to,
++      added: change.from === "",
++      removed: change.to === "removed",
++    }));
++  }
++  const appVersion = patch.status === "updating" ? patch.t3Version : offeredAppVersion(app);
++  return [
++    ...(appVersion === null || app === null
++      ? []
++      : [
++          {
++            key: "t3code",
++            name: "T3 Code",
++            from: app.currentVersion,
++            to: appVersion,
++            added: false,
++            removed: false,
++          },
++        ]),
++    ...patch.updates.map((update) => ({
++      key: `patch:${update.id}`,
++      name: update.title,
++      from: String(update.installedVersion),
++      to: String(update.availableVersion),
++      added: false,
++      removed: false,
++    })),
++  ];
++}
++
++/** Steps finished (passed, failed or skipped) out of all the run's steps. */
++export function patchUpdateProgress(steps: ReadonlyArray<DesktopPatchUpdateStep>): {
++  readonly done: number;
++  readonly total: number;
++} {
++  return {
++    done: steps.filter(
++      (step) => step.status === "passed" || step.status === "failed" || step.status === "skipped",
++    ).length,
++    total: steps.length,
++  };
++}
+diff --git a/apps/web/src/i18n/translations/de.json b/apps/web/src/i18n/translations/de.json
+index 5439ee39688eade31897af144b50a5f5383f290e..f6d163cac02f6e5ddb358e41aef770980a48f73c 100644
+--- a/apps/web/src/i18n/translations/de.json
++++ b/apps/web/src/i18n/translations/de.json
+@@ -12196,5 +12196,49 @@
+   "27d76249d09eb69f": "Review-Leitfaden bereit",
+   "faa3bb26abb39c93": "Review-Leitfaden fehlgeschlagen",
+   "b7df38b7d8792d78": "Leitfaden öffnen",
+-  "9e91e9a77b664e4e": "Review-Leitfaden konnte nicht gestartet werden"
++  "9e91e9a77b664e4e": "Review-Leitfaden konnte nicht gestartet werden",
++  "6be71663e706d0f6": "Der anfängliche Status der Patch-Updates konnte nach {count} Versuchen nicht gelesen werden.",
++  "b03aa2bf52a10a9d": "Wird mit T3 Patcher aktualisiert…",
++  "7b3a5c5948fc9952": "Updates verfügbar",
++  "c05afbd731b87eb1": [
++    "Schritt ",
++    {
++      "i": 1,
++      "k": "_gt_value_1",
++      "v": "v"
++    },
++    " von ",
++    {
++      "i": 2,
++      "k": "_gt_value_2",
++      "v": "v"
++    }
++  ],
++  "a44df79773349443": [
++    "Protokoll: ",
++    {
++      "i": 1,
++      "k": "_gt_value_1",
++      "v": "v"
++    }
++  ],
++  "6b1da89bf7daab6e": "Aktualisieren",
++  "9501e36dc1ca6d7a": "Patches abrufen",
++  "827357c2e42f0220": "T3-Code-Quellcode abrufen",
++  "2a7efd3e54fe8d95": "Quellcode von T3 Code {version} abrufen",
++  "743c532173a8b3e1": "{name} anwenden",
++  "013eced1f833f7df": "{name} prüfen",
++  "15ca7a6ffbeefbdb": "{name} bauen",
++  "a92ae7e3590f7ddc": "Journey {name} ausführen",
++  "733bd96278a275cf": "Neu aufgesetzte Patches speichern",
++  "f94cd760a1df02e3": "entfernt",
++  "60973e24ba89c58b": [
++    "Über die Befehlszeile aktualisieren: ",
++    {
++      "i": 1,
++      "k": "_gt_value_1",
++      "v": "v"
++    }
++  ],
++  "9beaa3885c505fd1": "hinzugefügt, Version {version}"
+ }
+diff --git a/apps/web/src/i18n/translations/en.json b/apps/web/src/i18n/translations/en.json
+index c378e66342505d9a5fa15fb0767a74aad29325d5..504b699b0bb997aa41827b27ba3414b9afdb4310 100644
+--- a/apps/web/src/i18n/translations/en.json
++++ b/apps/web/src/i18n/translations/en.json
+@@ -12205,5 +12205,49 @@
+   "27d76249d09eb69f": "Review guide ready",
+   "faa3bb26abb39c93": "Review guide failed",
+   "b7df38b7d8792d78": "Open guide",
+-  "9e91e9a77b664e4e": "Could not start a review guide"
++  "9e91e9a77b664e4e": "Could not start a review guide",
++  "6be71663e706d0f6": "Failed to read the initial patch update state after {count} attempts.",
++  "b03aa2bf52a10a9d": "Updating with T3 Patcher…",
++  "7b3a5c5948fc9952": "Updates available",
++  "c05afbd731b87eb1": [
++    "Step ",
++    {
++      "i": 1,
++      "k": "_gt_value_1",
++      "v": "v"
++    },
++    " of ",
++    {
++      "i": 2,
++      "k": "_gt_value_2",
++      "v": "v"
++    }
++  ],
++  "a44df79773349443": [
++    "Log: ",
++    {
++      "i": 1,
++      "k": "_gt_value_1",
++      "v": "v"
++    }
++  ],
++  "6b1da89bf7daab6e": "Update",
++  "9501e36dc1ca6d7a": "Get patches",
++  "827357c2e42f0220": "Get T3 Code source",
++  "2a7efd3e54fe8d95": "Get T3 Code {version} source",
++  "743c532173a8b3e1": "Apply {name}",
++  "013eced1f833f7df": "Check {name}",
++  "15ca7a6ffbeefbdb": "Build {name}",
++  "a92ae7e3590f7ddc": "Run journey {name}",
++  "733bd96278a275cf": "Save rebased patches",
++  "f94cd760a1df02e3": "removed",
++  "60973e24ba89c58b": [
++    "Update from the command line: ",
++    {
++      "i": 1,
++      "k": "_gt_value_1",
++      "v": "v"
++    }
++  ],
++  "9beaa3885c505fd1": "added, version {version}"
+ }
+diff --git a/apps/web/src/i18n/translations/es.json b/apps/web/src/i18n/translations/es.json
+index 1538850527718730a5137e340ce7f8f44d40e643..84bfa2d71d81e48e525f0ae68a986a871a4d1445 100644
+--- a/apps/web/src/i18n/translations/es.json
++++ b/apps/web/src/i18n/translations/es.json
+@@ -12191,5 +12191,49 @@
+   "27d76249d09eb69f": "Guía de revisión lista",
+   "faa3bb26abb39c93": "Falló la guía de revisión",
+   "b7df38b7d8792d78": "Abrir guía",
+-  "9e91e9a77b664e4e": "No se pudo iniciar una guía de revisión"
++  "9e91e9a77b664e4e": "No se pudo iniciar una guía de revisión",
++  "6be71663e706d0f6": "No se pudo leer el estado inicial de las actualizaciones de parches tras {count} intentos.",
++  "b03aa2bf52a10a9d": "Actualizando con T3 Patcher…",
++  "7b3a5c5948fc9952": "Actualizaciones disponibles",
++  "c05afbd731b87eb1": [
++    "Paso ",
++    {
++      "i": 1,
++      "k": "_gt_value_1",
++      "v": "v"
++    },
++    " de ",
++    {
++      "i": 2,
++      "k": "_gt_value_2",
++      "v": "v"
++    }
++  ],
++  "a44df79773349443": [
++    "Registro: ",
++    {
++      "i": 1,
++      "k": "_gt_value_1",
++      "v": "v"
++    }
++  ],
++  "6b1da89bf7daab6e": "Actualizar",
++  "9501e36dc1ca6d7a": "Obtener parches",
++  "827357c2e42f0220": "Obtener el código fuente de T3 Code",
++  "2a7efd3e54fe8d95": "Obtener el código fuente de T3 Code {version}",
++  "743c532173a8b3e1": "Aplicar {name}",
++  "013eced1f833f7df": "Comprobar {name}",
++  "15ca7a6ffbeefbdb": "Compilar {name}",
++  "a92ae7e3590f7ddc": "Ejecutar el recorrido {name}",
++  "733bd96278a275cf": "Guardar parches reajustados",
++  "f94cd760a1df02e3": "eliminado",
++  "60973e24ba89c58b": [
++    "Actualiza desde la línea de comandos: ",
++    {
++      "i": 1,
++      "k": "_gt_value_1",
++      "v": "v"
++    }
++  ],
++  "9beaa3885c505fd1": "añadido, versión {version}"
+ }
+diff --git a/apps/web/src/i18n/translations/fr.json b/apps/web/src/i18n/translations/fr.json
+index b9166940ccf6600d3a91ab869aa0279f7c05258a..d287cfa26d9ed22e7feae528246aadc49504879a 100644
+--- a/apps/web/src/i18n/translations/fr.json
++++ b/apps/web/src/i18n/translations/fr.json
+@@ -12196,5 +12196,49 @@
+   "27d76249d09eb69f": "Guide de revue prêt",
+   "faa3bb26abb39c93": "Échec du guide de revue",
+   "b7df38b7d8792d78": "Ouvrir le guide",
+-  "9e91e9a77b664e4e": "Impossible de démarrer un guide de revue"
++  "9e91e9a77b664e4e": "Impossible de démarrer un guide de revue",
++  "6be71663e706d0f6": "Impossible de lire l’état initial des mises à jour de correctifs après {count} tentatives.",
++  "b03aa2bf52a10a9d": "Mise à jour avec T3 Patcher…",
++  "7b3a5c5948fc9952": "Mises à jour disponibles",
++  "c05afbd731b87eb1": [
++    "Étape ",
++    {
++      "i": 1,
++      "k": "_gt_value_1",
++      "v": "v"
++    },
++    " sur ",
++    {
++      "i": 2,
++      "k": "_gt_value_2",
++      "v": "v"
++    }
++  ],
++  "a44df79773349443": [
++    "Journal : ",
++    {
++      "i": 1,
++      "k": "_gt_value_1",
++      "v": "v"
++    }
++  ],
++  "6b1da89bf7daab6e": "Mettre à jour",
++  "9501e36dc1ca6d7a": "Récupérer les correctifs",
++  "827357c2e42f0220": "Récupérer les sources de T3 Code",
++  "2a7efd3e54fe8d95": "Récupérer les sources de T3 Code {version}",
++  "743c532173a8b3e1": "Appliquer {name}",
++  "013eced1f833f7df": "Vérifier {name}",
++  "15ca7a6ffbeefbdb": "Compiler {name}",
++  "a92ae7e3590f7ddc": "Exécuter le parcours {name}",
++  "733bd96278a275cf": "Enregistrer les correctifs rebasés",
++  "f94cd760a1df02e3": "supprimé",
++  "60973e24ba89c58b": [
++    "Mettre à jour en ligne de commande : ",
++    {
++      "i": 1,
++      "k": "_gt_value_1",
++      "v": "v"
++    }
++  ],
++  "9beaa3885c505fd1": "ajouté, version {version}"
+ }
+diff --git a/apps/web/src/i18n/translations/ja.json b/apps/web/src/i18n/translations/ja.json
+index da6a34749df883d48fa5ec7db9008751c412cd09..f34cf813f7b9b8970a840861707455a1e765deae 100644
+--- a/apps/web/src/i18n/translations/ja.json
++++ b/apps/web/src/i18n/translations/ja.json
+@@ -12144,5 +12144,49 @@
+   "27d76249d09eb69f": "レビューガイドの準備ができました",
+   "faa3bb26abb39c93": "レビューガイドの作成に失敗しました",
+   "b7df38b7d8792d78": "ガイドを開く",
+-  "9e91e9a77b664e4e": "レビューガイドを開始できませんでした"
++  "9e91e9a77b664e4e": "レビューガイドを開始できませんでした",
++  "6be71663e706d0f6": "{count} 回試行しましたが、パッチ更新の初期状態を読み込めませんでした。",
++  "b03aa2bf52a10a9d": "T3 Patcher で更新中…",
++  "7b3a5c5948fc9952": "アップデートがあります",
++  "c05afbd731b87eb1": [
++    "ステップ ",
++    {
++      "i": 1,
++      "k": "_gt_value_1",
++      "v": "v"
++    },
++    " / ",
++    {
++      "i": 2,
++      "k": "_gt_value_2",
++      "v": "v"
++    }
++  ],
++  "a44df79773349443": [
++    "ログ: ",
++    {
++      "i": 1,
++      "k": "_gt_value_1",
++      "v": "v"
++    }
++  ],
++  "6b1da89bf7daab6e": "アップデート",
++  "9501e36dc1ca6d7a": "パッチを取得",
++  "827357c2e42f0220": "T3 Code のソースを取得",
++  "2a7efd3e54fe8d95": "T3 Code {version} のソースを取得",
++  "743c532173a8b3e1": "{name} を適用",
++  "013eced1f833f7df": "{name} を確認",
++  "15ca7a6ffbeefbdb": "{name} をビルド",
++  "a92ae7e3590f7ddc": "ジャーニー {name} を実行",
++  "733bd96278a275cf": "リベースしたパッチを保存",
++  "f94cd760a1df02e3": "削除",
++  "60973e24ba89c58b": [
++    "コマンドラインから更新してください: ",
++    {
++      "i": 1,
++      "k": "_gt_value_1",
++      "v": "v"
++    }
++  ],
++  "9beaa3885c505fd1": "追加、バージョン {version}"
+ }
+diff --git a/apps/web/src/i18n/translations/ko.json b/apps/web/src/i18n/translations/ko.json
+index f38e81a9b93989d17c0eda0dedd40d6c3a7ef3d3..31f32f568d5d8aeb36e163ef80ed81e133a92b1f 100644
+--- a/apps/web/src/i18n/translations/ko.json
++++ b/apps/web/src/i18n/translations/ko.json
+@@ -12140,5 +12140,49 @@
+   "27d76249d09eb69f": "검토 가이드 준비됨",
+   "faa3bb26abb39c93": "검토 가이드 실패",
+   "b7df38b7d8792d78": "가이드 열기",
+-  "9e91e9a77b664e4e": "검토 가이드를 시작할 수 없습니다"
++  "9e91e9a77b664e4e": "검토 가이드를 시작할 수 없습니다",
++  "6be71663e706d0f6": "{count}번 시도했지만 패치 업데이트의 초기 상태를 읽지 못했습니다.",
++  "b03aa2bf52a10a9d": "T3 Patcher로 업데이트하는 중…",
++  "7b3a5c5948fc9952": "업데이트 가능",
++  "c05afbd731b87eb1": [
++    "단계 ",
++    {
++      "i": 1,
++      "k": "_gt_value_1",
++      "v": "v"
++    },
++    "/",
++    {
++      "i": 2,
++      "k": "_gt_value_2",
++      "v": "v"
++    }
++  ],
++  "a44df79773349443": [
++    "로그: ",
++    {
++      "i": 1,
++      "k": "_gt_value_1",
++      "v": "v"
++    }
++  ],
++  "6b1da89bf7daab6e": "업데이트",
++  "9501e36dc1ca6d7a": "패치 가져오기",
++  "827357c2e42f0220": "T3 Code 소스 가져오기",
++  "2a7efd3e54fe8d95": "T3 Code {version} 소스 가져오기",
++  "743c532173a8b3e1": "{name} 적용",
++  "013eced1f833f7df": "{name} 확인",
++  "15ca7a6ffbeefbdb": "{name} 빌드",
++  "a92ae7e3590f7ddc": "{name} 여정 실행",
++  "733bd96278a275cf": "리베이스한 패치 저장",
++  "f94cd760a1df02e3": "제거됨",
++  "60973e24ba89c58b": [
++    "명령줄에서 업데이트하세요: ",
++    {
++      "i": 1,
++      "k": "_gt_value_1",
++      "v": "v"
++    }
++  ],
++  "9beaa3885c505fd1": "추가됨, 버전 {version}"
+ }
+diff --git a/apps/web/src/i18n/translations/pt-BR.json b/apps/web/src/i18n/translations/pt-BR.json
+index 24ce6764ab312c0d95c39c915b54103a0fd9ab21..e9049c2fbe37c5dab6ad7d9e138c74b59322ab41 100644
+--- a/apps/web/src/i18n/translations/pt-BR.json
++++ b/apps/web/src/i18n/translations/pt-BR.json
+@@ -12195,5 +12195,49 @@
+   "27d76249d09eb69f": "Guia de revisão pronto",
+   "faa3bb26abb39c93": "O guia de revisão falhou",
+   "b7df38b7d8792d78": "Abrir guia",
+-  "9e91e9a77b664e4e": "Não foi possível iniciar um guia de revisão"
++  "9e91e9a77b664e4e": "Não foi possível iniciar um guia de revisão",
++  "6be71663e706d0f6": "Não foi possível ler o estado inicial das atualizações de patches após {count} tentativas.",
++  "b03aa2bf52a10a9d": "Atualizando com o T3 Patcher…",
++  "7b3a5c5948fc9952": "Atualizações disponíveis",
++  "c05afbd731b87eb1": [
++    "Etapa ",
++    {
++      "i": 1,
++      "k": "_gt_value_1",
++      "v": "v"
++    },
++    " de ",
++    {
++      "i": 2,
++      "k": "_gt_value_2",
++      "v": "v"
++    }
++  ],
++  "a44df79773349443": [
++    "Log: ",
++    {
++      "i": 1,
++      "k": "_gt_value_1",
++      "v": "v"
++    }
++  ],
++  "6b1da89bf7daab6e": "Atualizar",
++  "9501e36dc1ca6d7a": "Obter patches",
++  "827357c2e42f0220": "Obter o código-fonte do T3 Code",
++  "2a7efd3e54fe8d95": "Obter o código-fonte do T3 Code {version}",
++  "743c532173a8b3e1": "Aplicar {name}",
++  "013eced1f833f7df": "Verificar {name}",
++  "15ca7a6ffbeefbdb": "Compilar {name}",
++  "a92ae7e3590f7ddc": "Executar a jornada {name}",
++  "733bd96278a275cf": "Salvar patches rebaseados",
++  "f94cd760a1df02e3": "removido",
++  "60973e24ba89c58b": [
++    "Atualize pela linha de comando: ",
++    {
++      "i": 1,
++      "k": "_gt_value_1",
++      "v": "v"
++    }
++  ],
++  "9beaa3885c505fd1": "adicionado, versão {version}"
+ }
+diff --git a/apps/web/src/i18n/translations/ru.json b/apps/web/src/i18n/translations/ru.json
+index a5f0c249e2ffc2be56462b457778a176924b8c9b..8564890b28ca102015bd514005dc163220fe3429 100644
+--- a/apps/web/src/i18n/translations/ru.json
++++ b/apps/web/src/i18n/translations/ru.json
+@@ -12195,5 +12195,49 @@
+   "27d76249d09eb69f": "Гид по ревью готов",
+   "faa3bb26abb39c93": "Не удалось создать гид по ревью",
+   "b7df38b7d8792d78": "Открыть гид",
+-  "9e91e9a77b664e4e": "Не удалось запустить гид по ревью"
++  "9e91e9a77b664e4e": "Не удалось запустить гид по ревью",
++  "6be71663e706d0f6": "Не удалось прочитать начальное состояние обновлений патчей после {count} попыток.",
++  "b03aa2bf52a10a9d": "Обновление через T3 Patcher…",
++  "7b3a5c5948fc9952": "Доступны обновления",
++  "c05afbd731b87eb1": [
++    "Шаг ",
++    {
++      "i": 1,
++      "k": "_gt_value_1",
++      "v": "v"
++    },
++    " из ",
++    {
++      "i": 2,
++      "k": "_gt_value_2",
++      "v": "v"
++    }
++  ],
++  "a44df79773349443": [
++    "Журнал: ",
++    {
++      "i": 1,
++      "k": "_gt_value_1",
++      "v": "v"
++    }
++  ],
++  "6b1da89bf7daab6e": "Обновить",
++  "9501e36dc1ca6d7a": "Получить патчи",
++  "827357c2e42f0220": "Получить исходный код T3 Code",
++  "2a7efd3e54fe8d95": "Получить исходный код T3 Code {version}",
++  "743c532173a8b3e1": "Применить {name}",
++  "013eced1f833f7df": "Проверить {name}",
++  "15ca7a6ffbeefbdb": "Собрать {name}",
++  "a92ae7e3590f7ddc": "Запустить сценарий {name}",
++  "733bd96278a275cf": "Сохранить перенесённые патчи",
++  "f94cd760a1df02e3": "удалён",
++  "60973e24ba89c58b": [
++    "Обновите из командной строки: ",
++    {
++      "i": 1,
++      "k": "_gt_value_1",
++      "v": "v"
++    }
++  ],
++  "9beaa3885c505fd1": "добавлен, версия {version}"
+ }
+diff --git a/apps/web/src/i18n/translations/sv.json b/apps/web/src/i18n/translations/sv.json
+index 353df28a8a9aa036f0fc25eb10340f3a03156f99..f66afa7404b88be175caa17f981f8b6b42994855 100644
+--- a/apps/web/src/i18n/translations/sv.json
++++ b/apps/web/src/i18n/translations/sv.json
+@@ -12203,5 +12203,49 @@
+   "27d76249d09eb69f": "Granskningsguiden är klar",
+   "faa3bb26abb39c93": "Granskningsguiden misslyckades",
+   "b7df38b7d8792d78": "Öppna guiden",
+-  "9e91e9a77b664e4e": "Kunde inte starta en granskningsguide"
++  "9e91e9a77b664e4e": "Kunde inte starta en granskningsguide",
++  "6be71663e706d0f6": "Det gick inte att läsa det ursprungliga läget för patchuppdateringar efter {count} försök.",
++  "b03aa2bf52a10a9d": "Uppdaterar med T3 Patcher…",
++  "7b3a5c5948fc9952": "Uppdateringar finns",
++  "c05afbd731b87eb1": [
++    "Steg ",
++    {
++      "i": 1,
++      "k": "_gt_value_1",
++      "v": "v"
++    },
++    " av ",
++    {
++      "i": 2,
++      "k": "_gt_value_2",
++      "v": "v"
++    }
++  ],
++  "a44df79773349443": [
++    "Logg: ",
++    {
++      "i": 1,
++      "k": "_gt_value_1",
++      "v": "v"
++    }
++  ],
++  "6b1da89bf7daab6e": "Uppdatera",
++  "9501e36dc1ca6d7a": "Hämta patchar",
++  "827357c2e42f0220": "Hämta källkoden för T3 Code",
++  "2a7efd3e54fe8d95": "Hämta källkoden för T3 Code {version}",
++  "743c532173a8b3e1": "Tillämpa {name}",
++  "013eced1f833f7df": "Kontrollera {name}",
++  "15ca7a6ffbeefbdb": "Bygg {name}",
++  "a92ae7e3590f7ddc": "Kör resan {name}",
++  "733bd96278a275cf": "Spara ombaserade patchar",
++  "f94cd760a1df02e3": "borttagen",
++  "60973e24ba89c58b": [
++    "Uppdatera från kommandoraden: ",
++    {
++      "i": 1,
++      "k": "_gt_value_1",
++      "v": "v"
++    }
++  ],
++  "9beaa3885c505fd1": "tillagd, version {version}"
+ }
+diff --git a/apps/web/src/i18n/translations/zh.json b/apps/web/src/i18n/translations/zh.json
+index 4acdfc14e2cb43a8480093dcafb4de404d8cfc85..b5f04569397eca7275c2cd42f96fb1331a38d9a2 100644
+--- a/apps/web/src/i18n/translations/zh.json
++++ b/apps/web/src/i18n/translations/zh.json
+@@ -12221,5 +12221,50 @@
+   "27d76249d09eb69f": "审查导览已就绪",
+   "faa3bb26abb39c93": "审查导览生成失败",
+   "b7df38b7d8792d78": "打开导览",
+-  "9e91e9a77b664e4e": "无法开始生成审查导览"
++  "9e91e9a77b664e4e": "无法开始生成审查导览",
++  "6be71663e706d0f6": "尝试 {count} 次后仍无法读取补丁更新的初始状态。",
++  "b03aa2bf52a10a9d": "正在通过 T3 Patcher 更新…",
++  "7b3a5c5948fc9952": "有可用更新",
++  "c05afbd731b87eb1": [
++    "第 ",
++    {
++      "i": 1,
++      "k": "_gt_value_1",
++      "v": "v"
++    },
++    " 步，共 ",
++    {
++      "i": 2,
++      "k": "_gt_value_2",
++      "v": "v"
++    },
++    " 步"
++  ],
++  "a44df79773349443": [
++    "日志：",
++    {
++      "i": 1,
++      "k": "_gt_value_1",
++      "v": "v"
++    }
++  ],
++  "6b1da89bf7daab6e": "更新",
++  "9501e36dc1ca6d7a": "获取补丁",
++  "827357c2e42f0220": "获取 T3 Code 源代码",
++  "2a7efd3e54fe8d95": "获取 T3 Code {version} 源代码",
++  "743c532173a8b3e1": "应用 {name}",
++  "013eced1f833f7df": "检查 {name}",
++  "15ca7a6ffbeefbdb": "构建 {name}",
++  "a92ae7e3590f7ddc": "运行旅程 {name}",
++  "733bd96278a275cf": "保存变基后的补丁",
++  "f94cd760a1df02e3": "已移除",
++  "60973e24ba89c58b": [
++    "请从命令行更新：",
++    {
++      "i": 1,
++      "k": "_gt_value_1",
++      "v": "v"
++    }
++  ],
++  "9beaa3885c505fd1": "已添加，版本 {version}"
+ }
+diff --git a/apps/web/src/state/desktopPatchUpdate.test.ts b/apps/web/src/state/desktopPatchUpdate.test.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..968880281397c7d8b6ffc38abd3d3a546207ffbc
+--- /dev/null
++++ b/apps/web/src/state/desktopPatchUpdate.test.ts
+@@ -0,0 +1,55 @@
++import type { DesktopPatchUpdateState } from "@t3tools/contracts";
++import * as AsyncResult from "effect/reactivity/AsyncResult";
++import { AtomRegistry } from "effect/reactivity";
++import { describe, expect, it, vi } from "vite-plus/test";
++
++import { createDesktopPatchUpdateStateAtom } from "./desktopPatchUpdate";
++
++const idle: DesktopPatchUpdateState = {
++  status: "idle",
++  updates: [],
++  runnable: true,
++  t3Version: null,
++  changes: null,
++  steps: [],
++  message: null,
++  errorContext: null,
++  logPath: null,
++  checkedAt: null,
++};
++
++describe("desktopPatchUpdateStateAtom", () => {
++  it("starts from the main process's state, then follows each change it sends", async () => {
++    let listener: ((state: DesktopPatchUpdateState) => void) | undefined;
++    const atom = createDesktopPatchUpdateStateAtom(() => ({
++      getPatchUpdateState: () => Promise.resolve(idle),
++      onPatchUpdateState: (next) => {
++        listener = next;
++        return () => undefined;
++      },
++    }));
++    const registry = AtomRegistry.make();
++    registry.mount(atom);
++    const current = () => AsyncResult.getOrElse(registry.get(atom), () => null);
++
++    await vi.waitFor(() => expect(current()).toEqual(idle));
++    const available: DesktopPatchUpdateState = {
++      ...idle,
++      status: "available",
++      updates: [{ id: "picks", title: "Picks", installedVersion: 1, availableVersion: 2 }],
++    };
++    listener?.(available);
++    await vi.waitFor(() => expect(current()).toEqual(available));
++    registry.dispose();
++  });
++
++  it("is null outside the desktop app", async () => {
++    const atom = createDesktopPatchUpdateStateAtom(() => undefined);
++    const registry = AtomRegistry.make();
++    registry.mount(atom);
++    await vi.waitFor(() =>
++      expect(AsyncResult.getOrElse(registry.get(atom), () => idle)).toEqual(null),
++    );
++    registry.dispose();
++  });
++});
+diff --git a/apps/web/src/state/desktopPatchUpdate.ts b/apps/web/src/state/desktopPatchUpdate.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..95b07c57cf156aa40dfb5287412735d8e6e54620
+--- /dev/null
++++ b/apps/web/src/state/desktopPatchUpdate.ts
+@@ -0,0 +1,96 @@
++import { useAtomValue } from "@effect/atom-react";
++import type { DesktopBridge, DesktopPatchUpdateState } from "@t3tools/contracts";
++import * as Effect from "effect/Effect";
++import * as Queue from "effect/Queue";
++import * as Schema from "effect/Schema";
++import * as Stream from "effect/Stream";
++import * as AsyncResult from "effect/reactivity/AsyncResult";
++import { Atom } from "effect/reactivity";
++import { msg } from "gt-react";
++
++import { m } from "../i18n/messages";
++
++type DesktopPatchUpdateBridge = Pick<DesktopBridge, "getPatchUpdateState" | "onPatchUpdateState">;
++
++const INITIAL_STATE_READ_ATTEMPT_COUNT = 3;
++
++export class DesktopPatchUpdateStateReadError extends Schema.TaggedError<DesktopPatchUpdateStateReadError>()(
++  "DesktopPatchUpdateStateReadError",
++  {
++    attemptCount: Schema.Number,
++    cause: Schema.Defect(),
++  },
++) {
++  override get message(): string {
++    return m(
++      msg("Failed to read the initial patch update state after {count} attempts.", {
++        count: this.attemptCount,
++      }),
++    );
++  }
++}
++
++function getDesktopPatchUpdateBridge(): DesktopPatchUpdateBridge | undefined {
++  return typeof window === "undefined" ? undefined : window.desktopBridge;
++}
++
++export function createDesktopPatchUpdateStateAtom(
++  getBridge: () => DesktopPatchUpdateBridge | undefined,
++) {
++  const updates = Stream.callback<DesktopPatchUpdateState | null>((queue) =>
++    Effect.gen(function* () {
++      const bridge = getBridge();
++      if (!bridge) {
++        Queue.offerUnsafe(queue, null);
++        return yield* Effect.never;
++      }
++
++      let receivedUpdate = false;
++      yield* Effect.acquireRelease(
++        Effect.sync(() =>
++          bridge.onPatchUpdateState((state) => {
++            receivedUpdate = true;
++            Queue.offerUnsafe(queue, state);
++          }),
++        ),
++        (unsubscribe) => Effect.sync(unsubscribe),
++      );
++
++      const initialState = yield* Effect.tryPromise({
++        try: () => bridge.getPatchUpdateState(),
++        catch: (cause) =>
++          new DesktopPatchUpdateStateReadError({
++            attemptCount: INITIAL_STATE_READ_ATTEMPT_COUNT,
++            cause,
++          }),
++      }).pipe(
++        Effect.retry({ times: INITIAL_STATE_READ_ATTEMPT_COUNT - 1 }),
++        Effect.catchTags({
++          DesktopPatchUpdateStateReadError: (error) =>
++            Effect.logError(error.message, {
++              error,
++              errorTag: error._tag,
++              attemptCount: error.attemptCount,
++            }).pipe(Effect.as(null)),
++        }),
++      );
++      if (!receivedUpdate && initialState !== null) {
++        Queue.offerUnsafe(queue, initialState);
++      }
++
++      return yield* Effect.never;
++    }),
++  );
++
++  return Atom.make(updates, { initialValue: null }).pipe(
++    Atom.keepAlive,
++    Atom.withLabel("desktop:patch-update-state"),
++  );
++}
++
++const desktopPatchUpdateStateAtom = createDesktopPatchUpdateStateAtom(getDesktopPatchUpdateBridge);
++
++/** Patch updates on a build made by T3 Patcher; null before the first read, or outside the desktop app. */
++export function useDesktopPatchUpdateState(): DesktopPatchUpdateState | null {
++  return AsyncResult.getOrElse(useAtomValue(desktopPatchUpdateStateAtom), () => null);
++}
+diff --git a/packages/contracts/src/ipc.ts b/packages/contracts/src/ipc.ts
+index 77a523c03608f6de2b0b87afbcb5230e53eec38e..5eb49f24b00b15c15b6231c44db9ff5b3d53c251 100644
+--- a/packages/contracts/src/ipc.ts
++++ b/packages/contracts/src/ipc.ts
+@@ -362,6 +362,75 @@ export const DesktopUpdateActionResultSchema = Schema.Struct({
+   state: DesktopUpdateStateSchema,
+ });
+ 
++/** A patched build's update of one patch: its installed version and the one the feed publishes. */
++export const DesktopPatchUpdateItemSchema = Schema.Struct({
++  id: Schema.String,
++  title: Schema.String,
++  installedVersion: Schema.Number,
++  availableVersion: Schema.Number,
++});
++export type DesktopPatchUpdateItem = typeof DesktopPatchUpdateItemSchema.Type;
++
++/** One step of the patcher's run, as its report says. */
++export const DesktopPatchUpdateStepSchema = Schema.Struct({
++  kind: Schema.String,
++  name: Schema.String,
++  status: Schema.Literals(["pending", "running", "passed", "failed", "skipped"]),
++  note: Schema.String,
++});
++export type DesktopPatchUpdateStep = typeof DesktopPatchUpdateStepSchema.Type;
++
++export const DesktopPatchUpdateStatusSchema = Schema.Literals([
++  "disabled",
++  "idle",
++  "checking",
++  "up-to-date",
++  "available",
++  "updating",
++  "error",
++]);
++export type DesktopPatchUpdateStatus = typeof DesktopPatchUpdateStatusSchema.Type;
++
++/**
++ * Patch updates on a build made by T3 Patcher: the patches with newer versions published, and the patcher's update
++ * run while it goes. `disabled` on any other build.
++ */
++/**
++ * What an update run changes, as its report says: "T3 Code" or a patch id, from one version to another; `from` is ""
++ * for an added patch, and `to` is "removed" for one left out.
++ */
++export const DesktopPatchUpdateChangeSchema = Schema.Struct({
++  name: Schema.String,
++  from: Schema.String,
++  to: Schema.String,
++});
++export type DesktopPatchUpdateChange = typeof DesktopPatchUpdateChangeSchema.Type;
++
++export const DesktopPatchUpdateStateSchema = Schema.Struct({
++  status: DesktopPatchUpdateStatusSchema,
++  updates: Schema.Array(DesktopPatchUpdateItemSchema),
++  /** Whether the installed record has an update command; without one, updates run from the command line. */
++  runnable: Schema.Boolean,
++  /** The T3 Code version the running update builds, when it updates T3 Code too. */
++  t3Version: Schema.NullOr(Schema.String),
++  /** What the running (or last) update changes, from its report; null until the report says (it may say nothing). */
++  changes: Schema.NullOr(Schema.Array(DesktopPatchUpdateChangeSchema)),
++  steps: Schema.Array(DesktopPatchUpdateStepSchema),
++  message: Schema.NullOr(Schema.String),
++  /** Whether `error` came from checking the feed or from an update run. */
++  errorContext: Schema.NullOr(Schema.Literals(["check", "update"])),
++  /** The update run's output. */
++  logPath: Schema.NullOr(Schema.String),
++  checkedAt: Schema.NullOr(Schema.String),
++});
++export type DesktopPatchUpdateState = typeof DesktopPatchUpdateStateSchema.Type;
++
++export const DesktopPatchUpdateActionResultSchema = Schema.Struct({
++  accepted: Schema.Boolean,
++  state: DesktopPatchUpdateStateSchema,
++});
++export type DesktopPatchUpdateActionResult = typeof DesktopPatchUpdateActionResultSchema.Type;
++
+ export interface DesktopUpdateCheckResult {
+   checked: boolean;
+   state: DesktopUpdateState;
+@@ -1206,6 +1275,10 @@ export interface DesktopBridge {
+   /** With a version, installs only that downloaded build. */
+   installUpdate: (expectedVersion?: string) => Promise<DesktopUpdateActionResult>;
+   onUpdateState: (listener: (state: DesktopUpdateState) => void) => () => void;
++  getPatchUpdateState: () => Promise<DesktopPatchUpdateState>;
++  /** Runs T3 Patcher's update: every patch update, and the T3 Code update when there is one. */
++  runPatchUpdate: () => Promise<DesktopPatchUpdateActionResult>;
++  onPatchUpdateState: (listener: (state: DesktopPatchUpdateState) => void) => () => void;
+   cliCommand: {
+     getState: () => Promise<DesktopCliCommandState>;
+     install: () => Promise<DesktopCliCommandState>;
+diff --git a/patcher/journeys/patch-updates.mjs b/patcher/journeys/patch-updates.mjs
+new file mode 100644
+index 0000000000000000000000000000000000000000..7be045cc1b9b2cea7166ec49f082b32a1cd7120b
+--- /dev/null
++++ b/patcher/journeys/patch-updates.mjs
+@@ -0,0 +1,229 @@
++// Journey: a patched build's update pill offers a newer patch and T3 Code version; Update runs the patcher's command
++// with both and shows its steps. Both feeds are served here and the command is a stub, so nothing is installed.
++//   T3_PATCHER_APP=<built .app> T3_PATCHER_EVIDENCE=<dir> node patcher/journeys/patch-updates.mjs
++import * as NodeChildProcess from "node:child_process";
++import * as NodeFS from "node:fs";
++import * as NodeHttp from "node:http";
++import * as NodeOS from "node:os";
++import * as NodePath from "node:path";
++
++import { FIXTURE_DB, STEP_TIMEOUT_MS, evidenceDir, journey } from "./support.mjs";
++
++function assertEqual(actual, expected, what) {
++  const [a, e] = [JSON.stringify(actual), JSON.stringify(expected)];
++  if (a !== e) throw new Error(`${what}: expected ${e}, got ${a}`);
++}
++
++/** Waits until the page's animations and transitions (the popover fading in) have finished. */
++async function settled(page) {
++  await page.evaluate(() =>
++    Promise.all(document.getAnimations().map((animation) => animation.finished.catch(() => {}))),
++  );
++}
++
++async function waitFor(check, what, timeout = STEP_TIMEOUT_MS) {
++  const deadline = Date.now() + timeout;
++  for (;;) {
++    const value = check();
++    if (value !== undefined) return value;
++    if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
++    await new Promise((resolve) => setTimeout(resolve, 200));
++  }
++}
++
++// The build under test's version, and the next one, which the update feed offers.
++const CURRENT = NodeChildProcess.execFileSync(
++  "/usr/libexec/PlistBuddy",
++  [
++    "-c",
++    "Print :CFBundleShortVersionString",
++    NodePath.join(process.env.T3_PATCHER_APP ?? "", "Contents/Info.plist"),
++  ],
++  { encoding: "utf8" },
++).trim();
++const [major, minor, patch] = CURRENT.split("-")[0].split(".").map(Number);
++const NEXT = `${major}.${minor}.${patch + 1}`;
++
++const parent = process.env.T3_PATCHER_TMP || process.env.TMPDIR || NodeOS.tmpdir();
++const root = NodeFS.mkdtempSync(NodePath.join(parent, "t3-patch-updates-"));
++const t3Home = NodePath.join(root, "t3");
++const userdata = NodePath.join(t3Home, "userdata/patcher");
++const argvFile = NodePath.join(root, "stub-argv.json");
++NodeFS.mkdirSync(userdata, { recursive: true });
++NodeFS.copyFileSync(FIXTURE_DB, NodePath.join(t3Home, "userdata/statev2.sqlite"));
++
++// The two feeds: patches/index.json with a newer journey-kit, and T3 Code's latest-mac.yml offering NEXT.
++const requests = [];
++const server = NodeHttp.createServer((request, response) => {
++  const path = new URL(request.url ?? "/", "http://localhost").pathname;
++  requests.push(path);
++  if (path === "/index.json") {
++    response.setHeader("content-type", "application/json");
++    response.end(
++      JSON.stringify({
++        patches: [
++          { id: "journey-kit", title: "Journey kit", summary: "Launches built apps.", version: 2 },
++          { id: "patch-updates", title: "Patch updates", summary: "This.", version: 1 },
++          { id: "not-installed", title: "Not installed", summary: "Never offered.", version: 9 },
++        ],
++      }),
++    );
++  } else if (path === "/latest-mac.yml") {
++    response.end(
++      [
++        `version: ${NEXT}`,
++        "files:",
++        `  - url: T3-Code-${NEXT}-arm64.zip`,
++        "    sha512: AAAA",
++        "    size: 1",
++        `path: T3-Code-${NEXT}-arm64.zip`,
++        "sha512: AAAA",
++        "releaseDate: '2026-11-24T00:00:00.000Z'",
++        "",
++      ].join("\n"),
++    );
++  } else {
++    response.statusCode = 404;
++    response.end();
++  }
++});
++await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
++const port = server.address().port;
++const feed = `http://127.0.0.1:${port}/index.json`;
++
++// The update command: records its arguments, then reports a run the way the patcher does, step by step.
++// Like the patcher's: what the run updates, and its steps. Journey kit 3 was published after the check offered 2.
++const changes = [
++  { name: "T3 Code", from: CURRENT, to: NEXT },
++  { name: "journey-kit", from: "1", to: "3" },
++];
++const report = (steps) =>
++  JSON.stringify({ version: NEXT, install: true, updating: changes, steps });
++const running = [
++  { kind: "pull", name: "patches", status: "passed", note: "1111111 → 2222222" },
++  { kind: "source", name: "T3 Code source", status: "passed", note: `${NEXT} (v${NEXT})` },
++  { kind: "build", name: "app", status: "running", note: "" },
++  { kind: "install", name: "install", status: "pending", note: "" },
++];
++const passed = running.map((step) => ({ ...step, status: "passed" }));
++const stub = NodePath.join(root, "patcher-stub.sh");
++// The PATH the record keeps; the stub writes the one it got.
++const STUB_PATH = `${NodePath.join(root, "tools")}:/usr/bin:/bin`;
++const pathFile = NodePath.join(root, "stub-path.txt");
++NodeFS.writeFileSync(
++  stub,
++  [
++    "#!/bin/sh",
++    `printf '%s' "$PATH" > '${pathFile}'`,
++    `printf '%s\n' "$@" > '${argvFile}.tmp' && mv '${argvFile}.tmp' '${argvFile}'`,
++    `printf '%s' '${report(running)}' > '${userdata}/last-run.json'`,
++    "sleep 6",
++    `printf '%s' '${report(passed)}' > '${userdata}/last-run.json'`,
++    "",
++  ].join("\n"),
++);
++NodeFS.chmodSync(stub, 0o755);
++NodeFS.writeFileSync(
++  NodePath.join(userdata, "installed.json"),
++  JSON.stringify({
++    t3Version: CURRENT,
++    patches: [
++      { id: "journey-kit", version: 1 },
++      { id: "patch-updates", version: 1 },
++    ],
++    installedAt: "2026-11-24T10:00:00.000Z",
++    feed: "https://feed.invalid/patches/index.json",
++    update: {
++      command: ["/bin/sh", stub, "update", "--userdata", userdata],
++      cwd: root,
++      path: STUB_PATH,
++    },
++  }),
++);
++
++try {
++  await journey(
++    "patch-updates",
++    async ({ app, page, screenshot }, step) => {
++      step("waiting for the update pill to offer the patcher's update");
++      const pill = page.getByTestId("patch-update-pill");
++      // The first checks run 15 seconds after start.
++      await pill.waitFor({ timeout: STEP_TIMEOUT_MS });
++      step("opening the popover");
++      await pill.click();
++      const popover = page.getByTestId("patch-update-popover");
++      await popover.waitFor({ timeout: STEP_TIMEOUT_MS });
++      // The patch feed and T3 Code's feed are checked side by side; wait for both rows.
++      await page.getByTestId("patch-update-row").nth(1).waitFor({ timeout: STEP_TIMEOUT_MS });
++      const rows = await page.getByTestId("patch-update-row").allTextContents();
++      const listed = [`T3 Code${CURRENT} → ${NEXT}`, "Journey kit1 → 2"];
++      assertEqual(rows, listed, "the listed updates");
++      await settled(page);
++      console.log(await screenshot("patch-updates-available"));
++
++      step("tapping Update");
++      await page.getByTestId("patch-update-button").click();
++      const argv = await waitFor(
++        () =>
++          NodeFS.existsSync(argvFile)
++            ? NodeFS.readFileSync(argvFile, "utf8").trimEnd().split("\n")
++            : undefined,
++        "the update command to run",
++      );
++      assertEqual(
++        argv,
++        ["update", "--userdata", userdata, "--t3", NEXT, "--relaunch", String(app.process().pid)],
++        "the update command's arguments",
++      );
++      assertEqual(NodeFS.readFileSync(pathFile, "utf8"), STUB_PATH, "the update command's PATH");
++
++      step("following the run's steps");
++      await page.getByText("Step 2 of 4").waitFor({ timeout: STEP_TIMEOUT_MS });
++      assertEqual(
++        await page.getByTestId("patch-update-row").allTextContents(),
++        [`T3 Code${CURRENT} → ${NEXT}`, "Journey kit1 → 3"],
++        "what the run updates, from its report",
++      );
++      assertEqual(
++        await page.getByTestId("patch-update-step").allTextContents(),
++        ["✓Get patches", `✓Get T3 Code ${NEXT} source`, "◐Build app", "○Install"],
++        "the steps while running",
++      );
++      await settled(page);
++      console.log(await screenshot("patch-updates-progress"));
++      await page.getByText("Step 4 of 4").waitFor({ timeout: STEP_TIMEOUT_MS });
++      assertEqual(
++        await page.getByTestId("patch-update-step").allTextContents(),
++        ["✓Get patches", `✓Get T3 Code ${NEXT} source`, "✓Build app", "✓Install"],
++        "the steps once passed",
++      );
++      await settled(page);
++      console.log(await screenshot("patch-updates-passed"));
++
++      step("checking only the local feeds were read");
++      assertEqual(
++        [...new Set(requests)].toSorted(),
++        ["/index.json", "/latest-mac.yml"],
++        "the feeds read",
++      );
++    },
++    {
++      seed: false,
++      env: {
++        T3CODE_HOME: t3Home,
++        // Update checks on, against this journey's feeds only.
++        T3CODE_DISABLE_AUTO_UPDATE: "false",
++        T3CODE_DESKTOP_MOCK_UPDATES: "true",
++        T3CODE_DESKTOP_MOCK_UPDATE_SERVER_PORT: String(port),
++        T3CODE_PATCH_UPDATE_FEED: feed,
++      },
++    },
++  );
++} finally {
++  server.close();
++  const logs = NodePath.join(t3Home, "userdata/logs");
++  if (NodeFS.existsSync(logs)) {
++    NodeFS.cpSync(logs, NodePath.join(evidenceDir(), "logs"), { recursive: true });
++  }
++  NodeFS.rmSync(root, { recursive: true, force: true, maxRetries: 5 });
++}
