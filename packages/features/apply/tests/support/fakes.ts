@@ -64,6 +64,7 @@ export const patch = Effect.fn("patch")(function* (
     readonly baseCommit: Commit;
     readonly checks?: ReadonlyArray<Command>;
     readonly journeys?: ReadonlyArray<Journey>;
+    readonly version?: number;
   },
 ) {
   const patchId = yield* Schema.decodeEffect(PatchId)(id);
@@ -71,6 +72,7 @@ export const patch = Effect.fn("patch")(function* (
     id: patchId,
     title: `Title ${id}`,
     summary: `Summary ${id}`,
+    version: options.version ?? 1,
     base: { version: "0.1.10", commit: options.baseCommit },
     checks: options.checks ?? [],
     journeys: options.journeys ?? [{ name: `${id}-journey`, proves: "it works", run: `run ${id}-journey` }],
@@ -152,8 +154,8 @@ export const fakes = Effect.fn("fakes")(function* (options: FakeOptions = {}) {
       version: Ref.getAndSet(versionRead, true).pipe(
         Effect.map((read) => (read ? (options.installedLater ?? version) : version)),
       ),
-      install: Effect.fn("fake.install")(function* (built: string, from: string) {
-        yield* log(`install ${built} (${from})`);
+      install: Effect.fn("fake.install")(function* (built: string, from: string, relaunch?: number) {
+        yield* log(`install ${built} (${from})${relaunch === undefined ? "" : ` relaunching ${relaunch}`}`);
         if (options.installFails === true) return yield* new StepFailed({ reason: "T3 Code is running" });
         const now = options.installedLater ?? version;
         if (from !== now) {

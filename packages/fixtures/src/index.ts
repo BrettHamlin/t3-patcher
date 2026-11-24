@@ -6,8 +6,12 @@
 // <data>/patches/<id>/  patches made with git against v1.0.0
 // <data>/work/          the work folder (source checkouts, logs, backups)
 // <data>/settings.json  written with the files package, as `python3 scripts/patcher.py init` would
+//
+// A published world (`publishedWorld`) also has, as `update` expects:
+// <data>/published.git  the published repository (a bare stand-in for GitHub), branch main, with patches/ in it
+// <data>/repo/          a clone of it, on main; settings' patches folder is <data>/repo/patches
 import { Commit, type Patch, PatchManifest, type Settings, StorageFailed } from "@app/contracts";
-import { saveSettings } from "@app/files";
+import { loadSettings, saveSettings } from "@app/files";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -170,6 +174,7 @@ const makePatch = Effect.fn("makePatch")(function* (upstream: string, scratch: s
     id: yield* Schema.decodeEffect(PatchManifest.fields.id)(id),
     title: spec.title,
     summary: spec.summary,
+    version: 1,
     base: { version: "1.0.0", commit: yield* Schema.decodeEffect(Commit)(commit) },
     checks: [{ name: "check", run: spec.check }],
     journeys: [{ name: "built", proves: `the built app has ${id}`, run: spec.journey }],
@@ -265,3 +270,77 @@ export const workspaceFile = (folder: string, file: string): Promise<string> =>
       return (yield* fs.exists(at)) ? yield* fs.readFileString(at) : "(missing)";
     }),
   );
+
+/** Commit everything in `folder` and push it to origin's main. */
+const pushAll = Effect.fn("pushAll")(function* (folder: string, message: string) {
+  yield* git(folder, ["add", "--all"]);
+  yield* git(folder, ["commit", "--quiet", "-m", message]);
+  yield* git(folder, ["push", "--quiet", "origin", "HEAD:main"]);
+});
+
+const buildPublished = Effect.fn("buildPublished")(function* (data: string, world: World) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  yield* build(data, world);
+  const repo = path.join(data, "repo");
+  const published = path.join(data, "published.git");
+  yield* fs.makeDirectory(repo, { recursive: true });
+  yield* git(repo, ["init", "--quiet", "--initial-branch=main"]);
+  yield* fs.rename(path.join(data, "patches"), path.join(repo, "patches"));
+  yield* writeAll(repo, { "README": "patches\n" });
+  yield* git(repo, ["add", "--all"]);
+  yield* git(repo, ["commit", "--quiet", "-m", "Patches"]);
+  yield* git(data, ["clone", "--quiet", "--bare", repo, published]);
+  yield* git(repo, ["remote", "add", "origin", published]);
+  yield* git(repo, ["fetch", "--quiet", "origin"]);
+  yield* git(repo, ["branch", "--quiet", "--set-upstream-to=origin/main", "main"]);
+  const settings = yield* loadSettings(data);
+  yield* saveSettings(data, { ...settings, patches: path.join(repo, "patches") });
+});
+
+/** A change published to <data>/published.git: a patch's version raised, or a fixture patch added. */
+export type Publication =
+  | { readonly kind: "bump"; readonly id: FixturePatch; readonly version: number }
+  | { readonly kind: "add"; readonly id: FixturePatch };
+
+const publishOne = Effect.fn("publishOne")(function* (data: string, change: Publication) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const clone = path.join(data, "publishing");
+  yield* fs.remove(clone, { recursive: true, force: true });
+  yield* git(data, ["clone", "--quiet", path.join(data, "published.git"), clone]);
+  const patches = path.join(clone, "patches");
+  if (change.kind === "add") {
+    yield* writePatch(patches, yield* makePatch(path.join(data, "upstream"), path.join(data, "scratch"), change.id));
+    yield* fs.remove(path.join(data, "scratch"), { recursive: true, force: true });
+  } else {
+    const file = path.join(patches, change.id, "patch.json");
+    const json = Schema.fromJsonString(PatchManifest);
+    const manifest = yield* Schema.decodeEffect(json)(yield* fs.readFileString(file));
+    yield* fs.writeFileString(file, `${yield* Schema.encodeEffect(json)({ ...manifest, version: change.version })}\n`);
+  }
+  yield* pushAll(clone, `${change.kind} ${change.id}`);
+  yield* fs.remove(clone, { recursive: true, force: true });
+});
+
+/** Build the fake world in `data` with its patches folder in a clone of a published repository. */
+export const publishedWorld = (data: string, world: World): Promise<void> => node(buildPublished(data, world));
+
+/** Publish `changes` to the world's published repository, one commit each. */
+export const publish = (data: string, changes: ReadonlyArray<Publication>): Promise<void> =>
+  node(Effect.forEach(changes, (change) => publishOne(data, change), { discard: true }));
+
+/** Commit a change in the world's clone (<data>/repo) that isn't published, so it can no longer fast-forward. */
+export const commitUnpublished = (data: string): Promise<void> =>
+  node(
+    Effect.gen(function* () {
+      const repo = (yield* Path.Path).join(data, "repo");
+      yield* writeAll(repo, { "local.txt": "local\n" });
+      yield* git(repo, ["add", "--all"]);
+      yield* git(repo, ["commit", "--quiet", "-m", "Local"]);
+    }),
+  );
+
+/** The commit HEAD names in the git repository at `folder`. */
+export const headOf = (folder: string): Promise<string> =>
+  node(git(folder, ["rev-parse", "HEAD"]).pipe(Effect.map((sha) => sha.trim())));

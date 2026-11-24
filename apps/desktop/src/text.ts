@@ -1,5 +1,5 @@
 // The CLI's words: its command line in, and the stack and runs as lines of text out.
-import type { LibraryView, RunReport, Step } from "@app/contracts";
+import type { LibraryView, RunReport, Step, UpdateItem } from "@app/contracts";
 
 /** The command line: words that aren't options, each option's value, and the flags given. */
 export interface Line {
@@ -10,7 +10,7 @@ export interface Line {
 
 /** Options that take a value: `--name value`. Anything else starting with `--` is a flag. */
 const valued = (word: string): boolean =>
-  ["--userdata", "--data", "--patches", "--work", "--title", "--summary"].includes(word);
+  ["--userdata", "--data", "--patches", "--work", "--title", "--summary", "--t3", "--relaunch"].includes(word);
 
 export const parse = (argv: ReadonlyArray<string>): Line => {
   const words: Array<string> = [];
@@ -48,6 +48,10 @@ export const outcome = (report: RunReport): string => {
 /** "[<status>] <kind> <name> — <note>", without the note when there is none. */
 export const stepLine = (step: Step): string =>
   `[${step.status}] ${step.kind} ${step.name}${step.note === "" ? "" : ` — ${step.note}`}`;
+
+/** "updating: <name> <from> → <to>, …", or "updating: nothing new (rebuilding)" when nothing changes. */
+export const updatingLine = (items: ReadonlyArray<UpdateItem>): string =>
+  `updating: ${items.length === 0 ? "nothing new (rebuilding)" : items.map((item) => `${item.name} ${item.from} → ${item.to}`).join(", ")}`;
 
 /** `text` as one shell word that the shell takes literally. */
 const quoted = (text: string): string => `'${text.replaceAll("'", `'\\''`)}'`;

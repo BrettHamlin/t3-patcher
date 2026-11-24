@@ -1,5 +1,5 @@
 import type { RunReport, Step } from "@app/contracts";
-import { run } from "@app/apply";
+import { installedRecord, run, updates } from "@app/apply";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Ref from "effect/Ref";
@@ -260,5 +260,140 @@ describe("run", () => {
       ]);
       expect(yield* Ref.get(fake.written)).toEqual([]);
       expect(yield* Ref.get(fake.installed)).toEqual([]);
+    }));
+
+  it.effect("an update builds the wanted version's tag, says what it updates, and installs over the installed version, relaunching the app", () =>
+    Effect.gen(function* () {
+      const fake = yield* fakes();
+      const patches = yield* twoPatches();
+      const updating = [
+        { name: "T3 Code", from: "0.1.11", to: "0.1.12" },
+        { name: "a", from: "1", to: "2" },
+      ];
+      const report = yield* run(target({ checks: [] }), patches.slice(1), true, folders, {
+        version: "0.1.12",
+        relaunch: 4242,
+        updating,
+      }).pipe(Effect.provide(fake.layer));
+      expect(report).toEqual({
+        version: "0.1.12",
+        install: true,
+        updating,
+        steps: [
+          { kind: "source", name: "T3 Code source", status: "passed", note: "0.1.12 (v0.1.12)" },
+          { kind: "patch", name: "b", status: "passed", note: "applied" },
+          { kind: "build", name: "build", status: "passed", note: "" },
+          { kind: "journey", name: "b: b-journey", status: "passed", note: "" },
+          { kind: "save", name: "save patches", status: "passed", note: "nothing to save" },
+          { kind: "install", name: "install", status: "passed", note: "installed /work/stack/release/T3 Code.app" },
+        ],
+      });
+      expect((yield* Ref.get(fake.reports)).map((each) => each.updating)).toEqual(Array.from({ length: 13 }, () => updating));
+      expect(yield* Ref.get(fake.events)).toEqual([
+        "open v0.1.12 in stack",
+        "apply diff:b in /work/stack",
+        "commit b: Title b in /work/stack",
+        "run build",
+        "run b-journey",
+        "install /work/stack/release/T3 Code.app (0.1.11) relaunching 4242",
+      ]);
+      expect((yield* Ref.get(fake.shellCalls)).map((call) => [call.command.run, call.env["T3_PATCHER_VERSION"]])).toEqual([
+        ["bun build 0.1.12", "0.1.12"],
+        ["run b-journey", "0.1.12"],
+      ]);
+    }));
+
+  it.effect("an update whose build fails never reaches the install step, so the app isn't quit or replaced", () =>
+    Effect.gen(function* () {
+      const fake = yield* fakes({ failing: new Set(["build"]) });
+      const patches = yield* twoPatches();
+      const report = yield* run(target({ checks: [] }), patches.slice(1), true, folders, {
+        version: "0.1.12",
+        relaunch: 4242,
+        updating: [{ name: "T3 Code", from: "0.1.11", to: "0.1.12" }],
+      }).pipe(Effect.provide(fake.layer));
+      expect(report.steps.map((step) => `${step.name}: ${step.status} ${step.note}`)).toEqual([
+        "T3 Code source: passed 0.1.12 (v0.1.12)",
+        "b: passed applied",
+        "build: failed build exited 1",
+        "b: b-journey: skipped ",
+        "save patches: skipped ",
+        "install: skipped ",
+      ]);
+      expect(yield* Ref.get(fake.events)).toEqual([
+        "open v0.1.12 in stack",
+        "apply diff:b in /work/stack",
+        "commit b: Title b in /work/stack",
+        "run build",
+      ]);
+      expect(yield* Ref.get(fake.installed)).toEqual([]);
+    }));
+});
+
+const update = { command: ["/usr/bin/python3", "/repo/scripts/patcher.py", "update"], cwd: "/repo" } as const;
+
+describe("installedRecord", () => {
+  it.effect("records the version and each patch installed, when the run installed and every step passed", () =>
+    Effect.gen(function* () {
+      const fake = yield* fakes();
+      const baseCommit = yield* commit("b");
+      const patches = [yield* patch("a", { baseCommit, version: 3 }), yield* patch("b", { baseCommit })];
+      const report = yield* run(target(), patches, true, folders).pipe(Effect.provide(fake.layer));
+      expect(installedRecord(report, patches, "2026-11-24T10:00:00.000Z", "https://feed", update)).toEqual({
+        t3Version: "0.1.11",
+        patches: [
+          { id: "a", version: 3 },
+          { id: "b", version: 1 },
+        ],
+        installedAt: "2026-11-24T10:00:00.000Z",
+        feed: "https://feed",
+        update,
+      });
+    }));
+
+  it.effect("records nothing for a run that didn't install, or that failed", () =>
+    Effect.gen(function* () {
+      const patches = yield* twoPatches();
+      const dry = yield* run(target(), patches, false, folders).pipe(Effect.provide((yield* fakes()).layer));
+      const failed = yield* run(target(), patches, true, folders).pipe(
+        Effect.provide((yield* fakes({ failing: new Set(["unit"]) })).layer),
+      );
+      expect([
+        installedRecord(dry, patches, "now", "https://feed", update),
+        installedRecord(failed, patches, "now", "https://feed", update),
+      ]).toEqual([undefined, undefined]);
+    }));
+});
+
+describe("updates", () => {
+  it.effect("lists the app when its version changes, then each patch that is on whose version isn't the one installed", () =>
+    Effect.gen(function* () {
+      const baseCommit = yield* commit("b");
+      const [a, b, c] = [
+        yield* patch("a", { baseCommit, version: 2 }),
+        yield* patch("b", { baseCommit, version: 5 }),
+        yield* patch("c", { baseCommit, version: 1 }),
+      ];
+      const installed = {
+        t3Version: "0.1.11",
+        patches: [
+          { id: a.manifest.id, version: 1 },
+          { id: b.manifest.id, version: 5 },
+        ],
+        installedAt: "then",
+        feed: "https://feed",
+        update,
+      };
+      const before = [{ ...a.manifest, version: 2 }, { ...b.manifest, version: 4 }, c.manifest];
+      expect([
+        updates({ app: "T3 Code", t3: { from: "0.1.11", to: "0.1.12" }, installed, before, patches: [a, b, c] }),
+        updates({ app: "T3 Code", t3: { from: "0.1.11", to: "0.1.11" }, installed: undefined, before, patches: [a, b, c] }),
+      ]).toEqual([
+        [
+          { name: "T3 Code", from: "0.1.11", to: "0.1.12" },
+          { name: "a", from: "1", to: "2" },
+        ],
+        [{ name: "b", from: "4", to: "5" }],
+      ]);
     }));
 });

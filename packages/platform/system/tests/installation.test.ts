@@ -120,4 +120,123 @@ describe("macInstallation", () => {
       );
       expect([yield* marker(installed), yield* exists(backups)]).toEqual(["0.1.12", false]);
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)));
+
+  it.live("with relaunch, quits the running app, replaces it and opens the new one", () =>
+    Effect.gen(function* () {
+      const { root, installed, backups, built, marker, join } = yield* setup;
+      const opened = join(root, "opened.txt");
+      yield* launchable(installed, "0.1.11", opened);
+      yield* launchable(built, "0.1.12", opened);
+      const installation = yield* Installation.useSync((service) => service).pipe(
+        Effect.provide(macInstallation({ installed, backups, quitTimeout: "10 seconds" }).pipe(Layer.provide(NodeServices.layer))),
+      );
+      const running = yield* stay(installed);
+      const note = yield* installation.install(built, "0.1.11", running.pid);
+      expect([
+        note,
+        yield* running.isRunning,
+        yield* waitFor(opened),
+        yield* marker(installed),
+        yield* marker(join(backups, "T3 Code-0.1.11-1.app")),
+      ]).toEqual([
+        `installed and reopened; the previous app is at ${join(backups, "T3 Code-0.1.11-1.app")}`,
+        false,
+        "0.1.12\n",
+        "0.1.12",
+        "0.1.11",
+      ]);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)));
+
+  it.live("with relaunch, fails changing nothing when the app doesn't quit in time", () =>
+    Effect.gen(function* () {
+      const { root, installed, backups, built, marker, join } = yield* setup;
+      const opened = join(root, "opened.txt");
+      yield* launchable(installed, "0.1.11", opened);
+      const installation = yield* Installation.useSync((service) => service).pipe(
+        Effect.provide(macInstallation({ installed, backups, quitTimeout: "1 second" }).pipe(Layer.provide(NodeServices.layer))),
+      );
+      const stubborn = yield* stay(installed, "ignore");
+      expect(yield* Effect.flip(installation.install(built, "0.1.11", stubborn.pid))).toEqual(
+        new StepFailed({ reason: "T3 Code didn't quit within 1s" }),
+      );
+      expect([yield* stubborn.isRunning, yield* marker(installed), yield* exists(backups), yield* exists(opened)]).toEqual([
+        true,
+        "0.1.11",
+        false,
+        false,
+      ]);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)));
 });
+
+/**
+ * A stand-in app that can be opened: a background-only bundle (no window or Dock icon) whose executable, opened with
+ * no arguments, appends its version to `opened`; with `stay`, it runs until it's sent SIGTERM (or, with `ignore`, it
+ * ignores SIGTERM and quits by itself after 2 seconds).
+ */
+const launchable = (app: string, version: string, opened: string) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    yield* write(
+      path.join(app, "Contents", "Info.plist"),
+      [
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
+        '<plist version="1.0">',
+        "<dict>",
+        "  <key>CFBundleIdentifier</key>",
+        `  <string>dev.t3-patcher.test.${path.basename(path.dirname(path.dirname(app)))}.${version.replaceAll(".", "-")}</string>`,
+        "  <key>CFBundleExecutable</key>",
+        "  <string>x</string>",
+        "  <key>CFBundlePackageType</key>",
+        "  <string>APPL</string>",
+        "  <key>LSBackgroundOnly</key>",
+        "  <true/>",
+        "  <key>CFBundleShortVersionString</key>",
+        `  <string>${version}</string>`,
+        "</dict>",
+        "</plist>",
+        "",
+      ].join("\n"),
+    );
+    yield* write(path.join(app, "Contents", "Resources", "marker"), version);
+    const executable = path.join(app, "Contents", "MacOS", "x");
+    yield* write(
+      executable,
+      [
+        "#!/bin/sh",
+        'if [ "$1" = stay ]; then',
+        '  if [ "$2" = ignore ]; then trap "" TERM; sleep 2; exit 0; fi',
+        '  trap "exit 0" TERM',
+        "  while :; do sleep 0.1; done",
+        "fi",
+        `echo ${version} >> '${opened}'`,
+        "",
+      ].join("\n"),
+    );
+    yield* fs.chmod(executable, 0o755);
+  }).pipe(Effect.orDie);
+
+/** The installed stand-in running from its executable until the test's scope closes. */
+const stay = (app: string, mode: "quit" | "ignore" = "quit") =>
+  Effect.gen(function* () {
+    const spawner = yield* ChildProcessSpawner;
+    const path = yield* Path.Path;
+    const handle = yield* spawner.spawn(
+      ChildProcess.make(path.join(app, "Contents", "MacOS", "x"), ["stay", mode], { stdin: "ignore" }),
+    );
+    // The script's traps are set before its loop's first sleep ends.
+    yield* Effect.sleep("300 millis");
+    return handle;
+  });
+
+/** `file`'s content once it exists, waiting up to 10 seconds; "(never)" if it doesn't appear. */
+const waitFor = (file: string) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    for (let tries = 0; tries < 100; tries += 1) {
+      if (yield* fs.exists(file)) return yield* fs.readFileString(file);
+      yield* Effect.sleep("100 millis");
+    }
+    return "(never)";
+  }).pipe(Effect.orDie);

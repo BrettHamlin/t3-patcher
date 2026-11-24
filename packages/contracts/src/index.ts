@@ -1,3 +1,4 @@
+import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
 import { uiId } from "./ui.ts";
@@ -23,11 +24,19 @@ export type Command = typeof Command.Type;
 export const Journey = Schema.Struct({ name: Text, proves: Text, run: Text });
 export type Journey = typeof Journey.Type;
 
-/** patches/<id>/patch.json. `base` is the app version and upstream commit the diff was last made against. */
+/** A patch's version: a whole number from 1, raised by its author with each published change. */
+export const PatchVersion = Schema.Int.pipe(Schema.check(Schema.isGreaterThan(0)));
+export type PatchVersion = typeof PatchVersion.Type;
+
+/**
+ * patches/<id>/patch.json. `base` is the app version and upstream commit the diff was last made against. A manifest
+ * without `version` is version 1.
+ */
 export const PatchManifest = Schema.Struct({
   id: PatchId,
   title: Text,
   summary: Text,
+  version: PatchVersion.pipe(Schema.withDecodingDefaultKey(Effect.succeed(1))),
   base: Schema.Struct({ version: Text, commit: Commit }),
   checks: Schema.Array(Command),
   journeys: Schema.Array(Journey).pipe(Schema.check(Schema.isMinLength(1))),
@@ -78,7 +87,7 @@ export const Settings = Schema.Struct({
 });
 export type Settings = typeof Settings.Type;
 
-export const StepKind = Schema.Literals(["source", "patch", "check", "build", "journey", "save", "install"]);
+export const StepKind = Schema.Literals(["pull", "source", "patch", "check", "build", "journey", "save", "install"]);
 export type StepKind = typeof StepKind.Type;
 export const StepStatus = Schema.Literals(["pending", "running", "passed", "failed", "skipped"]);
 export type StepStatus = typeof StepStatus.Type;
@@ -86,13 +95,47 @@ export type StepStatus = typeof StepStatus.Type;
 export const Step = Schema.Struct({ kind: StepKind, name: Text, status: StepStatus, note: Schema.String });
 export type Step = typeof Step.Type;
 
-/** One run of the stack over the installed version, step by step. */
+/** Something an update changes: the app ("T3 Code") or a patch (its id), from one version to another. */
+export const UpdateItem = Schema.Struct({ name: Text, from: Text, to: Text });
+export type UpdateItem = typeof UpdateItem.Type;
+
+/** One run of the stack over the installed version, step by step. An update's run says what it updates. */
 export const RunReport = Schema.Struct({
   version: Schema.String,
   install: Schema.Boolean,
+  updating: Schema.optionalKey(Schema.Array(UpdateItem)),
   steps: Schema.Array(Step),
 });
 export type RunReport = typeof RunReport.Type;
+
+/** Where patch updates are published: this repository's main branch. */
+export const FEED_URL = "https://raw.githubusercontent.com/BrettHamlin/t3-patcher/main/patches/index.json";
+/** The branch the feed is published from; `update` pulls it. */
+export const FEED_BRANCH = "main";
+
+/** A patch as the feed lists it. */
+export const FeedEntry = Schema.Struct({ id: PatchId, title: Text, summary: Text, version: PatchVersion });
+export type FeedEntry = typeof FeedEntry.Type;
+
+/** patches/index.json: every patch in the folder, sorted by id. Written by `t3-patcher index`. */
+export const Feed = Schema.Struct({ patches: Schema.Array(FeedEntry) });
+export type Feed = typeof Feed.Type;
+
+/**
+ * <user data>/installed.json: what the last install put in place, where updates are published, and how the app runs
+ * the patcher's `update` (an absolute command and its folder, since the app runs it without a shell).
+ */
+export const InstalledRecord = Schema.Struct({
+  t3Version: Text,
+  patches: Schema.Array(Schema.Struct({ id: PatchId, version: PatchVersion })),
+  installedAt: Text,
+  feed: Text,
+  update: Schema.Struct({
+    command: Schema.Array(Text).pipe(Schema.check(Schema.isMinLength(1))),
+    cwd: Text,
+  }),
+});
+export type InstalledRecord = typeof InstalledRecord.Type;
 
 /** What the user can see about the patches: each one, in stack order. */
 export const LibraryView = Schema.Struct({ stack: Stack, patches: Schema.Array(PatchManifest) });

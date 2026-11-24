@@ -1,0 +1,10 @@
+{
+  "patches": [
+    {
+      "id": "journey-kit",
+      "title": "Journey kit",
+      "summary": "patcher/journeys/support.mjs launches the built app for patch journeys: a throwaway HOME and T3CODE_HOME seeded with the release launch fixture, Chromium's mock keychain, no Dock icon and no window ever shown or focused (a journey fails if one is), telemetry and auto-update off, logs and screenshots into $T3_PATCHER_EVIDENCE. Every other patch's journeys use it.",
+      "version": 1
+    }
+  ]
+}

@@ -141,6 +141,7 @@ describe("capture", () => {
           id: "new",
           title: "New title",
           summary: "New summary",
+          version: 1,
           base: { version: "0.1.11", commit: fake.baseCommit },
           checks: [],
           journeys: [
@@ -157,10 +158,11 @@ describe("capture", () => {
       expect(yield* Ref.get(fake.events)).toEqual(["existing workspace-new", "write new"]);
     }));
 
-  it.effect("replaces an existing patch's diff, base, title and summary, keeping its checks and journeys", () =>
+  it.effect("replaces an existing patch's diff, base, title and summary, keeping its version, checks and journeys", () =>
     Effect.gen(function* () {
       const fake = yield* fakes({ existing: new Map([["workspace-a", { version: "0.2.0", pending: "diff:a2" }]]) });
       const a = yield* patch("a", {
+        version: 4,
         baseCommit: yield* commit("c"),
         checks: [{ name: "unit", run: "bun test a" }],
         journeys: [{ name: "opens", proves: "it opens", run: "run opens" }],
@@ -171,6 +173,7 @@ describe("capture", () => {
           id: "a",
           title: "New title",
           summary: "New summary",
+          version: 4,
           base: { version: "0.2.0", commit: fake.baseCommit },
           checks: [{ name: "unit", run: "bun test a" }],
           journeys: [{ name: "opens", proves: "it opens", run: "run opens" }],
@@ -192,6 +195,7 @@ describe("capture", () => {
           id: "new",
           title: "New title",
           summary: "New summary",
+          version: 1,
           base: { version: "0.1.11", commit: fake.baseCommit },
           checks: [],
           journeys: [

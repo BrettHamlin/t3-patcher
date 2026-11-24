@@ -8,10 +8,11 @@ export interface InstallationShape {
   /** The installed version, e.g. "0.1.11". */
   readonly version: Effect.Effect<string, StepFailed>;
   /**
-   * Replace the installed app with the built one at `built`, keeping a backup. Fails if the app is running, or if
-   * the installed version is no longer `version` (the one the build was made from).
+   * Replace the installed app with the built one at `built`, keeping a backup. Fails if the installed version is no
+   * longer `installed` (the one read when the run started), or if the app is running. With `relaunch`, the app's
+   * process with that pid is asked to quit first, and the installed app is opened again afterwards.
    */
-  readonly install: (built: string, version: string) => Effect.Effect<string, StepFailed>;
+  readonly install: (built: string, installed: string, relaunch?: number) => Effect.Effect<string, StepFailed>;
 }
 export class Installation extends Context.Service<Installation, InstallationShape>()("@app/apply/services/Installation") {}
 
@@ -75,6 +76,18 @@ export interface PatchWriterShape {
   readonly write: (patch: Patch) => Effect.Effect<void, StepFailed>;
 }
 export class PatchWriter extends Context.Service<PatchWriter, PatchWriterShape>()("@app/apply/services/PatchWriter") {}
+
+/** The git repository the patches folder is in, published from a branch of its `origin` remote. */
+export interface PatchRepositoryShape {
+  /**
+   * Fast-forward the repository to `origin`'s `branch`; returns the commits before and after. Fails, changing
+   * nothing, if it has local changes, isn't on `branch`, or has commits `origin` doesn't (it can't fast-forward).
+   */
+  readonly pull: (branch: string) => Effect.Effect<{ readonly from: string; readonly to: string }, StepFailed>;
+}
+export class PatchRepository extends Context.Service<PatchRepository, PatchRepositoryShape>()(
+  "@app/apply/services/PatchRepository",
+) {}
 
 /** Hears about a run as it goes: called with the whole report after every change. */
 export interface ProgressShape {

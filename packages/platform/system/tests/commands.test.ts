@@ -37,7 +37,9 @@ describe("commandShell", () => {
       const logs = path.join(root, "logs");
       const shell = yield* shellIn(logs);
       const failed = yield* Effect.flip(shell.run(root, { name: "count", run: "seq 1 25; exit 3" }, {}));
-      expect(failed).toEqual(new StepFailed({ reason: `count failed (exit 3): ${numbers(6, 25)}` }));
+      expect(failed).toEqual(
+        new StepFailed({ reason: `count failed (exit 3; log ${path.join(logs, "count.log")}): ${numbers(6, 25)}` }),
+      );
       expect(yield* read(path.join(logs, "count.log"))).toBe(`${numbers(1, 25)}\n`);
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)));
 });
@@ -48,6 +50,7 @@ describe("commandResolver", () => {
       id: yield* Schema.decodeEffect(PatchId)("dark-mode"),
       title: "Dark mode",
       summary: "Adds a dark theme to the settings.",
+      version: 1,
       base: { version: "1.0.0", commit: yield* Schema.decodeEffect(Commit)("a".repeat(40)) },
       checks: [],
       journeys: [{ name: "dark", proves: "the theme switches", run: "true" }],
@@ -82,8 +85,11 @@ describe("commandResolver", () => {
     Effect.gen(function* () {
       const path = yield* Path.Path;
       const root = yield* temporary;
-      const resolver = yield* resolverWith("echo gave up; exit 2", path.join(root, "logs"));
+      const logs = path.join(root, "logs");
+      const resolver = yield* resolverWith("echo gave up; exit 2", logs);
       const failed = yield* Effect.flip(resolver.resolve(root, yield* manifest, ["a.txt"]));
-      expect(failed).toEqual(new StepFailed({ reason: "resolver failed (exit 2): gave up" }));
+      expect(failed).toEqual(
+        new StepFailed({ reason: `resolver failed (exit 2; log ${path.join(logs, "resolve-dark-mode.log")}): gave up` }),
+      );
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)));
 });

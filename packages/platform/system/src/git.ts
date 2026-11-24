@@ -1,5 +1,5 @@
 import { Commit, StepFailed } from "@app/contracts";
-import { Source, type Workspace } from "@app/apply";
+import { PatchRepository, Source, type Workspace } from "@app/apply";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -225,6 +225,49 @@ export const gitSource = (input: {
             .pipe(Effect.mapError(() => notReady))).split("\n");
           if (version === "" || sha !== (yield* head(folder))) return yield* notReady;
           return { workspace: workspace(folder, base, ready), version };
+        }),
+      };
+    }),
+  );
+
+/** The git repository `folder` is in: `pull` fast-forwards it from `origin`. */
+export const gitPatchRepository = (
+  folder: string,
+): Layer.Layer<PatchRepository, never, ChildProcessSpawner> =>
+  Layer.effect(PatchRepository)(
+    Effect.gen(function* () {
+      const spawner = yield* ChildProcessSpawner;
+      const git = (cwd: string, args: ReadonlyArray<string>): Effect.Effect<string, StepFailed> =>
+        run(spawner, "git", args, { cwd, env: ENV }).pipe(
+          Effect.flatMap((output) =>
+            output.code === 0
+              ? Effect.succeed(output.stdout.trim())
+              : Effect.fail(stepFailed(`git ${args[0] ?? ""} failed in ${cwd} (exit ${output.code}): ${lastLines(output.stderr === "" ? output.stdout : output.stderr, 5)}`)),
+          ),
+        );
+      return {
+        pull: Effect.fn("PatchRepository.pull")(function* (branch: string) {
+          const top = yield* git(folder, ["rev-parse", "--show-toplevel"]);
+          const changes = yield* git(top, ["status", "--porcelain"]);
+          if (changes !== "") {
+            return yield* stepFailed(`the patches repository at ${top} has local changes: commit or remove them, then update again`);
+          }
+          const current = yield* git(top, ["rev-parse", "--abbrev-ref", "HEAD"]);
+          if (current !== branch) {
+            return yield* stepFailed(`the patches repository at ${top} is on ${current}, not ${branch}: switch to ${branch}, then update again`);
+          }
+          yield* git(top, ["fetch", "--quiet", "origin", branch]);
+          const from = yield* git(top, ["rev-parse", "HEAD"]);
+          const to = yield* git(top, ["rev-parse", "FETCH_HEAD"]);
+          if (from === to) return { from, to };
+          const behind = yield* run(spawner, "git", ["merge-base", "--is-ancestor", "HEAD", "FETCH_HEAD"], { cwd: top, env: ENV });
+          if (behind.code !== 0) {
+            return yield* stepFailed(
+              `the patches repository at ${top} has commits that aren't on origin/${branch}, so it can't fast-forward: push or drop them, then update again`,
+            );
+          }
+          yield* git(top, ["merge", "--ff-only", "--quiet", "FETCH_HEAD"]);
+          return { from, to };
         }),
       };
     }),

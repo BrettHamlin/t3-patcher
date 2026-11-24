@@ -1,6 +1,7 @@
 import {
   type CaptureRequest,
   type Command,
+  type InstalledRecord,
   type Journey,
   type Patch,
   type PatchManifest,
@@ -9,6 +10,7 @@ import {
   StepFailed,
   type StepKind,
   type Target,
+  type UpdateItem,
 } from "@app/contracts";
 import * as Effect from "effect/Effect";
 import * as Ref from "effect/Ref";
@@ -23,18 +25,29 @@ export interface RunFolders {
   readonly evidence: string;
 }
 
+/** How an update runs the stack. */
+export interface RunOptions {
+  /** The app version to build, when it isn't the installed one (a new release). */
+  readonly version?: string;
+  /** The pid of the running app, which the install step quits and opens again. */
+  readonly relaunch?: number;
+  /** What the run updates, for its report. */
+  readonly updating?: ReadonlyArray<UpdateItem>;
+}
+
 const withVersion = (text: string, version: string): string => text.replaceAll("{version}", version);
 
 const slot = (id: string): string => `workspace-${id}`;
 
 const builtApp = (workspace: Workspace, target: Target): string => `${workspace.path}/${target.built}`;
 
-/** A clean checkout of the installed version's tag in `name`. */
-const openInstalled = Effect.fn("openInstalled")(function* (target: Target, name: string) {
-  const version = yield* (yield* Installation).version;
+/** A clean checkout in `name` of the tag for `wanted`, or for the installed version when none is wanted. */
+const openInstalled = Effect.fn("openInstalled")(function* (target: Target, name: string, wanted?: string) {
+  const installed = yield* (yield* Installation).version;
+  const version = wanted ?? installed;
   const tag = withVersion(target.tag, version);
   const workspace = yield* (yield* Source).open(tag, name);
-  return { version, tag, workspace };
+  return { installed, version, tag, workspace };
 });
 
 /** Apply `patch`'s diff, resolving any conflicts; fails if some are left. Returns the files that were resolved. */
@@ -58,6 +71,9 @@ const named = (id: string) => (error: StepFailed) => new StepFailed({ reason: `$
 
 /** What later steps of a run use, once the source is open. */
 interface Opened {
+  /** The installed version when the run started. */
+  readonly installed: string;
+  /** The version being built. */
   readonly version: string;
   readonly workspace: Workspace;
   /** Patches whose diff or base changed, rebased onto this version, in stack order. */
@@ -128,11 +144,13 @@ const saveStep = (): Action => ({
   }),
 });
 
-const installStep = (target: Target): Action => ({
+const installStep = (target: Target, relaunch: number | undefined): Action => ({
   kind: "install",
   name: "install",
   perform: (opened) =>
-    Installation.use((installation) => installation.install(builtApp(opened.workspace, target), opened.version)),
+    Installation.use((installation) =>
+      installation.install(builtApp(opened.workspace, target), opened.installed, relaunch),
+    ),
 });
 
 const targetCommand = (command: Command) => (opened: Opened): Command => ({
@@ -141,7 +159,13 @@ const targetCommand = (command: Command) => (opened: Opened): Command => ({
 });
 
 /** Every step after the source, in order. */
-const actions = (target: Target, patches: ReadonlyArray<Patch>, install: boolean, folders: RunFolders): ReadonlyArray<Action> => {
+const actions = (
+  target: Target,
+  patches: ReadonlyArray<Patch>,
+  install: boolean,
+  folders: RunFolders,
+  relaunch: number | undefined,
+): ReadonlyArray<Action> => {
   const env = (opened: Opened) => commandEnv(target, opened);
   return [
     ...patches.map(patchStep),
@@ -152,7 +176,7 @@ const actions = (target: Target, patches: ReadonlyArray<Patch>, install: boolean
     ...target.build.map((command) => shellStep("build", command.name, targetCommand(command), env)),
     ...patches.flatMap((patch) => patch.manifest.journeys.map((journey) => journeyStep(target, folders, patch, journey))),
     saveStep(),
-    ...(install ? [installStep(target)] : []),
+    ...(install ? [installStep(target, relaunch)] : []),
   ];
 };
 
@@ -164,24 +188,27 @@ const changed = (report: RunReport, index: number, change: (step: Step, at: numb
 });
 
 /**
- * Apply `patches`, in order, over a clean checkout of the installed version; run the target's checks and each
- * patch's checks; build; run each patch's journeys; save patches whose diff changed (rebased onto this version);
- * then, if `install`, replace the installed app. Stops at the first step that fails; later steps are skipped.
+ * Apply `patches`, in order, over a clean checkout of the installed version (or `options.version`); run the target's
+ * checks and each patch's checks; build; run each patch's journeys; save patches whose diff changed (rebased onto
+ * this version); then, if `install`, replace the installed app. Stops at the first step that fails; later steps are
+ * skipped, so nothing is installed.
  */
 export const run: (
   target: Target,
   patches: ReadonlyArray<Patch>,
   install: boolean,
   folders: RunFolders,
+  options?: RunOptions,
 ) => Effect.Effect<RunReport, never, Installation | Source | Resolver | Shell | PatchWriter | Progress> = Effect.fn("run")(
-  function* (target, patches, install, folders) {
+  function* (target, patches, install, folders, options = {}) {
     const progress = yield* Progress;
-    const rest = actions(target, patches, install, folders);
-    const report = yield* Ref.make<RunReport>({
-      version: "",
-      install,
-      steps: [planned("source", `${target.name} source`), ...rest.map((action) => planned(action.kind, action.name))],
-    });
+    const rest = actions(target, patches, install, folders, options.relaunch);
+    const steps = [planned("source", `${target.name} source`), ...rest.map((action) => planned(action.kind, action.name))];
+    const report = yield* Ref.make<RunReport>(
+      options.updating === undefined
+        ? { version: "", install, steps }
+        : { version: "", install, updating: options.updating, steps },
+    );
     const update = (f: (report: RunReport) => RunReport) =>
       Ref.updateAndGet(report, f).pipe(Effect.flatMap((next) => progress.report(next)));
     const at = (index: number, change: (step: Step) => Step) =>
@@ -205,12 +232,17 @@ export const run: (
     yield* Effect.gen(function* () {
       const source = yield* perform(
         0,
-        openInstalled(target, "stack").pipe(
+        openInstalled(target, "stack", options.version).pipe(
           Effect.tap(({ version }) => Ref.update(report, (current) => ({ ...current, version }))),
         ),
         ({ version, tag }) => `${version} (${tag})`,
       );
-      const opened: Opened = { version: source.version, workspace: source.workspace, saves: yield* Ref.make<ReadonlyArray<Patch>>([]) };
+      const opened: Opened = {
+        installed: source.installed,
+        version: source.version,
+        workspace: source.workspace,
+        saves: yield* Ref.make<ReadonlyArray<Patch>>([]),
+      };
       yield* Effect.forEach(rest, (action, index) => perform(index + 1, action.perform(opened), (note) => note), {
         discard: true,
       });
@@ -284,6 +316,7 @@ export const capture: (
         id: request.id,
         title: request.title,
         summary: request.summary,
+        version: existing?.manifest.version ?? 1,
         base: { version, commit: workspace.base },
         checks: existing?.manifest.checks ?? [],
         journeys: existing?.manifest.journeys ?? [placeholderJourney(request.id)],
@@ -294,3 +327,50 @@ export const capture: (
     return patch;
   },
 );
+
+/**
+ * The installed record after `report`'s run installed `patches`: undefined unless the run installed and every step
+ * passed.
+ */
+export const installedRecord = (
+  report: RunReport,
+  patches: ReadonlyArray<Patch>,
+  installedAt: string,
+  feed: string,
+  update: InstalledRecord["update"],
+): InstalledRecord | undefined => {
+  if (!report.install || !report.steps.every((step) => step.status === "passed")) return undefined;
+  return {
+    t3Version: report.version,
+    patches: patches.map(({ manifest }) => ({ id: manifest.id, version: manifest.version })),
+    installedAt,
+    feed,
+    update,
+  };
+};
+
+/**
+ * What an update changes, for its report: the app, when `t3.to` isn't the installed version, then each patch that is
+ * on whose version isn't the one installed (from the installed record, else the patch as it was before the pull).
+ */
+export const updates = (input: {
+  readonly app: string;
+  readonly t3: { readonly from: string; readonly to: string };
+  readonly installed: InstalledRecord | undefined;
+  readonly before: ReadonlyArray<PatchManifest>;
+  readonly patches: ReadonlyArray<Patch>;
+}): ReadonlyArray<UpdateItem> => {
+  const was = (id: string): number | undefined =>
+    (input.installed?.patches ?? input.before).find((each) => each.id === id)?.version;
+  const app: ReadonlyArray<UpdateItem> =
+    input.t3.from === input.t3.to ? [] : [{ name: input.app, from: input.t3.from, to: input.t3.to }];
+  return [
+    ...app,
+    ...input.patches.flatMap(({ manifest }): ReadonlyArray<UpdateItem> => {
+      const from = was(manifest.id);
+      return from === undefined || from === manifest.version
+        ? []
+        : [{ name: manifest.id, from: String(from), to: String(manifest.version) }];
+    }),
+  ];
+};

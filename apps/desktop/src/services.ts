@@ -2,19 +2,43 @@
 import {
   capture,
   Installation,
+  installedRecord,
   openWorkspace,
+  PatchRepository,
+  Progress,
   run,
+  updates,
   type PatchWriter,
+  type RunOptions,
   type Resolver,
   type Shell,
   type Source,
 } from "@app/apply";
-import type { CaptureRequest, PatchManifest, RunReport, Settings, Stack } from "@app/contracts";
-import { fileLibrary, filePatchWriter, fileStackStore, loadSettings, saveReport } from "@app/files";
+import {
+  FEED_BRANCH,
+  type CaptureRequest,
+  type InstalledRecord,
+  type Patch,
+  type PatchManifest,
+  type RunReport,
+  type Settings,
+  type Stack,
+  type Step,
+} from "@app/contracts";
+import {
+  fileLibrary,
+  filePatchWriter,
+  fileStackStore,
+  loadInstalled,
+  loadSettings,
+  saveInstalled,
+  saveReport,
+} from "@app/files";
 import {
   appended,
   arranged,
   before,
+  joinedOff,
   library,
   Library,
   parsePatchId,
@@ -22,12 +46,15 @@ import {
   selected,
   StackStore,
 } from "@app/stack";
-import { commandResolver, commandShell, gitSource, macInstallation } from "@app/system";
+import { commandResolver, commandShell, gitPatchRepository, gitSource, macInstallation } from "@app/system";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import * as Result from "effect/Result";
 import type * as PlatformError from "effect/PlatformError";
 import * as Schema from "effect/Schema";
 
@@ -123,7 +150,7 @@ export const settingsIn = Effect.fn("settingsIn")(function* (userdata: string) {
 export const stackServices = (userdata: string, settings: Settings): Layer.Layer<Library | StackStore> =>
   Layer.merge(fileLibrary(settings.patches), fileStackStore(userdata)).pipe(Layer.provide(NodeServices.layer));
 
-export type Services = Library | StackStore | PatchWriter | Source | Shell | Resolver | Installation;
+export type Services = Library | StackStore | PatchWriter | Source | Shell | Resolver | Installation | PatchRepository;
 
 /** Every real service for `settings`: the patches and stack, git, commands and the installed app. */
 export const servicesFor = (userdata: string, settings: Settings): Layer.Layer<Services> =>
@@ -137,6 +164,7 @@ export const servicesFor = (userdata: string, settings: Settings): Layer.Layer<S
         commandShell(logs),
         commandResolver({ command: settings.resolver, logs }),
         macInstallation({ installed: settings.target.installed, backups: path.join(settings.work, "backups") }),
+        gitPatchRepository(settings.patches),
       );
     }),
   ).pipe(Layer.provide(NodeServices.layer), Layer.merge(stackServices(userdata, settings)));
@@ -157,19 +185,148 @@ export const changeStack = Effect.fn("changeStack")(function* (work: string, sta
   );
 });
 
-/** Apply the patches that are on, in stack order, and keep the report as the last run. Holds the lock throughout. */
-export const applyStack = Effect.fn("applyStack")(function* (userdata: string, settings: Settings, install: boolean) {
+/** What an installed record says besides what was installed: where updates come from, and how to run them. */
+export type RecordSource = Pick<InstalledRecord, "feed" | "update">;
+
+/** After a run that installed and passed, save the installed record of `patches`. */
+const recordInstall = Effect.fn("recordInstall")(function* (
+  userdata: string,
+  report: RunReport,
+  patches: ReadonlyArray<Patch>,
+  source: RecordSource,
+) {
+  const now = DateTime.formatIso(yield* DateTime.now);
+  const record = installedRecord(report, patches, now, source.feed, source.update);
+  if (record !== undefined) yield* saveInstalled(userdata, record);
+});
+
+/**
+ * Apply the patches that are on, in stack order, and keep the report as the last run. After an install that passed,
+ * save the installed record. Holds the lock throughout.
+ */
+export const applyStack = Effect.fn("applyStack")(function* (
+  userdata: string,
+  settings: Settings,
+  install: boolean,
+  source: RecordSource,
+) {
   const evidence = (yield* Path.Path).join(settings.work, "evidence");
   return yield* locked(
     settings.work,
     Effect.gen(function* () {
       const patches = yield* (yield* Library).patches;
       const { stack } = yield* library;
-      const report: RunReport = yield* run(settings.target, selected(stack, patches), install, { evidence });
+      const chosen = selected(stack, patches);
+      const report: RunReport = yield* run(settings.target, chosen, install, { evidence });
       yield* saveReport(userdata, report);
+      yield* recordInstall(userdata, report, chosen, source);
       return report;
     }),
   );
+});
+
+/** How `update` is asked to run: the app version to build, and the running app's pid to quit and open again. */
+export interface UpdateRequest {
+  readonly t3?: string;
+  readonly relaunch?: number;
+}
+
+const short = (commit: string): string => commit.slice(0, 7);
+
+const pull = (status: Step["status"], note: string): Step => ({ kind: "pull", name: "patches", status, note });
+
+/**
+ * Update: fast-forward the patches repository from its published branch (patches that are new join the stack off),
+ * then apply the stack and install it, building `request.t3` if given, else the installed version. Each report is
+ * saved as the last run as it changes, so the app can follow it; the first step is the pull. Nothing is installed
+ * unless every step passes. After an install, saves the installed record. Holds the lock throughout.
+ */
+export const updateStack = Effect.fn("updateStack")(function* (
+  userdata: string,
+  settings: Settings,
+  request: UpdateRequest,
+  source: RecordSource,
+) {
+  const evidence = (yield* Path.Path).join(settings.work, "evidence");
+  return yield* locked(
+    settings.work,
+    Effect.gen(function* () {
+      const progress = yield* Progress;
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const tell = Effect.fn("tell")(function* (report: RunReport) {
+        yield* progress.report(report);
+        yield* saveReport(userdata, report).pipe(
+          Effect.ignore,
+          Effect.provideService(FileSystem.FileSystem, fs),
+          Effect.provideService(Path.Path, path),
+        );
+      });
+      const was = yield* library;
+      yield* tell({ version: "", install: true, steps: [pull("running", "")] });
+      const pulled = yield* (yield* PatchRepository).pull(FEED_BRANCH).pipe(Effect.result);
+      if (Result.isFailure(pulled)) {
+        const failed: RunReport = { version: "", install: true, steps: [pull("failed", pulled.failure.reason)] };
+        yield* tell(failed);
+        return failed;
+      }
+      const { from, to } = pulled.success;
+      const pulledStep = pull("passed", from === to ? `up to date at ${short(to)}` : `${short(from)} → ${short(to)}`);
+      const patches = yield* (yield* Library).patches;
+      const stack = yield* saveStack(joinedOff(patches, was.stack));
+      const chosen = selected(stack, patches);
+      const installed = yield* (yield* Installation).version.pipe(Effect.orElseSucceed(() => "unknown"));
+      const updating = updates({
+        app: settings.target.name,
+        t3: { from: installed, to: request.t3 ?? installed },
+        installed: Option.getOrUndefined(yield* loadInstalled(userdata).pipe(Effect.orElseSucceed(() => Option.none()))),
+        before: was.patches,
+        patches: chosen,
+      });
+      const withPull = (report: RunReport): RunReport => ({ ...report, steps: [pulledStep, ...report.steps] });
+      const prefixed = Layer.succeed(Progress)({ report: Effect.fn("Progress.report")((report) => tell(withPull(report))) });
+      const options: RunOptions = {
+        updating,
+        ...(request.t3 === undefined ? {} : { version: request.t3 }),
+        ...(request.relaunch === undefined ? {} : { relaunch: request.relaunch }),
+      };
+      const report = withPull(
+        yield* run(settings.target, chosen, true, { evidence }, options).pipe(Effect.provide(prefixed)),
+      );
+      yield* saveReport(userdata, report);
+      yield* recordInstall(userdata, report, chosen, source);
+      return report;
+    }),
+  );
+});
+
+/** The first `name` in the folders of `searchPath` (a PATH value), as an absolute path; undefined if none has it. */
+export const onPath = Effect.fn("onPath")(function* (name: string, searchPath: string) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  for (const folder of searchPath.split(":")) {
+    if (!path.isAbsolute(folder)) continue;
+    const candidate = path.join(folder, name);
+    const info = yield* fs.stat(candidate).pipe(Effect.option);
+    if (Option.isSome(info) && info.value.type === "File") return candidate;
+  }
+  return undefined;
+});
+
+/**
+ * How the app runs this repository's `update` with `userdata`: python3 (absolute, found on `searchPath`) running
+ * scripts/patcher.py in `repository`, since the app runs it without a shell or the user's PATH.
+ */
+export const updateCommand = Effect.fn("updateCommand")(function* (
+  repository: string,
+  userdata: string,
+  searchPath: string,
+) {
+  const path = yield* Path.Path;
+  const python = (yield* onPath("python3", searchPath)) ?? "/usr/bin/python3";
+  const command = [python, path.join(repository, "scripts", "patcher.py"), "update", "--userdata", path.resolve(userdata)];
+  const update: InstalledRecord["update"] = { command, cwd: repository };
+  return update;
 });
 
 /** Open the workspace for patch `raw` (new or existing): the patches before it applied. Returns its folder. */

@@ -1,8 +1,17 @@
 // The window's operations without a window, for agents. Usage: node apps/desktop/dist/cli.cjs <command> [--userdata <folder>]
 import { Progress } from "@app/apply";
-import { CaptureRequest, type PatchId, type RunReport, type Settings, type Stack, type Step } from "@app/contracts";
-import { defaultSettings, loadReport, saveSettings } from "@app/files";
-import { library, moved, parsePatchId, toggled } from "@app/stack";
+import {
+  CaptureRequest,
+  FEED_URL,
+  type PatchId,
+  type RunReport,
+  type Settings,
+  type Stack,
+  type Step,
+  type UpdateItem,
+} from "@app/contracts";
+import { defaultSettings, fileLibrary, loadReport, saveFeed, saveSettings } from "@app/files";
+import { feedIndex, Library, library, moved, parsePatchId, toggled } from "@app/stack";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Config from "effect/Config";
 import * as Console from "effect/Console";
@@ -24,15 +33,20 @@ import {
   settingsFile,
   settingsIn,
   stackServices,
+  updateCommand,
+  updateStack,
+  type UpdateRequest,
   userdataFolder,
   workspaceFor,
 } from "./services.ts";
-import { buildEnv, type Line, outcome, parse, stackLines, stepLine } from "./text.ts";
+import { buildEnv, type Line, outcome, parse, stackLines, stepLine, updatingLine } from "./text.ts";
 
 const USAGE = `usage: t3-patcher <command> [--userdata <folder>]
   init [--patches <folder>] [--work <folder>] [--force]
   status
   apply [--install]
+  update [--t3 <version>] [--relaunch <pid>]
+  index [--patches <folder>]
   workspace <id>
   capture <id> --title <text> --summary <text>
   enable <id>
@@ -51,12 +65,16 @@ class Refused extends Schema.TaggedError<Refused>()("Refused", { why: Schema.Str
   }
 }
 
-/** Prints each step when its status or note changes. */
+/** Prints what an update changes, when a report first says, and each step when its status or note changes. */
 const printer = Layer.effect(Progress)(
   Effect.gen(function* () {
     const seen = yield* Ref.make<ReadonlyArray<Step>>([]);
+    const told = yield* Ref.make<ReadonlyArray<UpdateItem> | undefined>(undefined);
     return {
       report: Effect.fn("Progress.report")(function* (report: RunReport) {
+        if (report.updating !== undefined && (yield* Ref.getAndSet(told, report.updating)) === undefined) {
+          yield* Console.log(updatingLine(report.updating));
+        }
         const before = yield* Ref.getAndSet(seen, report.steps);
         for (const [index, step] of report.steps.entries()) {
           const was = before[index];
@@ -124,6 +142,40 @@ const status = Effect.fn("status")(function* (userdata: string, settings: Settin
   );
 });
 
+/** This repository: the CLI runs from apps/desktop/dist/. */
+const repository = Effect.gen(function* () {
+  return (yield* Path.Path).resolve(import.meta.dirname, "../../..");
+});
+
+/** What an install records besides what it installed: the feed, and how the app runs `update` with `userdata`. */
+const recordSource = Effect.fn("recordSource")(function* (userdata: string) {
+  const update = yield* updateCommand(yield* repository, userdata, yield* Config.String("PATH"));
+  return { feed: FEED_URL, update };
+});
+
+/** Write patches/index.json (the feed) from the patches folder: this repository's, or --patches. */
+const index = Effect.fn("index")(function* (line: Line) {
+  const path = yield* Path.Path;
+  const given = line.options.get("patches");
+  const folder = given === undefined ? path.join(yield* repository, "patches") : path.resolve(given);
+  const patches = yield* Library.use((found) => found.patches).pipe(Effect.provide(fileLibrary(folder)));
+  const file = yield* saveFeed(folder, feedIndex(patches));
+  yield* Console.log(`wrote ${file}: ${patches.map(({ manifest }) => `${manifest.id} ${manifest.version}`).join(", ") || "no patches"}`);
+});
+
+const updateRequest = (line: Line): Effect.Effect<UpdateRequest, Usage> => {
+  const t3 = line.options.get("t3");
+  const relaunch = line.options.get("relaunch");
+  if (t3 !== undefined && !/^\d+\.\d+\.\d+([-+][0-9A-Za-z.-]+)?$/.test(t3)) {
+    return Effect.fail(new Usage({ what: `--t3 needs a version like 0.1.12, not ${t3}` }));
+  }
+  const pid = relaunch === undefined ? undefined : Number(relaunch);
+  if (pid !== undefined && !(Number.isInteger(pid) && pid > 0)) {
+    return Effect.fail(new Usage({ what: `--relaunch needs a process id, not ${relaunch ?? ""}` }));
+  }
+  return Effect.succeed({ ...(t3 === undefined ? {} : { t3 }), ...(pid === undefined ? {} : { relaunch: pid }) });
+};
+
 /** Change the stack with `change`, save it and print it. */
 const restack = Effect.fn("restack")(function* (
   userdata: string,
@@ -149,6 +201,10 @@ const command = Effect.fn("command")(function* (argv: ReadonlyArray<string>) {
     yield* init(userdata, home, line);
     return 0;
   }
+  if (name === "index") {
+    yield* index(line);
+    return 0;
+  }
   if (name === undefined) return yield* new Usage({ what: "no command" });
   const settings = yield* settingsIn(userdata);
   const services = servicesFor(userdata, settings);
@@ -159,7 +215,15 @@ const command = Effect.fn("command")(function* (argv: ReadonlyArray<string>) {
       yield* status(userdata, settings);
       return 0;
     case "apply": {
-      const report = yield* applyStack(userdata, settings, line.flags.has("install")).pipe(
+      const report = yield* applyStack(userdata, settings, line.flags.has("install"), yield* recordSource(userdata)).pipe(
+        Effect.provide(Layer.merge(services, printer)),
+      );
+      yield* Console.log(outcome(report));
+      return report.steps.some((step) => step.status === "failed") ? 1 : 0;
+    }
+    case "update": {
+      const request = yield* updateRequest(line);
+      const report = yield* updateStack(userdata, settings, request, yield* recordSource(userdata)).pipe(
         Effect.provide(Layer.merge(services, printer)),
       );
       yield* Console.log(outcome(report));
