@@ -356,8 +356,9 @@ export const installedRecord = (
 
 /**
  * What an update changes, for its report: the app, when `t3.to` isn't the installed version; each patch that is on
- * whose version isn't the one installed (from the installed record, else the patch as it was before the pull); then
- * each patch the installed record has that the update leaves out, as "removed".
+ * whose version isn't the one installed (from the installed record, else the patch as it was before the pull), or,
+ * with an installed record, that the record lacks (added, from ""); then each patch the installed record has that the
+ * update leaves out, as "removed".
  */
 export const updates = (input: {
   readonly app: string;
@@ -374,9 +375,10 @@ export const updates = (input: {
     ...app,
     ...input.patches.flatMap(({ manifest }): ReadonlyArray<UpdateItem> => {
       const from = was(manifest.id);
-      return from === undefined || from === manifest.version
-        ? []
-        : [{ name: manifest.id, from: String(from), to: String(manifest.version) }];
+      if (from === undefined) {
+        return input.installed === undefined ? [] : [{ name: manifest.id, from: "", to: String(manifest.version) }];
+      }
+      return from === manifest.version ? [] : [{ name: manifest.id, from: String(from), to: String(manifest.version) }];
     }),
     ...(input.installed?.patches ?? [])
       .filter((kept) => !input.patches.some(({ manifest }) => manifest.id === kept.id))

@@ -122,42 +122,9 @@ describe("macInstallation", () => {
       expect([yield* marker(installed), yield* exists(backups)]).toEqual(["0.1.12", false]);
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)));
 
-  it.live("with relaunch, quits the running app, replaces it, records it, then opens the new one", () =>
+  it.live("with relaunch, quits the running app, replaces it, records the install, then opens it, in that order", () =>
     Effect.gen(function* () {
       const { root, installed, backups, built, marker, join } = yield* setup;
-      const opened = join(root, "opened.txt");
-      yield* launchable(installed, "0.1.11", opened);
-      yield* launchable(built, "0.1.12", opened);
-      const installation = yield* Installation.useSync((service) => service).pipe(
-        Effect.provide(macInstallation({ installed, backups, quitTimeout: "10 seconds" }).pipe(Layer.provide(NodeServices.layer))),
-      );
-      const running = yield* stay(installed);
-      // What the record sees when it's written: the new app in place, not yet opened.
-      const atRecord = yield* Ref.make<ReadonlyArray<string | boolean>>([]);
-      const record = Effect.gen(function* () {
-        yield* Ref.set(atRecord, [yield* marker(installed), yield* exists(opened)]);
-      }).pipe(Effect.provide(NodeServices.layer));
-      const note = yield* installation.install(built, "0.1.11", { relaunch: running.pid, installed: record });
-      expect([
-        note,
-        yield* running.isRunning,
-        yield* Ref.get(atRecord),
-        yield* waitFor(opened),
-        yield* marker(installed),
-        yield* marker(join(backups, "T3 Code-0.1.11-1.app")),
-      ]).toEqual([
-        `installed and reopened; the previous app is at ${join(backups, "T3 Code-0.1.11-1.app")}`,
-        false,
-        ["0.1.12", false],
-        "0.1.12\n",
-        "0.1.12",
-        "0.1.11",
-      ]);
-    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)), 30_000);
-
-  it.live("with relaunch, records the install before opening the app again", () =>
-    Effect.gen(function* () {
-      const { root, installed, backups, built, join } = yield* setup;
       const events = join(root, "events.txt");
       yield* launchable(installed, "0.1.11", join(root, "opened.txt"));
       const installation = yield* Installation.useSync((service) => service).pipe(
@@ -171,12 +138,18 @@ describe("macInstallation", () => {
         ),
       );
       const running = yield* stay(installed);
-      const record = FileSystem.FileSystem.use((fs) => fs.writeFileString(events, "recorded\n", { flag: "a" })).pipe(
-        Effect.orDie,
-        Effect.provide(NodeServices.layer),
-      );
-      yield* installation.install(built, "0.1.11", { relaunch: running.pid, installed: record });
-      expect(yield* read(events)).toEqual(`recorded\nopened ${installed}\n`);
+      // At the record: whether the old app still runs, and which app is in place.
+      const record = Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const line = `recorded: running ${yield* running.isRunning}, installed ${yield* marker(installed)}\n`;
+        yield* fs.writeFileString(events, line, { flag: "a" });
+      }).pipe(Effect.orDie, Effect.provide(NodeServices.layer));
+      const note = yield* installation.install(built, "0.1.11", { relaunch: running.pid, installed: record });
+      expect([note, yield* read(events), yield* marker(join(backups, "T3 Code-0.1.11-1.app"))]).toEqual([
+        `installed and reopened; the previous app is at ${join(backups, "T3 Code-0.1.11-1.app")}`,
+        `recorded: running false, installed 0.1.12\nopened ${installed}\n`,
+        "0.1.11",
+      ]);
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)));
 
   it.live("with relaunch, keeps the install and its record when the app can't be opened again, and says so", () =>

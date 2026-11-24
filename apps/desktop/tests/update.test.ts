@@ -2,7 +2,7 @@ import { Progress } from "@app/apply";
 import type { InstalledRecord, RunReport, Step } from "@app/contracts";
 import { defaultSettings, loadInstalled, loadReport, loadSettings, saveSettings } from "@app/files";
 import { commitUnpublished, gitIn, headOf, installedFile, publish, publishedWorld, type World } from "@app/fixtures";
-import { StackStore } from "@app/stack";
+import { library, saveStack, StackStore } from "@app/stack";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -15,6 +15,7 @@ import {
   applyStack,
   type RecordSource,
   servicesFor,
+  stackServices,
   updateCommand,
   updateSource,
   updateStack,
@@ -92,6 +93,18 @@ const timeless = (record: Option.Option<InstalledRecord>) =>
   Option.map(record, ({ installedAt, ...rest }) => ({ ...rest, timed: !Number.isNaN(Date.parse(installedAt)) }));
 
 const notesOnly = (): World => ({ installed: "1.0.0", patches: ["notes-one"], resolver: "stubborn" });
+
+/** Turn patch `id` on or off in the world's stack, as the patcher's window or `enable`/`disable` would. */
+const setOn = (data: string, id: string, on: boolean): Promise<void> =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      const settings = yield* loadSettings(data);
+      const services = stackServices(data, settings);
+      const { stack } = yield* library.pipe(Effect.provide(services));
+      const next = { entries: stack.entries.map((entry) => (entry.id === id ? { id: entry.id, enabled: on } : entry)) };
+      yield* saveStack(next).pipe(Effect.provide(services));
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
 
 /** The published clone `update` keeps in the world's work folder. */
 const cloneOf = (data: string): string => `${data}/work/published`;
@@ -297,6 +310,24 @@ describe("update's list of what it changes", () => {
         [{ name: "red-color", from: "1", to: "removed" }],
         ["notes-one on"],
         Option.some([{ id: "notes-one", version: 1 }]),
+      ]);
+    });
+  });
+});
+
+describe("update's list of what it adds", () => {
+  it("names a patch turned on since the last install as added, with its version", async () => {
+    await inWorld({ installed: "1.0.0", patches: ["notes-one", "red-color"], resolver: "fixing" }, async (data) => {
+      await setOn(data, "red-color", false);
+      await runIn(data, "apply");
+      await setOn(data, "red-color", true);
+      const seen = await runIn(data, "update");
+      expect([seen.report.updating, Option.map(seen.installed, (record) => record.patches)]).toEqual([
+        [{ name: "red-color", from: "", to: "1" }],
+        Option.some([
+          { id: "notes-one", version: 1 },
+          { id: "red-color", version: 1 },
+        ]),
       ]);
     });
   });

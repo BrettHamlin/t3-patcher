@@ -47,9 +47,14 @@ describe("text", () => {
       updatingLine([
         { name: "T3 Code", from: "0.1.11", to: "0.1.12" },
         { name: "picks", from: "1", to: "2" },
+        { name: "notes", from: "", to: "3" },
+        { name: "old", from: "2", to: "removed" },
       ]),
       updatingLine([]),
-    ]).toEqual(["updating: T3 Code 0.1.11 → 0.1.12, picks 1 → 2", "updating: nothing new (rebuilding)"]);
+    ]).toEqual([
+      "updating: T3 Code 0.1.11 → 0.1.12, picks 1 → 2, notes added, version 3, old 2 → removed",
+      "updating: nothing new (rebuilding)",
+    ]);
   });
 
   it("reads --t3 and --relaunch as valued options", () => {

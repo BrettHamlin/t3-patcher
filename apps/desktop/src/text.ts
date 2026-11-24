@@ -49,9 +49,13 @@ export const outcome = (report: RunReport): string => {
 export const stepLine = (step: Step): string =>
   `[${step.status}] ${step.kind} ${step.name}${step.note === "" ? "" : ` — ${step.note}`}`;
 
-/** "updating: <name> <from> → <to>, …", or "updating: nothing new (rebuilding)" when nothing changes. */
+/** "<name> <from> → <to>", or "<name> added, version <to>" for a patch the update adds. */
+const changeText = (item: UpdateItem): string =>
+  item.from === "" ? `${item.name} added, version ${item.to}` : `${item.name} ${item.from} → ${item.to}`;
+
+/** "updating: <change>, …", or "updating: nothing new (rebuilding)" when nothing changes. */
 export const updatingLine = (items: ReadonlyArray<UpdateItem>): string =>
-  `updating: ${items.length === 0 ? "nothing new (rebuilding)" : items.map((item) => `${item.name} ${item.from} → ${item.to}`).join(", ")}`;
+  `updating: ${items.length === 0 ? "nothing new (rebuilding)" : items.map(changeText).join(", ")}`;
 
 /** `text` as one shell word that the shell takes literally. */
 const quoted = (text: string): string => `'${text.replaceAll("'", `'\\''`)}'`;

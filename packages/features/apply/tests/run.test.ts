@@ -391,7 +391,7 @@ describe("installedRecord", () => {
 });
 
 describe("updates", () => {
-  it.effect("lists the app when its version changes, each patch that is on whose version isn't the one installed, then installed patches left out", () =>
+  it.effect("lists the app when its version changes, each patch that is on whose version isn't the one installed or that is added, then installed patches left out", () =>
     Effect.gen(function* () {
       const baseCommit = yield* commit("b");
       const [a, b, c] = [
@@ -418,10 +418,12 @@ describe("updates", () => {
         [
           { name: "T3 Code", from: "0.1.11", to: "0.1.12" },
           { name: "a", from: "1", to: "2" },
+          { name: "c", from: "", to: "1" },
         ],
         [{ name: "b", from: "4", to: "5" }],
         [
           { name: "a", from: "1", to: "2" },
+          { name: "c", from: "", to: "1" },
           { name: "b", from: "5", to: "removed" },
         ],
       ]);

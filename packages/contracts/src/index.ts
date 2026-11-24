@@ -96,10 +96,10 @@ export const Step = Schema.Struct({ kind: StepKind, name: Text, status: StepStat
 export type Step = typeof Step.Type;
 
 /**
- * Something an update changes: the app ("T3 Code") or a patch (its id), from one version to another; `to` is
- * "removed" for an installed patch the update leaves out.
+ * Something an update changes: the app ("T3 Code") or a patch (its id), from one version to another; `from` is ""
+ * for a patch the update adds, and `to` is "removed" for an installed patch it leaves out.
  */
-export const UpdateItem = Schema.Struct({ name: Text, from: Text, to: Text });
+export const UpdateItem = Schema.Struct({ name: Text, from: Schema.String, to: Text });
 export type UpdateItem = typeof UpdateItem.Type;
 
 /** One run of the stack over the installed version, step by step. An update's run says what it updates. */
