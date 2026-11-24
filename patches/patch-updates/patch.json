@@ -10,7 +10,7 @@
   "checks": [
     {
       "name": "desktop update tests",
-      "run": ". \"$T3_PATCHER_ENV\" && cd apps/desktop && vp test run src/updates/DesktopPatchUpdates.test.ts src/updates/DesktopUpdates.patched.test.ts src/updates/DesktopUpdates.test.ts src/app/DesktopApp.test.ts"
+      "run": ". \"$T3_PATCHER_ENV\" && cd apps/desktop && vp test run src/updates/DesktopPatchUpdates.test.ts src/updates/DesktopUpdates.patched.test.ts src/updates/DesktopUpdates.test.ts src/updates/DesktopRemoteUpdates.test.ts src/app/DesktopApp.test.ts"
     },
     {
       "name": "web update tests",
