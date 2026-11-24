@@ -120,7 +120,8 @@ describe("build environment", () => {
       `export npm_config_cache="$BE/npm-cache"`,
       `export COREPACK_HOME="$BE/corepack"`,
       `export electron_config_cache="$BE/electron-cache"`,
-      `mkdir -p "$TMPDIR" "$XDG_CACHE_HOME" "$ELECTRON_CACHE" "$ELECTRON_BUILDER_CACHE" "$pnpm_config_store_dir" "$pnpm_config_cache_dir" "$CARGO_HOME" "$npm_config_cache" "$COREPACK_HOME" "$electron_config_cache"`,
+      `export PLAYWRIGHT_BROWSERS_PATH="$BE/ms-playwright"`,
+      `mkdir -p "$TMPDIR" "$XDG_CACHE_HOME" "$ELECTRON_CACHE" "$ELECTRON_BUILDER_CACHE" "$pnpm_config_store_dir" "$pnpm_config_cache_dir" "$CARGO_HOME" "$npm_config_cache" "$COREPACK_HOME" "$electron_config_cache" "$PLAYWRIGHT_BROWSERS_PATH"`,
       "",
     ]);
   });

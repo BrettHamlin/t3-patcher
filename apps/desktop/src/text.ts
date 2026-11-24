@@ -72,6 +72,7 @@ const CACHES = [
   ["npm_config_cache", "npm-cache"],
   ["COREPACK_HOME", "corepack"],
   ["electron_config_cache", "electron-cache"],
+  ["PLAYWRIGHT_BROWSERS_PATH", "ms-playwright"],
 ] as const;
 
 /** The system compiler each variable names, so the build never picks up another `cc` on PATH. */

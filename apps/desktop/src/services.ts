@@ -420,3 +420,23 @@ export const capturePatch = Effect.fn("capturePatch")(function* (settings: Setti
 export const installedVersion = Effect.gen(function* () {
   return yield* (yield* Installation).version;
 });
+
+/**
+ * electron-builder downloads Electron into <home>/Library/Caches/electron whatever the environment says, so that
+ * folder becomes a link to `cache` (on the work folder's drive). A real folder already there is left alone: says
+ * how to move it. Returns the line to print.
+ */
+export const linkElectronCache = Effect.fn("linkElectronCache")(function* (home: string, cache: string) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const link = path.join(home, "Library", "Caches", "electron");
+  const target = yield* fs.readLink(link).pipe(Effect.option);
+  if (Option.isSome(target)) return `electron download cache: ${link} -> ${target.value} (kept)`;
+  if (yield* fs.exists(link)) {
+    return `electron download cache: ${link} is a folder on this drive; move its contents to ${cache}, delete it, and run init --force to link it`;
+  }
+  yield* fs.makeDirectory(cache, { recursive: true });
+  yield* fs.makeDirectory(path.dirname(link), { recursive: true });
+  yield* fs.symlink(cache, link);
+  return `electron download cache: linked ${link} -> ${cache}`;
+});
