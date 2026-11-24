@@ -1,0 +1,31 @@
+{
+  "id": "patch-updates",
+  "title": "Patch updates",
+  "summary": "On a build made by T3 Patcher (with <T3 home>/userdata/patcher/installed.json), the sidebar's update pill offers newer versions of the installed patches from the patcher's feed, and new T3 Code versions, and Update runs the patcher's update command (rebuild with every patch, check, install, relaunch) instead of electron-updater, showing its steps live. T3CODE_PATCH_UPDATE_FEED overrides the feed.",
+  "version": 1,
+  "base": {
+    "version": "0.1.11",
+    "commit": "59651c1761f6c63e9b6056839067066968e6a406"
+  },
+  "checks": [
+    {
+      "name": "desktop update tests",
+      "run": ". \"$T3_PATCHER_ENV\" && cd apps/desktop && vp test run src/updates/DesktopPatchUpdates.test.ts src/updates/DesktopUpdates.patched.test.ts src/updates/DesktopUpdates.test.ts src/app/DesktopApp.test.ts"
+    },
+    {
+      "name": "web update tests",
+      "run": ". \"$T3_PATCHER_ENV\" && export PLAYWRIGHT_BROWSERS_PATH=\"${PLAYWRIGHT_BROWSERS_PATH:-$BE/ms-playwright}\" && cd apps/web && pnpm exec playwright install chromium-headless-shell && vp test run --project unit src/state/desktopPatchUpdate.test.ts src/components/sidebar/patchUpdate.logic.test.ts && vp test run --project browser src/components/sidebar/SidebarPatchUpdatePill.browser.test.tsx src/components/sidebar/SidebarUpdatePill.browser.test.tsx"
+    },
+    {
+      "name": "translations",
+      "run": ". \"$T3_PATCHER_ENV\" && pnpm run i18n:check"
+    }
+  ],
+  "journeys": [
+    {
+      "name": "patch_updates",
+      "proves": "On a patched build (an installed record in a throwaway T3 home) with update checks on against local feeds only, the sidebar's update pill lists a newer journey-kit and T3 Code 0.1.12 but not uninstalled patches; Update runs the record's command with --t3 0.1.12 and --relaunch <the app's pid>, and the popover shows the stub's steps as they run and pass.",
+      "run": ". \"$T3_PATCHER_ENV\" && node patcher/journeys/patch-updates.mjs"
+    }
+  ]
+}
