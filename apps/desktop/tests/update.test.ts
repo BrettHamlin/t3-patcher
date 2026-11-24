@@ -1,6 +1,6 @@
 import { Progress } from "@app/apply";
 import type { InstalledRecord, RunReport, Step } from "@app/contracts";
-import { loadInstalled, loadReport, loadSettings, saveSettings } from "@app/files";
+import { defaultSettings, loadInstalled, loadReport, loadSettings, saveSettings } from "@app/files";
 import { commitUnpublished, gitIn, headOf, installedFile, publish, publishedWorld, type World } from "@app/fixtures";
 import { StackStore } from "@app/stack";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -16,6 +16,7 @@ import {
   type RecordSource,
   servicesFor,
   updateCommand,
+  updateSource,
   updateStack,
   type UpdateRequest,
 } from "../src/services.ts";
@@ -126,7 +127,6 @@ describe("update", () => {
         "passed check notes-one: check — ",
         "passed build copy — ",
         "passed journey notes-one: built — ",
-        "passed save save patches — nothing to save",
         `passed install install — installed; the previous app is at ${data}/work/backups/Installed-1.0.0-1.app`,
       ]);
       expect(seen.report.updating).toEqual([{ name: "notes-one", from: "1", to: "2" }]);
@@ -161,7 +161,7 @@ describe("update", () => {
     });
   });
 
-  it("with --t3, builds that version's tag over the installed one, and leaves the rebased patches unsaved", async () => {
+  it("with --t3, builds that version's tag over the installed one, with no save step, leaving the published patches as published", async () => {
     await inWorld(notesOnly(), async (data) => {
       const head = await headOf(`${data}/published.git`);
       const before = await cloneFile(data, "patches/notes-one/patch.json");
@@ -174,7 +174,6 @@ describe("update", () => {
         "passed check notes-one: check — ",
         "passed build copy — ",
         "passed journey notes-one: built — ",
-        "passed save save patches — notes-one rebased for 1.1.0; not saved: publish rebased patches from a workspace",
         `passed install install — installed; the previous app is at ${data}/work/backups/Installed-1.0.0-1.app`,
       ]);
       expect([seen.report.version, seen.report.updating]).toEqual([
@@ -277,7 +276,6 @@ describe("update", () => {
         "passed check notes-one: check — ",
         `failed build copy — copy failed (exit 7; log ${data}/work/logs/copy.log): `,
         "skipped journey notes-one: built — ",
-        "skipped save save patches — ",
         "skipped install install — ",
       ]);
       expect([
@@ -286,6 +284,57 @@ describe("update", () => {
         seen.installed,
       ]).toEqual(["title: Hello\ncolor: blue\n", "(missing)", Option.none()]);
     });
+  });
+});
+
+describe("update's list of what it changes", () => {
+  it("names an installed patch the published patches no longer have as removed", async () => {
+    await inWorld({ installed: "1.0.0", patches: ["notes-one", "red-color"], resolver: "fixing" }, async (data) => {
+      await runIn(data, "apply");
+      await publish(data, [{ kind: "remove", id: "red-color" }]);
+      const seen = await runIn(data, "update");
+      expect([seen.report.updating, seen.stack, Option.map(seen.installed, (record) => record.patches)]).toEqual([
+        [{ name: "red-color", from: "1", to: "removed" }],
+        ["notes-one on"],
+        Option.some([{ id: "notes-one", version: 1 }]),
+      ]);
+    });
+  });
+});
+
+describe("updateSource", () => {
+  it("runs scripts/patcher.py of the checkout holding the patches folder, and is none when that checkout has none", async () => {
+    const seen = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const root = yield* fs.realPath(yield* fs.makeTempDirectoryScoped({ prefix: "source-" }));
+          const python = `${root}/bin`;
+          yield* fs.makeDirectory(python, { recursive: true });
+          yield* fs.writeFileString(`${python}/python3`, "");
+          for (const checkout of ["patcher", "patches-only"]) {
+            yield* fs.makeDirectory(`${root}/${checkout}/.git`, { recursive: true });
+            yield* fs.makeDirectory(`${root}/${checkout}/patches`, { recursive: true });
+          }
+          yield* fs.makeDirectory(`${root}/patcher/scripts`, { recursive: true });
+          yield* fs.writeFileString(`${root}/patcher/scripts/patcher.py`, "");
+          const settings = defaultSettings({ patches: `${root}/patcher/patches`, work: `${root}/work` });
+          return {
+            root,
+            withScript: yield* updateSource(settings, "/u", `${python}:/usr/bin`),
+            without: yield* updateSource({ ...settings, patches: `${root}/patches-only/patches` }, "/u", python),
+          };
+        }),
+      ).pipe(Effect.provide(NodeServices.layer)),
+    );
+    expect([seen.withScript, seen.without]).toEqual([
+      {
+        command: [`${seen.root}/bin/python3`, `${seen.root}/patcher/scripts/patcher.py`, "update", "--userdata", "/u"],
+        cwd: `${seen.root}/patcher`,
+        path: `${seen.root}/bin:/usr/bin`,
+      },
+      undefined,
+    ]);
   });
 });
 

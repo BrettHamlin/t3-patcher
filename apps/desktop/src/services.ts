@@ -17,6 +17,7 @@ import {
 } from "@app/apply";
 import {
   FEED_BRANCH,
+  StepFailed,
   type CaptureRequest,
   type InstalledRecord,
   type Patch,
@@ -186,24 +187,30 @@ export const changeStack = Effect.fn("changeStack")(function* (work: string, sta
   );
 });
 
-/** What an installed record says besides what was installed: where updates come from, and how to run them. */
-export type RecordSource = Pick<InstalledRecord, "feed" | "update">;
+/**
+ * What an installed record says besides what was installed: where updates come from, and how to run them (none when
+ * the patcher wasn't run from a checkout with scripts/patcher.py).
+ */
+export interface RecordSource {
+  readonly feed: string;
+  readonly update: InstalledRecord["update"];
+}
 
-/** After a run that installed and passed, save the installed record of `patches`. */
-const recordInstall = Effect.fn("recordInstall")(function* (
-  userdata: string,
-  report: RunReport,
-  patches: ReadonlyArray<Patch>,
-  source: RecordSource,
-) {
-  const now = DateTime.formatIso(yield* DateTime.now);
-  const record = installedRecord(report, patches, now, source.feed, source.update);
-  if (record !== undefined) yield* saveInstalled(userdata, record);
-});
+/** Saves the installed record of an install; the install step runs it right after replacing the app. */
+const recorder =
+  (userdata: string, source: RecordSource) =>
+  (version: string, patches: ReadonlyArray<Patch>): Effect.Effect<void, StepFailed> =>
+    Effect.gen(function* () {
+      const now = DateTime.formatIso(yield* DateTime.now);
+      yield* saveInstalled(userdata, installedRecord(version, patches, now, source.feed, source.update));
+    }).pipe(
+      Effect.provide(NodeServices.layer),
+      Effect.mapError((failure) => new StepFailed({ reason: failure.message })),
+    );
 
 /**
- * Apply the patches that are on, in stack order, and keep the report as the last run. After an install that passed,
- * save the installed record. Holds the lock throughout.
+ * Apply the patches that are on, in stack order, and keep the report as the last run. An install saves the
+ * installed record as soon as the app is replaced. Holds the lock throughout.
  */
 export const applyStack = Effect.fn("applyStack")(function* (
   userdata: string,
@@ -218,9 +225,10 @@ export const applyStack = Effect.fn("applyStack")(function* (
       const patches = yield* (yield* Library).patches;
       const { stack } = yield* library;
       const chosen = selected(stack, patches);
-      const report: RunReport = yield* run(settings.target, chosen, install, { evidence });
+      const report: RunReport = yield* run(settings.target, chosen, install, { evidence }, {
+        record: recorder(userdata, source),
+      });
       yield* saveReport(userdata, report);
-      yield* recordInstall(userdata, report, chosen, source);
       return report;
     }),
   );
@@ -251,7 +259,7 @@ const libraryIn = (folder: string) => fileLibrary(folder).pipe(Layer.provide(Nod
  * stack, with the published patches, and install it, building `request.t3` if given, else the installed version.
  * Patches rebased onto that version aren't saved: the clone stays as published. Each report is saved as the last run
  * as it changes, so the app can follow it; the first step is the pull. Nothing is installed unless every step
- * passes. After an install, saves the installed record. Holds the lock throughout.
+ * passes; the install saves the installed record right after replacing the app. Holds the lock throughout.
  */
 export const updateStack = Effect.fn("updateStack")(function* (
   userdata: string,
@@ -309,6 +317,7 @@ export const updateStack = Effect.fn("updateStack")(function* (
       const options: RunOptions = {
         updating,
         save: false,
+        record: recorder(userdata, source),
         ...(request.t3 === undefined ? {} : { version: request.t3 }),
         ...(request.relaunch === undefined ? {} : { relaunch: request.relaunch }),
       };
@@ -316,7 +325,6 @@ export const updateStack = Effect.fn("updateStack")(function* (
         yield* run(settings.target, chosen, true, { evidence }, options).pipe(Effect.provide(prefixed)),
       );
       yield* saveReport(userdata, report);
-      yield* recordInstall(userdata, report, chosen, source);
       return report;
     }),
   );
@@ -355,6 +363,24 @@ export const updateCommand = Effect.fn("updateCommand")(function* (
   const command = [python, path.join(repository, "scripts", "patcher.py"), "update", "--userdata", path.resolve(userdata)];
   const update: InstalledRecord["update"] = { command, cwd: repository, path: kept };
   return update;
+});
+
+/**
+ * How the app runs `update` for these settings: from the checkout that holds the patches folder (its nearest
+ * folder with .git), when that checkout has scripts/patcher.py; else none, and updates run from the command line.
+ */
+export const updateSource = Effect.fn("updateSource")(function* (
+  settings: Settings,
+  userdata: string,
+  searchPath: string,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const exists = (target: string) => fs.exists(target).pipe(Effect.orElseSucceed(() => false));
+  let folder = path.resolve(settings.patches);
+  while (!(yield* exists(path.join(folder, ".git"))) && path.dirname(folder) !== folder) folder = path.dirname(folder);
+  if (!(yield* exists(path.join(folder, "scripts", "patcher.py")))) return undefined;
+  return yield* updateCommand(folder, userdata, searchPath);
 });
 
 /** Open the workspace for patch `raw` (new or existing): the patches before it applied. Returns its folder. */

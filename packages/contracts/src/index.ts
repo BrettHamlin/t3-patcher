@@ -95,7 +95,10 @@ export type StepStatus = typeof StepStatus.Type;
 export const Step = Schema.Struct({ kind: StepKind, name: Text, status: StepStatus, note: Schema.String });
 export type Step = typeof Step.Type;
 
-/** Something an update changes: the app ("T3 Code") or a patch (its id), from one version to another. */
+/**
+ * Something an update changes: the app ("T3 Code") or a patch (its id), from one version to another; `to` is
+ * "removed" for an installed patch the update leaves out.
+ */
 export const UpdateItem = Schema.Struct({ name: Text, from: Text, to: Text });
 export type UpdateItem = typeof UpdateItem.Type;
 
@@ -131,11 +134,14 @@ export const InstalledRecord = Schema.Struct({
   patches: Schema.Array(Schema.Struct({ id: PatchId, version: PatchVersion })),
   installedAt: Text,
   feed: Text,
-  update: Schema.Struct({
-    command: Schema.Array(Text).pipe(Schema.check(Schema.isMinLength(1))),
-    cwd: Text,
-    path: Text,
-  }),
+  /** Missing when the install wasn't run from a checkout with scripts/patcher.py: update from the command line. */
+  update: Schema.optionalKey(
+    Schema.Struct({
+      command: Schema.Array(Text).pipe(Schema.check(Schema.isMinLength(1))),
+      cwd: Text,
+      path: Text,
+    }),
+  ),
 });
 export type InstalledRecord = typeof InstalledRecord.Type;
 

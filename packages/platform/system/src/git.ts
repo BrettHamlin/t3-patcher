@@ -279,9 +279,11 @@ export const gitPublishedPatches = (input: {
           yield* git(input.clone, ["fetch", "--quiet", "origin", branch]);
           const from = (yield* attempt(input.clone, ["rev-parse", "--verify", "--quiet", "HEAD"])).stdout.trim();
           const forward = yield* attempt(input.clone, ["merge", "--ff-only", "--quiet", "FETCH_HEAD"]);
-          // It's a cache: when it can't fast-forward (or has changes), it becomes the published branch again.
+          // It's a cache: when it can't fast-forward, is ahead of the published branch (a fast-forward "succeeds"
+          // then), or has changes, it becomes the published branch again.
           const dirty = (yield* git(input.clone, ["status", "--porcelain"])) !== "";
-          const reset = forward.code !== 0 || dirty;
+          const ahead = (yield* git(input.clone, ["rev-parse", "HEAD"])) !== (yield* git(input.clone, ["rev-parse", "FETCH_HEAD"]));
+          const reset = forward.code !== 0 || dirty || ahead;
           if (reset) {
             yield* git(input.clone, ["reset", "--quiet", "--hard", "FETCH_HEAD"]);
             yield* git(input.clone, ["clean", "-ffdxq"]);

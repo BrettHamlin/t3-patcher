@@ -99,6 +99,20 @@ describe("gitPublishedPatches", () => {
       ]);
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)));
 
+  it.live("resets a clone that is ahead of the published branch, though a fast-forward would succeed", () =>
+    Effect.gen(function* () {
+      const { origin, clone, service, patchA, first } = yield* published;
+      yield* service.sync("main");
+      yield* write(patchA, '{"ahead":true}\n');
+      yield* git(clone, "commit", "--quiet", "-am", "ahead in the clone");
+      const ahead = yield* head(clone);
+      expect([yield* service.sync("main"), yield* head(clone), yield* read(patchA)]).toEqual([
+        { url: origin, from: ahead, to: first, reset: true },
+        first,
+        "{}\n",
+      ]);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)));
+
   it.live("fails when the patches repository has no origin", () =>
     Effect.gen(function* () {
       const { root, clone, patchesOf } = yield* published;

@@ -1,4 +1,4 @@
-import type { RunReport, Step } from "@app/contracts";
+import type { Patch, RunReport, Step } from "@app/contracts";
 import { installedRecord, run, updates } from "@app/apply";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
@@ -303,7 +303,7 @@ describe("run", () => {
       ]);
     }));
 
-  it.effect("with saving off, names the patches rebased onto this version but saves none", () =>
+  it.effect("with saving off, has no save step: the patch step says it was rebased, and nothing is written", () =>
     Effect.gen(function* () {
       const fake = yield* fakes();
       const baseCommit = yield* commit("b");
@@ -319,7 +319,6 @@ describe("run", () => {
         "b: passed applied",
         "a: a-journey: passed ",
         "b: b-journey: passed ",
-        "save patches: passed a rebased for 0.1.12; not saved: publish rebased patches from a workspace",
       ]);
       expect(yield* Ref.get(fake.written)).toEqual([]);
     }));
@@ -358,40 +357,41 @@ const update = {
 } as const;
 
 describe("installedRecord", () => {
-  it.effect("records the version and each patch installed, when the run installed and every step passed", () =>
+  it.effect("records the version and each patch installed, with how to update it when there's a command", () =>
     Effect.gen(function* () {
-      const fake = yield* fakes();
       const baseCommit = yield* commit("b");
       const patches = [yield* patch("a", { baseCommit, version: 3 }), yield* patch("b", { baseCommit })];
-      const report = yield* run(target(), patches, true, folders).pipe(Effect.provide(fake.layer));
-      expect(installedRecord(report, patches, "2026-11-24T10:00:00.000Z", "https://feed", update)).toEqual({
-        t3Version: "0.1.11",
-        patches: [
-          { id: "a", version: 3 },
-          { id: "b", version: 1 },
-        ],
-        installedAt: "2026-11-24T10:00:00.000Z",
-        feed: "https://feed",
-        update,
-      });
+      const installed = [
+        { id: "a", version: 3 },
+        { id: "b", version: 1 },
+      ];
+      expect([
+        installedRecord("0.1.12", patches, "2026-11-24T10:00:00.000Z", "https://feed", update),
+        installedRecord("0.1.12", patches, "2026-11-24T10:00:00.000Z", "https://feed", undefined),
+      ]).toEqual([
+        { t3Version: "0.1.12", patches: installed, installedAt: "2026-11-24T10:00:00.000Z", feed: "https://feed", update },
+        { t3Version: "0.1.12", patches: installed, installedAt: "2026-11-24T10:00:00.000Z", feed: "https://feed" },
+      ]);
     }));
 
-  it.effect("records nothing for a run that didn't install, or that failed", () =>
+  it.effect("is written by the install step right after the app is replaced, only when it installs", () =>
     Effect.gen(function* () {
+      const fake = yield* fakes();
       const patches = yield* twoPatches();
-      const dry = yield* run(target(), patches, false, folders).pipe(Effect.provide((yield* fakes()).layer));
-      const failed = yield* run(target(), patches, true, folders).pipe(
+      const recorded = yield* Ref.make<ReadonlyArray<string>>([]);
+      const record = (version: string, installed: ReadonlyArray<Patch>) =>
+        Ref.update(recorded, (all) => [...all, `${version}: ${installed.map((each) => each.manifest.id).join(", ")}`]);
+      yield* run(target(), patches, false, folders, { record }).pipe(Effect.provide(fake.layer));
+      yield* run(target(), patches, true, folders, { record, version: "0.1.12" }).pipe(
         Effect.provide((yield* fakes({ failing: new Set(["unit"]) })).layer),
       );
-      expect([
-        installedRecord(dry, patches, "now", "https://feed", update),
-        installedRecord(failed, patches, "now", "https://feed", update),
-      ]).toEqual([undefined, undefined]);
+      yield* run(target(), patches, true, folders, { record, version: "0.1.12" }).pipe(Effect.provide(fake.layer));
+      expect(yield* Ref.get(recorded)).toEqual(["0.1.12: a, b"]);
     }));
 });
 
 describe("updates", () => {
-  it.effect("lists the app when its version changes, then each patch that is on whose version isn't the one installed", () =>
+  it.effect("lists the app when its version changes, each patch that is on whose version isn't the one installed, then installed patches left out", () =>
     Effect.gen(function* () {
       const baseCommit = yield* commit("b");
       const [a, b, c] = [
@@ -413,12 +413,17 @@ describe("updates", () => {
       expect([
         updates({ app: "T3 Code", t3: { from: "0.1.11", to: "0.1.12" }, installed, before, patches: [a, b, c] }),
         updates({ app: "T3 Code", t3: { from: "0.1.11", to: "0.1.11" }, installed: undefined, before, patches: [a, b, c] }),
+        updates({ app: "T3 Code", t3: { from: "0.1.11", to: "0.1.11" }, installed, before, patches: [a, c] }),
       ]).toEqual([
         [
           { name: "T3 Code", from: "0.1.11", to: "0.1.12" },
           { name: "a", from: "1", to: "2" },
         ],
         [{ name: "b", from: "4", to: "5" }],
+        [
+          { name: "a", from: "1", to: "2" },
+          { name: "b", from: "5", to: "removed" },
+        ],
       ]);
     }));
 });

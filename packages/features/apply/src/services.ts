@@ -8,11 +8,17 @@ export interface InstallationShape {
   /** The installed version, e.g. "0.1.11". */
   readonly version: Effect.Effect<string, StepFailed>;
   /**
-   * Replace the installed app with the built one at `built`, keeping a backup. Fails if the installed version is no
-   * longer `installed` (the one read when the run started), or if the app is running. With `relaunch`, the app's
-   * process with that pid is asked to quit first, and the installed app is opened again afterwards.
+   * Replace the installed app with the built one at `built`, keeping a backup, then run `options.installed` (which
+   * records the install). Fails if the installed version is no longer `installed` (the one read when the run
+   * started), or if the app is running. With `options.relaunch`, the app's process with that pid is asked to quit
+   * first, and the installed app is opened again after the install is recorded; failing to open it is reported in
+   * the note, but the install and its record stay.
    */
-  readonly install: (built: string, installed: string, relaunch?: number) => Effect.Effect<string, StepFailed>;
+  readonly install: (
+    built: string,
+    installed: string,
+    options?: { readonly relaunch?: number; readonly installed?: Effect.Effect<void, StepFailed> },
+  ) => Effect.Effect<string, StepFailed>;
 }
 export class Installation extends Context.Service<Installation, InstallationShape>()("@app/apply/services/Installation") {}
 

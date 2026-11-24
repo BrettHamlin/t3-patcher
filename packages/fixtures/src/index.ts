@@ -298,10 +298,11 @@ const buildPublished = Effect.fn("buildPublished")(function* (data: string, worl
   yield* saveSettings(data, { ...settings, patches: path.join(repo, "patches") });
 });
 
-/** A change published to <data>/published.git: a patch's version raised, or a fixture patch added. */
+/** A change published to <data>/published.git: a patch's version raised, a fixture patch added, or one removed. */
 export type Publication =
   | { readonly kind: "bump"; readonly id: FixturePatch; readonly version: number }
-  | { readonly kind: "add"; readonly id: FixturePatch };
+  | { readonly kind: "add"; readonly id: FixturePatch }
+  | { readonly kind: "remove"; readonly id: FixturePatch };
 
 const publishOne = Effect.fn("publishOne")(function* (data: string, change: Publication) {
   const fs = yield* FileSystem.FileSystem;
@@ -310,7 +311,9 @@ const publishOne = Effect.fn("publishOne")(function* (data: string, change: Publ
   yield* fs.remove(clone, { recursive: true, force: true });
   yield* git(data, ["clone", "--quiet", path.join(data, "published.git"), clone]);
   const patches = path.join(clone, "patches");
-  if (change.kind === "add") {
+  if (change.kind === "remove") {
+    yield* fs.remove(path.join(patches, change.id), { recursive: true });
+  } else if (change.kind === "add") {
     yield* writePatch(patches, yield* makePatch(path.join(data, "upstream"), path.join(data, "scratch"), change.id));
     yield* fs.remove(path.join(data, "scratch"), { recursive: true, force: true });
   } else {

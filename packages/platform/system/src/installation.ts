@@ -1,9 +1,11 @@
 import { Installation } from "@app/apply";
+import type { StepFailed } from "@app/contracts";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Result from "effect/Result";
 import * as Path from "effect/Path";
 import { ChildProcessSpawner } from "effect/process/ChildProcessSpawner";
 
@@ -39,6 +41,8 @@ export const macInstallation = (input: {
   readonly installed: string;
   readonly backups: string;
   readonly quitTimeout?: Duration.Input;
+  /** The command that opens the installed app again, its path appended (default `open -a`). */
+  readonly opener?: readonly [string, ...Array<string>];
 }): Layer.Layer<Installation, never, ChildProcessSpawner | FileSystem.FileSystem | Path.Path> =>
   Layer.effect(Installation)(
     Effect.gen(function* () {
@@ -104,7 +108,8 @@ export const macInstallation = (input: {
         if (Option.isNone(gone)) return yield* stepFailed(`${name} didn't quit within ${Duration.format(timeout)}`);
       });
 
-      const reopen = run(spawner, "open", ["-a", input.installed]).pipe(
+      const [opener, ...openArgs] = input.opener ?? ["open", "-a"];
+      const reopen = run(spawner, opener, [...openArgs, input.installed]).pipe(
         Effect.flatMap((output) =>
           output.code === 0
             ? Effect.void
@@ -129,24 +134,36 @@ export const macInstallation = (input: {
 
       return {
         version,
-        install: Effect.fn("Installation.install")(function* (built: string, expected: string, relaunch?: number) {
+        install: Effect.fn("Installation.install")(function* (
+          built: string,
+          expected: string,
+          options: { readonly relaunch?: number; readonly installed?: Effect.Effect<void, StepFailed> } = {},
+        ) {
           const installedVersion = yield* version;
           if (installedVersion !== expected) {
             return yield* stepFailed(`${name} is now ${installedVersion}, not ${expected}: apply again`);
           }
           if (!(yield* exists(built))) return yield* stepFailed(`no built app at ${built}`);
+          const recorded = (options.installed ?? Effect.void).pipe(
+            Effect.mapError((failure) => stepFailed(`installed, but couldn't record the install: ${failure.reason}`)),
+          );
+          const relaunch = options.relaunch;
           if (relaunch === undefined) {
-            return `installed; the previous app is at ${yield* swap(built)}`;
+            const backup = yield* swap(built);
+            yield* recorded;
+            return `installed; the previous app is at ${backup}`;
           }
           yield* quit(relaunch);
-          // Whatever happens to the swap, the app (new, or the old one put back) opens again.
+          // The new app reads the install's record when it opens, so the record comes first. Whatever happens to the
+          // swap or the record, the app (new, or the old one put back) opens again.
           const backup = yield* swap(built).pipe(
-            Effect.matchEffect({
-              onFailure: (failure) => reopen.pipe(Effect.ignore, Effect.andThen(Effect.fail(failure))),
-              onSuccess: (done) => reopen.pipe(Effect.as(done)),
-            }),
+            Effect.tap(() => recorded),
+            Effect.tapError(() => reopen.pipe(Effect.ignore)),
           );
-          return `installed and reopened; the previous app is at ${backup}`;
+          const reopened = yield* reopen.pipe(Effect.result);
+          return Result.isSuccess(reopened)
+            ? `installed and reopened; the previous app is at ${backup}`
+            : `installed, but ${reopened.failure.reason}; the previous app is at ${backup}`;
         }),
       };
     }),

@@ -154,7 +154,12 @@ export const fakes = Effect.fn("fakes")(function* (options: FakeOptions = {}) {
       version: Ref.getAndSet(versionRead, true).pipe(
         Effect.map((read) => (read ? (options.installedLater ?? version) : version)),
       ),
-      install: Effect.fn("fake.install")(function* (built: string, from: string, relaunch?: number) {
+      install: Effect.fn("fake.install")(function* (
+        built: string,
+        from: string,
+        install: { readonly relaunch?: number; readonly installed?: Effect.Effect<void, StepFailed> } = {},
+      ) {
+        const relaunch = install.relaunch;
         yield* log(`install ${built} (${from})${relaunch === undefined ? "" : ` relaunching ${relaunch}`}`);
         if (options.installFails === true) return yield* new StepFailed({ reason: "T3 Code is running" });
         const now = options.installedLater ?? version;
@@ -162,6 +167,7 @@ export const fakes = Effect.fn("fakes")(function* (options: FakeOptions = {}) {
           return yield* new StepFailed({ reason: `T3 Code is now ${now}, not ${from}: run again` });
         }
         yield* Ref.update(installed, (all) => [...all, built]);
+        yield* install.installed ?? Effect.void;
         return `installed ${built}`;
       }),
     }),

@@ -33,7 +33,7 @@ import {
   settingsFile,
   settingsIn,
   stackServices,
-  updateCommand,
+  updateSource,
   updateStack,
   type UpdateRequest,
   userdataFolder,
@@ -148,8 +148,8 @@ const repository = Effect.gen(function* () {
 });
 
 /** What an install records besides what it installed: the feed, and how the app runs `update` with `userdata`. */
-const recordSource = Effect.fn("recordSource")(function* (userdata: string) {
-  const update = yield* updateCommand(yield* repository, userdata, yield* Config.String("PATH"));
+const recordSource = Effect.fn("recordSource")(function* (settings: Settings, userdata: string) {
+  const update = yield* updateSource(settings, userdata, yield* Config.String("PATH"));
   return { feed: FEED_URL, update };
 });
 
@@ -215,7 +215,7 @@ const command = Effect.fn("command")(function* (argv: ReadonlyArray<string>) {
       yield* status(userdata, settings);
       return 0;
     case "apply": {
-      const report = yield* applyStack(userdata, settings, line.flags.has("install"), yield* recordSource(userdata)).pipe(
+      const report = yield* applyStack(userdata, settings, line.flags.has("install"), yield* recordSource(settings, userdata)).pipe(
         Effect.provide(Layer.merge(services, printer)),
       );
       yield* Console.log(outcome(report));
@@ -223,7 +223,7 @@ const command = Effect.fn("command")(function* (argv: ReadonlyArray<string>) {
     }
     case "update": {
       const request = yield* updateRequest(line);
-      const report = yield* updateStack(userdata, settings, request, yield* recordSource(userdata)).pipe(
+      const report = yield* updateStack(userdata, settings, request, yield* recordSource(settings, userdata)).pipe(
         Effect.provide(Layer.merge(services, printer)),
       );
       yield* Console.log(outcome(report));

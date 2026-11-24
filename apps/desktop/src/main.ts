@@ -1,6 +1,16 @@
 // The main process: the composition root for real services. Usage: electron . [--userdata <folder>]
 import { Progress } from "@app/apply";
-import { Answer, CaptureRequest, FEED_URL, LibraryView, PatchManifest, PatcherChannel, RunReport, Stack } from "@app/contracts";
+import {
+  Answer,
+  CaptureRequest,
+  FEED_URL,
+  LibraryView,
+  PatchManifest,
+  PatcherChannel,
+  RunReport,
+  type Settings,
+  Stack,
+} from "@app/contracts";
 import { loadReport } from "@app/files";
 import { library } from "@app/stack";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -8,7 +18,6 @@ import * as Config from "effect/Config";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
-import * as Path from "effect/Path";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import { app, autoUpdater as nativeUpdater, BrowserWindow, ipcMain } from "electron";
@@ -22,7 +31,7 @@ import {
   servicesFor,
   settingsIn,
   stackServices,
-  updateCommand,
+  updateSource,
   userdataFolder,
   workspaceFor,
 } from "./services.ts";
@@ -63,11 +72,10 @@ const encodeReport = Schema.encodeEffect(RunReport);
 const node = <A, E>(effect: Effect.Effect<A, E, NodeServices.NodeServices>) =>
   effect.pipe(Effect.provide(NodeServices.layer));
 
-/** Run from this repository (apps/desktop/dist/), the window records how to run its `update` with `userdata`. */
-const recordSource = Effect.fn("recordSource")(function* (userdata: string) {
-  const repository = (yield* Path.Path).resolve(import.meta.dirname, "../../..");
+/** How an install from the window records `update`: from the checkout holding the settings' patches, if any. */
+const recordSource = Effect.fn("recordSource")(function* (settings: Settings, userdata: string) {
   const searchPath = yield* Config.String("PATH").pipe(Config.withDefault(""));
-  return { feed: FEED_URL, update: yield* updateCommand(repository, userdata, searchPath) };
+  return { feed: FEED_URL, update: yield* updateSource(settings, userdata, searchPath) };
 });
 
 const serve = (window: BrowserWindow, userdata: string, running: Ref.Ref<boolean>): void => {
@@ -106,7 +114,7 @@ const serve = (window: BrowserWindow, userdata: string, running: Ref.Ref<boolean
       RunReport,
       Effect.gen(function* () {
         const found = yield* settings;
-        const source = yield* node(recordSource(userdata));
+        const source = yield* node(recordSource(found, userdata));
         if (!(yield* Ref.getAndSet(running, true))) {
           return yield* applyStack(userdata, found, install === true, source).pipe(
             Effect.provide(Layer.mergeAll(servicesFor(userdata, found), progress, NodeServices.layer)),
