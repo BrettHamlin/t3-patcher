@@ -24,7 +24,7 @@
   "journeys": [
     {
       "name": "patch_updates",
-      "proves": "On a patched build (an installed record in a throwaway T3 home) with update checks on against local feeds only, the sidebar's update pill lists a newer journey-kit and T3 Code 0.1.12 but not uninstalled patches; Update runs the record's command with --t3 0.1.12 and --relaunch <the app's pid>, and the popover shows the stub's steps as they run and pass.",
+      "proves": "On a patched build (an installed record in a throwaway T3 home) with update checks on against local feeds only, the sidebar's update pill lists a newer journey-kit and T3 Code 0.1.12 but not uninstalled patches; Update runs the record's command with --t3 0.1.12, --relaunch <the app's pid> and the record's PATH, and the popover shows the stub's steps in words as they run and pass.",
       "run": ". \"$T3_PATCHER_ENV\" && node patcher/journeys/patch-updates.mjs"
     }
   ]

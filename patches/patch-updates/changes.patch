@@ -182,10 +182,10 @@ index 280c5ad6c6716e082df03dcae7787ee17ef7d158..e966124dfcc53bedaffc2eb85760fedc
      install: () => ipcRenderer.invoke(IpcChannels.CLI_COMMAND_INSTALL_CHANNEL),
 diff --git a/apps/desktop/src/updates/DesktopPatchUpdates.test.ts b/apps/desktop/src/updates/DesktopPatchUpdates.test.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..0cae54d43da02cb5da75f616e88d8e1b80c1df18
+index 0000000000000000000000000000000000000000..91be536857c4e5b2907fccf05a1627cc05a76acf
 --- /dev/null
 +++ b/apps/desktop/src/updates/DesktopPatchUpdates.test.ts
-@@ -0,0 +1,446 @@
+@@ -0,0 +1,482 @@
 +import * as NodeServices from "@effect/platform-node/NodeServices";
 +import { assert, describe, it } from "@effect/vitest";
 +import type { DesktopPatchUpdateState, DesktopPatchUpdateStep } from "@t3tools/contracts";
@@ -227,6 +227,7 @@ index 0000000000000000000000000000000000000000..0cae54d43da02cb5da75f616e88d8e1b
 +      "/u",
 +    ],
 +    cwd: "/repo",
++    path: "/repo/node_modules/.bin:/opt/homebrew/bin:/usr/bin:/bin",
 +  },
 +};
 +
@@ -243,6 +244,7 @@ index 0000000000000000000000000000000000000000..0cae54d43da02cb5da75f616e88d8e1b
 +  readonly command: string;
 +  readonly args: ReadonlyArray<string>;
 +  readonly cwd: string;
++  readonly path: string;
 +  readonly log: string;
 +}
 +
@@ -536,6 +538,7 @@ index 0000000000000000000000000000000000000000..0cae54d43da02cb5da75f616e88d8e1b
 +                  String(process.pid),
 +                ],
 +                cwd: "/repo",
++                path: "/repo/node_modules/.bin:/opt/homebrew/bin:/usr/bin:/bin",
 +                log: LOG,
 +              },
 +            ],
@@ -632,12 +635,45 @@ index 0000000000000000000000000000000000000000..0cae54d43da02cb5da75f616e88d8e1b
 +    }),
 +  );
 +});
++
++describe("layerPatcherLauncher", () => {
++  it.live(
++    "runs the command in its folder with the recorded PATH, appending its output to the log",
++    () =>
++      Effect.gen(function* () {
++        const fileSystem = yield* FileSystem.FileSystem;
++        const root = yield* fileSystem.realPath(
++          yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-patcher-launch-" }),
++        );
++        const log = `${root}/update.log`;
++        yield* fileSystem.writeFileString(log, "earlier\n");
++        const launcher = yield* DesktopPatchUpdates.PatcherLauncher.pipe(
++          Effect.provide(DesktopPatchUpdates.layerPatcherLauncher),
++        );
++        const launched = yield* launcher.launch({
++          command: "/bin/sh",
++          args: ["-c", 'printf "%s|%s|%s\\n" "$PATH" "$(pwd -P)" "$1"', "sh", "--relaunch"],
++          cwd: root,
++          path: "/patcher/tools:/opt/homebrew/bin:/usr/bin:/bin",
++          log,
++        });
++        const code = yield* launched.exited;
++        assert.deepStrictEqual(
++          { code, log: yield* fileSystem.readFileString(log) },
++          {
++            code: 0,
++            log: `earlier\n/patcher/tools:/opt/homebrew/bin:/usr/bin:/bin|${root}|--relaunch\n`,
++          },
++        );
++      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
++  );
++});
 diff --git a/apps/desktop/src/updates/DesktopPatchUpdates.ts b/apps/desktop/src/updates/DesktopPatchUpdates.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..2e950e2069361cdb7b543eb0fedce15ee7073734
+index 0000000000000000000000000000000000000000..1d9dcd5623705691595cec93f7d90feabbd327cf
 --- /dev/null
 +++ b/apps/desktop/src/updates/DesktopPatchUpdates.ts
-@@ -0,0 +1,392 @@
+@@ -0,0 +1,402 @@
 +// Patch updates on a build made by T3 Patcher, which writes <T3 home>/userdata/patcher/installed.json. Only then
 +// are the feed's newer versions of the installed patches offered; the patcher's update rebuilds and installs the
 +// app, quitting it first and opening it again after.
@@ -681,6 +717,8 @@ index 0000000000000000000000000000000000000000..2e950e2069361cdb7b543eb0fedce15e
 +  update: Schema.Struct({
 +    command: Schema.NonEmptyArray(Schema.String),
 +    cwd: Schema.String,
++    /** The PATH the patcher ran with, which the command runs with. */
++    path: Schema.String,
 +  }),
 +});
 +export type InstalledRecord = typeof InstalledRecord.Type;
@@ -720,11 +758,15 @@ index 0000000000000000000000000000000000000000..2e950e2069361cdb7b543eb0fedce15e
 +export class PatcherLauncher extends Context.Service<
 +  PatcherLauncher,
 +  {
-+    /** Starts `command` with `args` in `cwd`, its output appended to `log`; `exited` waits for its exit code. */
++    /**
++     * Starts `command` with `args` in `cwd` and `path` as its PATH, its output appended to `log`; `exited` waits for
++     * its exit code.
++     */
 +    readonly launch: (input: {
 +      readonly command: string;
 +      readonly args: ReadonlyArray<string>;
 +      readonly cwd: string;
++      readonly path: string;
 +      readonly log: string;
 +    }) => Effect.Effect<{ readonly exited: Effect.Effect<number> }, PatcherLaunchError>;
 +  }
@@ -755,6 +797,9 @@ index 0000000000000000000000000000000000000000..2e950e2069361cdb7b543eb0fedce15e
 +              ],
 +              {
 +                cwd: input.cwd,
++                // The PATH the patcher ran with: this app's own (from Finder, /usr/bin:/bin) lacks its tools.
++                env: { PATH: input.path },
++                extendEnv: true,
 +                detached: true,
 +                stdin: "ignore",
 +                stdout: "ignore",
@@ -974,6 +1019,7 @@ index 0000000000000000000000000000000000000000..2e950e2069361cdb7b543eb0fedce15e
 +        command: record.update.command[0],
 +        args: patcherUpdateArgs(record, options.t3Version, process.pid),
 +        cwd: record.update.cwd,
++        path: record.update.path,
 +        log: logPath,
 +      })
 +      .pipe(Effect.result);
@@ -1032,10 +1078,10 @@ index 0000000000000000000000000000000000000000..2e950e2069361cdb7b543eb0fedce15e
 +export const layer = Layer.effect(DesktopPatchUpdates, make);
 diff --git a/apps/desktop/src/updates/DesktopUpdates.patched.test.ts b/apps/desktop/src/updates/DesktopUpdates.patched.test.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..8a1df0b6efe6c53d832018fcc1a59c23f4a1763f
+index 0000000000000000000000000000000000000000..1fc3d9cd65e12cb2b39eb03fc96533af11b4d328
 --- /dev/null
 +++ b/apps/desktop/src/updates/DesktopUpdates.patched.test.ts
-@@ -0,0 +1,112 @@
+@@ -0,0 +1,116 @@
 +import { assert, describe, it } from "@effect/vitest";
 +import * as Effect from "effect/Effect";
 +
@@ -1048,7 +1094,11 @@ index 0000000000000000000000000000000000000000..8a1df0b6efe6c53d832018fcc1a59c23
 +  patches: [{ id: "journey-kit", version: 1 }],
 +  installedAt: "2026-11-24T10:00:00.000Z",
 +  feed: "https://raw.githubusercontent.com/BrettHamlin/t3-patcher/main/patches/index.json",
-+  update: { command: ["/usr/bin/python3", "/repo/scripts/patcher.py", "update"], cwd: "/repo" },
++  update: {
++    command: ["/usr/bin/python3", "/repo/scripts/patcher.py", "update"],
++    cwd: "/repo",
++    path: "/opt/homebrew/bin:/usr/bin:/bin",
++  },
 +};
 +
 +// No app-update.yml and no mock feed, as in a build the patcher made.
@@ -1318,10 +1368,10 @@ index b118d15ced674981744cdfade5d62f97bd784e3c..3317bf1beb8aa8fce3dc606cdc933594
        [...updateMarkerContents].find(([path]) => path.endsWith("/desktop-update-in-progress"))?.[1],
 diff --git a/apps/web/src/components/sidebar/SidebarPatchUpdatePill.browser.test.tsx b/apps/web/src/components/sidebar/SidebarPatchUpdatePill.browser.test.tsx
 new file mode 100644
-index 0000000000000000000000000000000000000000..9c001f5b3cfd52e08aa94ad67aeb2754f4b4e01d
+index 0000000000000000000000000000000000000000..a541bc21c6db1083a35f13631f734cf763f29e28
 --- /dev/null
 +++ b/apps/web/src/components/sidebar/SidebarPatchUpdatePill.browser.test.tsx
-@@ -0,0 +1,127 @@
+@@ -0,0 +1,144 @@
 +import type {
 +  DesktopPatchUpdateActionResult,
 +  DesktopPatchUpdateState,
@@ -1417,16 +1467,23 @@ index 0000000000000000000000000000000000000000..9c001f5b3cfd52e08aa94ad67aeb2754
 +    await vi.waitFor(() => expect(runPatchUpdate.mock.calls).toEqual([[]]));
 +  });
 +
-+  it("shows the run's steps and progress while it updates, and the failed step with the log", async () => {
++  it("shows each step of the run in words with its progress, and the failed step with the log", async () => {
 +    mocks.app = null;
 +    mocks.patch = {
 +      ...idle,
 +      status: "error",
 +      errorContext: "update",
++      t3Version: "0.1.12",
 +      updates: [{ id: "picks", title: "Picks", installedVersion: 1, availableVersion: 2 }],
 +      steps: [
 +        { kind: "pull", name: "patches", status: "passed", note: "" },
++        { kind: "source", name: "T3 Code source", status: "passed", note: "0.1.12 (v0.1.12)" },
++        { kind: "patch", name: "picks", status: "passed", note: "applied" },
++        { kind: "patch", name: "journey-kit", status: "passed", note: "applied" },
++        { kind: "check", name: "changed files", status: "passed", note: "" },
 +        { kind: "build", name: "app", status: "failed", note: "boom" },
++        { kind: "journey", name: "picks: answers", status: "skipped", note: "" },
++        { kind: "save", name: "save patches", status: "skipped", note: "" },
 +        { kind: "install", name: "install", status: "skipped", note: "" },
 +      ],
 +      message: "failed at app: boom",
@@ -1435,8 +1492,18 @@ index 0000000000000000000000000000000000000000..9c001f5b3cfd52e08aa94ad67aeb2754
 +    await using screen = await render(<SidebarUpdatePill />);
 +
 +    await userEvent.click(screen.getByRole("button", { name: "Updates available" }));
-+    await expect.element(page.getByText("Step 3 of 3")).toBeVisible();
-+    expect(texts("patch-update-step")).toEqual(["✓pull patches", "✕build app", "–install install"]);
++    await expect.element(page.getByText("Step 9 of 9")).toBeVisible();
++    expect(texts("patch-update-step")).toEqual([
++      "✓Get patches",
++      "✓Get T3 Code 0.1.12 source",
++      "✓Apply Picks",
++      "✓Apply journey-kit",
++      "✓Check changed files",
++      "✕Build app",
++      "–Run journey picks: answers",
++      "–Save rebased patches",
++      "–Install",
++    ]);
 +    await expect
 +      .element(page.getByRole("alert"))
 +      .toHaveTextContent("failed at app: boomLog: /home/.t3/userdata/patcher/update.log");
@@ -1451,11 +1518,15 @@ index 0000000000000000000000000000000000000000..9c001f5b3cfd52e08aa94ad67aeb2754
 +});
 diff --git a/apps/web/src/components/sidebar/SidebarPatchUpdatePill.tsx b/apps/web/src/components/sidebar/SidebarPatchUpdatePill.tsx
 new file mode 100644
-index 0000000000000000000000000000000000000000..97c366a1ddfe903493b6362669569e572bde70e1
+index 0000000000000000000000000000000000000000..3a3655c252966dd8a406e27bd99f8cae5a49e3b9
 --- /dev/null
 +++ b/apps/web/src/components/sidebar/SidebarPatchUpdatePill.tsx
-@@ -0,0 +1,150 @@
-+import type { DesktopPatchUpdateState, DesktopUpdateState } from "@t3tools/contracts";
+@@ -0,0 +1,187 @@
++import type {
++  DesktopPatchUpdateState,
++  DesktopPatchUpdateStep,
++  DesktopUpdateState,
++} from "@t3tools/contracts";
 +import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
 +import { T, useGT, Var } from "gt-react";
 +import { useState } from "react";
@@ -1477,6 +1548,38 @@ index 0000000000000000000000000000000000000000..97c366a1ddfe903493b6362669569e57
 +  skipped: "–",
 +} as const;
 +
++/** A step of the patcher's run in words: "Get patches", "Apply Picks", "Install". */
++function useStepLabel(patch: DesktopPatchUpdateState, app: DesktopUpdateState | null) {
++  const gt = useGT();
++  const version = patch.t3Version ?? app?.currentVersion ?? null;
++  return (step: DesktopPatchUpdateStep): string => {
++    switch (step.kind) {
++      case "pull":
++        return gt("Get patches");
++      case "source":
++        return version === null
++          ? gt("Get T3 Code source")
++          : gt("Get T3 Code {version} source", { version });
++      case "patch":
++        return gt("Apply {name}", {
++          name: patch.updates.find((update) => update.id === step.name)?.title ?? step.name,
++        });
++      case "check":
++        return gt("Check {name}", { name: step.name });
++      case "build":
++        return gt("Build {name}", { name: step.name });
++      case "journey":
++        return gt("Run journey {name}", { name: step.name });
++      case "save":
++        return gt("Save rebased patches");
++      case "install":
++        return gt("Install");
++      default:
++        return step.name;
++    }
++  };
++}
++
 +/**
 + * A patched build's update pill: its popover lists the patch updates, and the T3 Code update when there is one,
 + * with one Update button that runs T3 Patcher for all of them and shows its steps as they go.
@@ -1494,6 +1597,7 @@ index 0000000000000000000000000000000000000000..97c366a1ddfe903493b6362669569e57
 +  const updating = patch.status === "updating";
 +  const failed = patch.errorContext === "update" && patch.status === "error";
 +  const progress = patchUpdateProgress(patch.steps);
++  const stepLabel = useStepLabel(patch, app);
 +  const label = updating ? gt("Updating with T3 Patcher…") : gt("Updates available");
 +
 +  const update = async () => {
@@ -1573,7 +1677,7 @@ index 0000000000000000000000000000000000000000..97c366a1ddfe903493b6362669569e57
 +                      key={`${step.kind} ${step.name}`}
 +                    >
 +                      <span aria-hidden>{STEP_MARK[step.status]}</span>
-+                      <span className="truncate">{`${step.kind} ${step.name}`}</span>
++                      <span className="truncate">{stepLabel(step)}</span>
 +                    </li>
 +                  ))}
 +                </ol>
@@ -1816,10 +1920,10 @@ index 0000000000000000000000000000000000000000..d9ffd83c75a772c0c25034f3878da245
 +  };
 +}
 diff --git a/apps/web/src/i18n/translations/de.json b/apps/web/src/i18n/translations/de.json
-index 5439ee39688eade31897af144b50a5f5383f290e..a90645b7a9c27fdc577962f0ae23e2c41ab4466e 100644
+index 5439ee39688eade31897af144b50a5f5383f290e..2efbc838cbb4706af4c248239dcd5d119b1f1ce0 100644
 --- a/apps/web/src/i18n/translations/de.json
 +++ b/apps/web/src/i18n/translations/de.json
-@@ -12196,5 +12196,31 @@
+@@ -12196,5 +12196,39 @@
    "27d76249d09eb69f": "Review-Leitfaden bereit",
    "faa3bb26abb39c93": "Review-Leitfaden fehlgeschlagen",
    "b7df38b7d8792d78": "Leitfaden öffnen",
@@ -1850,13 +1954,21 @@ index 5439ee39688eade31897af144b50a5f5383f290e..a90645b7a9c27fdc577962f0ae23e2c4
 +      "v": "v"
 +    }
 +  ],
-+  "6b1da89bf7daab6e": "Aktualisieren"
++  "6b1da89bf7daab6e": "Aktualisieren",
++  "9501e36dc1ca6d7a": "Patches abrufen",
++  "827357c2e42f0220": "T3-Code-Quellcode abrufen",
++  "2a7efd3e54fe8d95": "Quellcode von T3 Code {version} abrufen",
++  "743c532173a8b3e1": "{name} anwenden",
++  "013eced1f833f7df": "{name} prüfen",
++  "15ca7a6ffbeefbdb": "{name} bauen",
++  "a92ae7e3590f7ddc": "Journey {name} ausführen",
++  "733bd96278a275cf": "Neu aufgesetzte Patches speichern"
  }
 diff --git a/apps/web/src/i18n/translations/en.json b/apps/web/src/i18n/translations/en.json
-index c378e66342505d9a5fa15fb0767a74aad29325d5..312f0365baecff90534e330bc563bb8b56c6303e 100644
+index c378e66342505d9a5fa15fb0767a74aad29325d5..e27d07800c9a535d8c40afe4d2b970c576d81bd7 100644
 --- a/apps/web/src/i18n/translations/en.json
 +++ b/apps/web/src/i18n/translations/en.json
-@@ -12205,5 +12205,31 @@
+@@ -12205,5 +12205,39 @@
    "27d76249d09eb69f": "Review guide ready",
    "faa3bb26abb39c93": "Review guide failed",
    "b7df38b7d8792d78": "Open guide",
@@ -1887,13 +1999,21 @@ index c378e66342505d9a5fa15fb0767a74aad29325d5..312f0365baecff90534e330bc563bb8b
 +      "v": "v"
 +    }
 +  ],
-+  "6b1da89bf7daab6e": "Update"
++  "6b1da89bf7daab6e": "Update",
++  "9501e36dc1ca6d7a": "Get patches",
++  "827357c2e42f0220": "Get T3 Code source",
++  "2a7efd3e54fe8d95": "Get T3 Code {version} source",
++  "743c532173a8b3e1": "Apply {name}",
++  "013eced1f833f7df": "Check {name}",
++  "15ca7a6ffbeefbdb": "Build {name}",
++  "a92ae7e3590f7ddc": "Run journey {name}",
++  "733bd96278a275cf": "Save rebased patches"
  }
 diff --git a/apps/web/src/i18n/translations/es.json b/apps/web/src/i18n/translations/es.json
-index 1538850527718730a5137e340ce7f8f44d40e643..2c8b0907e4dde36587e4dfa170c7d9142ac15bbf 100644
+index 1538850527718730a5137e340ce7f8f44d40e643..01b5fbd004e25b8a0cc7605fa059709325398341 100644
 --- a/apps/web/src/i18n/translations/es.json
 +++ b/apps/web/src/i18n/translations/es.json
-@@ -12191,5 +12191,31 @@
+@@ -12191,5 +12191,39 @@
    "27d76249d09eb69f": "Guía de revisión lista",
    "faa3bb26abb39c93": "Falló la guía de revisión",
    "b7df38b7d8792d78": "Abrir guía",
@@ -1924,13 +2044,21 @@ index 1538850527718730a5137e340ce7f8f44d40e643..2c8b0907e4dde36587e4dfa170c7d914
 +      "v": "v"
 +    }
 +  ],
-+  "6b1da89bf7daab6e": "Actualizar"
++  "6b1da89bf7daab6e": "Actualizar",
++  "9501e36dc1ca6d7a": "Obtener parches",
++  "827357c2e42f0220": "Obtener el código fuente de T3 Code",
++  "2a7efd3e54fe8d95": "Obtener el código fuente de T3 Code {version}",
++  "743c532173a8b3e1": "Aplicar {name}",
++  "013eced1f833f7df": "Comprobar {name}",
++  "15ca7a6ffbeefbdb": "Compilar {name}",
++  "a92ae7e3590f7ddc": "Ejecutar el recorrido {name}",
++  "733bd96278a275cf": "Guardar parches reajustados"
  }
 diff --git a/apps/web/src/i18n/translations/fr.json b/apps/web/src/i18n/translations/fr.json
-index b9166940ccf6600d3a91ab869aa0279f7c05258a..6fa68cb0a23608f5ef2a80c3e074f62df6699648 100644
+index b9166940ccf6600d3a91ab869aa0279f7c05258a..9239bba54463666b2845d6cce8b4b01f50fb94c9 100644
 --- a/apps/web/src/i18n/translations/fr.json
 +++ b/apps/web/src/i18n/translations/fr.json
-@@ -12196,5 +12196,31 @@
+@@ -12196,5 +12196,39 @@
    "27d76249d09eb69f": "Guide de revue prêt",
    "faa3bb26abb39c93": "Échec du guide de revue",
    "b7df38b7d8792d78": "Ouvrir le guide",
@@ -1961,13 +2089,21 @@ index b9166940ccf6600d3a91ab869aa0279f7c05258a..6fa68cb0a23608f5ef2a80c3e074f62d
 +      "v": "v"
 +    }
 +  ],
-+  "6b1da89bf7daab6e": "Mettre à jour"
++  "6b1da89bf7daab6e": "Mettre à jour",
++  "9501e36dc1ca6d7a": "Récupérer les correctifs",
++  "827357c2e42f0220": "Récupérer les sources de T3 Code",
++  "2a7efd3e54fe8d95": "Récupérer les sources de T3 Code {version}",
++  "743c532173a8b3e1": "Appliquer {name}",
++  "013eced1f833f7df": "Vérifier {name}",
++  "15ca7a6ffbeefbdb": "Compiler {name}",
++  "a92ae7e3590f7ddc": "Exécuter le parcours {name}",
++  "733bd96278a275cf": "Enregistrer les correctifs rebasés"
  }
 diff --git a/apps/web/src/i18n/translations/ja.json b/apps/web/src/i18n/translations/ja.json
-index da6a34749df883d48fa5ec7db9008751c412cd09..3eed294d0911ece60297145eb16930ffa4a0a46b 100644
+index da6a34749df883d48fa5ec7db9008751c412cd09..929b673f9da4ed9f4924158e9e408d70c544c1d1 100644
 --- a/apps/web/src/i18n/translations/ja.json
 +++ b/apps/web/src/i18n/translations/ja.json
-@@ -12144,5 +12144,31 @@
+@@ -12144,5 +12144,39 @@
    "27d76249d09eb69f": "レビューガイドの準備ができました",
    "faa3bb26abb39c93": "レビューガイドの作成に失敗しました",
    "b7df38b7d8792d78": "ガイドを開く",
@@ -1998,13 +2134,21 @@ index da6a34749df883d48fa5ec7db9008751c412cd09..3eed294d0911ece60297145eb16930ff
 +      "v": "v"
 +    }
 +  ],
-+  "6b1da89bf7daab6e": "アップデート"
++  "6b1da89bf7daab6e": "アップデート",
++  "9501e36dc1ca6d7a": "パッチを取得",
++  "827357c2e42f0220": "T3 Code のソースを取得",
++  "2a7efd3e54fe8d95": "T3 Code {version} のソースを取得",
++  "743c532173a8b3e1": "{name} を適用",
++  "013eced1f833f7df": "{name} を確認",
++  "15ca7a6ffbeefbdb": "{name} をビルド",
++  "a92ae7e3590f7ddc": "ジャーニー {name} を実行",
++  "733bd96278a275cf": "リベースしたパッチを保存"
  }
 diff --git a/apps/web/src/i18n/translations/ko.json b/apps/web/src/i18n/translations/ko.json
-index f38e81a9b93989d17c0eda0dedd40d6c3a7ef3d3..d7b55cb8ca68301f3074a79cefc7bd748d0a8e1d 100644
+index f38e81a9b93989d17c0eda0dedd40d6c3a7ef3d3..c8e42feedaa963826fb79ac200099aa8d282f138 100644
 --- a/apps/web/src/i18n/translations/ko.json
 +++ b/apps/web/src/i18n/translations/ko.json
-@@ -12140,5 +12140,31 @@
+@@ -12140,5 +12140,39 @@
    "27d76249d09eb69f": "검토 가이드 준비됨",
    "faa3bb26abb39c93": "검토 가이드 실패",
    "b7df38b7d8792d78": "가이드 열기",
@@ -2035,13 +2179,21 @@ index f38e81a9b93989d17c0eda0dedd40d6c3a7ef3d3..d7b55cb8ca68301f3074a79cefc7bd74
 +      "v": "v"
 +    }
 +  ],
-+  "6b1da89bf7daab6e": "업데이트"
++  "6b1da89bf7daab6e": "업데이트",
++  "9501e36dc1ca6d7a": "패치 가져오기",
++  "827357c2e42f0220": "T3 Code 소스 가져오기",
++  "2a7efd3e54fe8d95": "T3 Code {version} 소스 가져오기",
++  "743c532173a8b3e1": "{name} 적용",
++  "013eced1f833f7df": "{name} 확인",
++  "15ca7a6ffbeefbdb": "{name} 빌드",
++  "a92ae7e3590f7ddc": "{name} 여정 실행",
++  "733bd96278a275cf": "리베이스한 패치 저장"
  }
 diff --git a/apps/web/src/i18n/translations/pt-BR.json b/apps/web/src/i18n/translations/pt-BR.json
-index 24ce6764ab312c0d95c39c915b54103a0fd9ab21..2e4a7a3e581c2692cbf13dcd7b00f073b132f856 100644
+index 24ce6764ab312c0d95c39c915b54103a0fd9ab21..dc3b7021a6c7ee8c719547f7c8673c8b3d4935f2 100644
 --- a/apps/web/src/i18n/translations/pt-BR.json
 +++ b/apps/web/src/i18n/translations/pt-BR.json
-@@ -12195,5 +12195,31 @@
+@@ -12195,5 +12195,39 @@
    "27d76249d09eb69f": "Guia de revisão pronto",
    "faa3bb26abb39c93": "O guia de revisão falhou",
    "b7df38b7d8792d78": "Abrir guia",
@@ -2072,13 +2224,21 @@ index 24ce6764ab312c0d95c39c915b54103a0fd9ab21..2e4a7a3e581c2692cbf13dcd7b00f073
 +      "v": "v"
 +    }
 +  ],
-+  "6b1da89bf7daab6e": "Atualizar"
++  "6b1da89bf7daab6e": "Atualizar",
++  "9501e36dc1ca6d7a": "Obter patches",
++  "827357c2e42f0220": "Obter o código-fonte do T3 Code",
++  "2a7efd3e54fe8d95": "Obter o código-fonte do T3 Code {version}",
++  "743c532173a8b3e1": "Aplicar {name}",
++  "013eced1f833f7df": "Verificar {name}",
++  "15ca7a6ffbeefbdb": "Compilar {name}",
++  "a92ae7e3590f7ddc": "Executar a jornada {name}",
++  "733bd96278a275cf": "Salvar patches rebaseados"
  }
 diff --git a/apps/web/src/i18n/translations/ru.json b/apps/web/src/i18n/translations/ru.json
-index a5f0c249e2ffc2be56462b457778a176924b8c9b..a80cb6a4a622dafd50d61c167743d4d6fbffdbe4 100644
+index a5f0c249e2ffc2be56462b457778a176924b8c9b..c3bc8d58036ca84845e7fab34fdc75d398f9faa9 100644
 --- a/apps/web/src/i18n/translations/ru.json
 +++ b/apps/web/src/i18n/translations/ru.json
-@@ -12195,5 +12195,31 @@
+@@ -12195,5 +12195,39 @@
    "27d76249d09eb69f": "Гид по ревью готов",
    "faa3bb26abb39c93": "Не удалось создать гид по ревью",
    "b7df38b7d8792d78": "Открыть гид",
@@ -2109,13 +2269,21 @@ index a5f0c249e2ffc2be56462b457778a176924b8c9b..a80cb6a4a622dafd50d61c167743d4d6
 +      "v": "v"
 +    }
 +  ],
-+  "6b1da89bf7daab6e": "Обновить"
++  "6b1da89bf7daab6e": "Обновить",
++  "9501e36dc1ca6d7a": "Получить патчи",
++  "827357c2e42f0220": "Получить исходный код T3 Code",
++  "2a7efd3e54fe8d95": "Получить исходный код T3 Code {version}",
++  "743c532173a8b3e1": "Применить {name}",
++  "013eced1f833f7df": "Проверить {name}",
++  "15ca7a6ffbeefbdb": "Собрать {name}",
++  "a92ae7e3590f7ddc": "Запустить сценарий {name}",
++  "733bd96278a275cf": "Сохранить перенесённые патчи"
  }
 diff --git a/apps/web/src/i18n/translations/sv.json b/apps/web/src/i18n/translations/sv.json
-index 353df28a8a9aa036f0fc25eb10340f3a03156f99..0e4232f67c4a3bd58fd9393ac368cb6aac07b4bb 100644
+index 353df28a8a9aa036f0fc25eb10340f3a03156f99..cab8dd870f0f21bea0c014e0a3e1aeb3ef484523 100644
 --- a/apps/web/src/i18n/translations/sv.json
 +++ b/apps/web/src/i18n/translations/sv.json
-@@ -12203,5 +12203,31 @@
+@@ -12203,5 +12203,39 @@
    "27d76249d09eb69f": "Granskningsguiden är klar",
    "faa3bb26abb39c93": "Granskningsguiden misslyckades",
    "b7df38b7d8792d78": "Öppna guiden",
@@ -2146,13 +2314,21 @@ index 353df28a8a9aa036f0fc25eb10340f3a03156f99..0e4232f67c4a3bd58fd9393ac368cb6a
 +      "v": "v"
 +    }
 +  ],
-+  "6b1da89bf7daab6e": "Uppdatera"
++  "6b1da89bf7daab6e": "Uppdatera",
++  "9501e36dc1ca6d7a": "Hämta patchar",
++  "827357c2e42f0220": "Hämta källkoden för T3 Code",
++  "2a7efd3e54fe8d95": "Hämta källkoden för T3 Code {version}",
++  "743c532173a8b3e1": "Tillämpa {name}",
++  "013eced1f833f7df": "Kontrollera {name}",
++  "15ca7a6ffbeefbdb": "Bygg {name}",
++  "a92ae7e3590f7ddc": "Kör resan {name}",
++  "733bd96278a275cf": "Spara ombaserade patchar"
  }
 diff --git a/apps/web/src/i18n/translations/zh.json b/apps/web/src/i18n/translations/zh.json
-index 4acdfc14e2cb43a8480093dcafb4de404d8cfc85..eadaa00ba6c65de89da26b14c2c17b321fb30039 100644
+index 4acdfc14e2cb43a8480093dcafb4de404d8cfc85..fc8bc044b4a9bf5b1e37855645fe8dc350c9ea73 100644
 --- a/apps/web/src/i18n/translations/zh.json
 +++ b/apps/web/src/i18n/translations/zh.json
-@@ -12221,5 +12221,32 @@
+@@ -12221,5 +12221,40 @@
    "27d76249d09eb69f": "审查导览已就绪",
    "faa3bb26abb39c93": "审查导览生成失败",
    "b7df38b7d8792d78": "打开导览",
@@ -2184,7 +2360,15 @@ index 4acdfc14e2cb43a8480093dcafb4de404d8cfc85..eadaa00ba6c65de89da26b14c2c17b32
 +      "v": "v"
 +    }
 +  ],
-+  "6b1da89bf7daab6e": "更新"
++  "6b1da89bf7daab6e": "更新",
++  "9501e36dc1ca6d7a": "获取补丁",
++  "827357c2e42f0220": "获取 T3 Code 源代码",
++  "2a7efd3e54fe8d95": "获取 T3 Code {version} 源代码",
++  "743c532173a8b3e1": "应用 {name}",
++  "013eced1f833f7df": "检查 {name}",
++  "15ca7a6ffbeefbdb": "构建 {name}",
++  "a92ae7e3590f7ddc": "运行旅程 {name}",
++  "733bd96278a275cf": "保存变基后的补丁"
  }
 diff --git a/apps/web/src/state/desktopPatchUpdate.test.ts b/apps/web/src/state/desktopPatchUpdate.test.ts
 new file mode 100644
@@ -2425,10 +2609,10 @@ index 77a523c03608f6de2b0b87afbcb5230e53eec38e..54176163cc1640a4fed6dbc603ec196e
      install: () => Promise<DesktopCliCommandState>;
 diff --git a/patcher/journeys/patch-updates.mjs b/patcher/journeys/patch-updates.mjs
 new file mode 100644
-index 0000000000000000000000000000000000000000..c53348457b16579c3c97d3a26a45351682d80882
+index 0000000000000000000000000000000000000000..f5e4026ade17912798250ef2bbd8b8625ac049ff
 --- /dev/null
 +++ b/patcher/journeys/patch-updates.mjs
-@@ -0,0 +1,192 @@
+@@ -0,0 +1,211 @@
 +// Journey: a patched build's update pill offers a newer patch and T3 Code version; Update runs the patcher's command
 +// with both and shows its steps. Both feeds are served here and the command is a stub, so nothing is installed.
 +//   T3_PATCHER_APP=<built .app> T3_PATCHER_EVIDENCE=<dir> node patcher/journeys/patch-updates.mjs
@@ -2442,6 +2626,13 @@ index 0000000000000000000000000000000000000000..c53348457b16579c3c97d3a26a453516
 +function assertEqual(actual, expected, what) {
 +  const [a, e] = [JSON.stringify(actual), JSON.stringify(expected)];
 +  if (a !== e) throw new Error(`${what}: expected ${e}, got ${a}`);
++}
++
++/** Waits until the page's animations and transitions (the popover fading in) have finished. */
++async function settled(page) {
++  await page.evaluate(() =>
++    Promise.all(document.getAnimations().map((animation) => animation.finished.catch(() => {}))),
++  );
 +}
 +
 +async function waitFor(check, what, timeout = STEP_TIMEOUT_MS) {
@@ -2511,10 +2702,14 @@ index 0000000000000000000000000000000000000000..c53348457b16579c3c97d3a26a453516
 +];
 +const passed = running.map((step) => ({ ...step, status: "passed" }));
 +const stub = NodePath.join(root, "patcher-stub.sh");
++// The PATH the record keeps; the stub writes the one it got.
++const STUB_PATH = `${NodePath.join(root, "tools")}:/usr/bin:/bin`;
++const pathFile = NodePath.join(root, "stub-path.txt");
 +NodeFS.writeFileSync(
 +  stub,
 +  [
 +    "#!/bin/sh",
++    `printf '%s' "$PATH" > '${pathFile}'`,
 +    `printf '%s\n' "$@" > '${argvFile}.tmp' && mv '${argvFile}.tmp' '${argvFile}'`,
 +    `printf '%s' '${report(running)}' > '${userdata}/last-run.json'`,
 +    "sleep 6",
@@ -2533,7 +2728,11 @@ index 0000000000000000000000000000000000000000..c53348457b16579c3c97d3a26a453516
 +    ],
 +    installedAt: "2026-11-24T10:00:00.000Z",
 +    feed: "https://feed.invalid/patches/index.json",
-+    update: { command: ["/bin/sh", stub, "update", "--userdata", userdata], cwd: root },
++    update: {
++      command: ["/bin/sh", stub, "update", "--userdata", userdata],
++      cwd: root,
++      path: STUB_PATH,
++    },
 +  }),
 +);
 +
@@ -2553,6 +2752,7 @@ index 0000000000000000000000000000000000000000..c53348457b16579c3c97d3a26a453516
 +      await page.getByTestId("patch-update-row").nth(1).waitFor({ timeout: STEP_TIMEOUT_MS });
 +      const rows = await page.getByTestId("patch-update-row").allTextContents();
 +      assertEqual(rows, ["T3 Code0.1.11 → 0.1.12", "Journey kit1 → 2"], "the listed updates");
++      await settled(page);
 +      console.log(await screenshot("patch-updates-available"));
 +
 +      step("tapping Update");
@@ -2577,21 +2777,24 @@ index 0000000000000000000000000000000000000000..c53348457b16579c3c97d3a26a453516
 +        ],
 +        "the update command's arguments",
 +      );
++      assertEqual(NodeFS.readFileSync(pathFile, "utf8"), STUB_PATH, "the update command's PATH");
 +
 +      step("following the run's steps");
 +      await page.getByText("Step 2 of 4").waitFor({ timeout: STEP_TIMEOUT_MS });
 +      assertEqual(
 +        await page.getByTestId("patch-update-step").allTextContents(),
-+        ["✓pull patches", "✓source T3 Code source", "◐build app", "○install install"],
++        ["✓Get patches", "✓Get T3 Code 0.1.12 source", "◐Build app", "○Install"],
 +        "the steps while running",
 +      );
++      await settled(page);
 +      console.log(await screenshot("patch-updates-progress"));
 +      await page.getByText("Step 4 of 4").waitFor({ timeout: STEP_TIMEOUT_MS });
 +      assertEqual(
 +        await page.getByTestId("patch-update-step").allTextContents(),
-+        ["✓pull patches", "✓source T3 Code source", "✓build app", "✓install install"],
++        ["✓Get patches", "✓Get T3 Code 0.1.12 source", "✓Build app", "✓Install"],
 +        "the steps once passed",
 +      );
++      await settled(page);
 +      console.log(await screenshot("patch-updates-passed"));
 +
 +      step("checking only the local feeds were read");
