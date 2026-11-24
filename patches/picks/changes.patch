@@ -276,7 +276,7 @@ index a2b698657afcb2ae30ea95c6d5ef6fc74aa9f648..d4b173b5bb9c8eca41592422bb40ff72
    [WS_METHODS.serverUpdateSettings]: "server",
    [WS_METHODS.serverSearchAcpRegistry]: "server",
 diff --git a/apps/server/src/orchestration-v2/Orchestrator.ts b/apps/server/src/orchestration-v2/Orchestrator.ts
-index 6bfd95eae1be5f882a9c2adc5810adacf2ed4e86..0b9f743d58d6ecd0204536f0e5fe2007943d6f28 100644
+index 6bfd95eae1be5f882a9c2adc5810adacf2ed4e86..08a56265642e9b3a1fb30c379f0a542ae9095bf3 100644
 --- a/apps/server/src/orchestration-v2/Orchestrator.ts
 +++ b/apps/server/src/orchestration-v2/Orchestrator.ts
 @@ -24,6 +24,7 @@ import {
@@ -313,7 +313,7 @@ index 6bfd95eae1be5f882a9c2adc5810adacf2ed4e86..0b9f743d58d6ecd0204536f0e5fe2007
      }
  
      if (liveSessions.length > 0) {
-@@ -11212,6 +11218,258 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
+@@ -11212,6 +11218,266 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
      },
    );
  
@@ -485,6 +485,20 @@ index 6bfd95eae1be5f882a9c2adc5810adacf2ed4e86..0b9f743d58d6ecd0204536f0e5fe2007
 +          cause: `Pick request ${item.id} is ${item.pickStatus === "pending" ? "not fully answered" : item.pickStatus}.`,
 +        });
 +      }
++      // Built before the batch closes: one the agent can't be sent stays open.
++      const wake = pickRequestWake({
++        batchId: item.id,
++        title: item.title ?? "",
++        questions,
++        answers,
++      });
++      if (wake === undefined) {
++        return yield* new OrchestratorDispatchError({
++          commandId: command.commandId,
++          commandType: command.type,
++          cause: `Pick request ${item.id}'s answers are too long to send.`,
++        });
++      }
 +      const now = yield* DateTime.now;
 +      yield* emit(
 +        events,
@@ -502,12 +516,6 @@ index 6bfd95eae1be5f882a9c2adc5810adacf2ed4e86..0b9f743d58d6ecd0204536f0e5fe2007
 +          completedAt: now,
 +          updatedAt: now,
 +        },
-+      });
-+      const wake = pickRequestWake({
-+        batchId: item.id,
-+        title: item.title ?? "",
-+        questions,
-+        answers,
 +      });
 +      yield* dispatchMessage(
 +        {
@@ -572,7 +580,7 @@ index 6bfd95eae1be5f882a9c2adc5810adacf2ed4e86..0b9f743d58d6ecd0204536f0e5fe2007
    const dispatchRuntimeRequestRespond = Effect.fn("Orchestrator.dispatchRuntimeRequestRespond")(
      function* (
        command: Extract<OrchestrationV2Command, { readonly type: "runtime-request.respond" }>,
-@@ -13202,6 +13460,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
+@@ -13202,6 +13468,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
        });
      }
      yield* closePendingLinkRequests({ ...input, threadId: thread.id });
@@ -580,7 +588,7 @@ index 6bfd95eae1be5f882a9c2adc5810adacf2ed4e86..0b9f743d58d6ecd0204536f0e5fe2007
    });
  
    const dispatchInterruptUnresponsive = Effect.fn("Orchestrator.dispatchInterruptUnresponsive")(
-@@ -15851,6 +16110,15 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
+@@ -15851,6 +16118,15 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
        case "link_request.record":
          yield* dispatchLinkRequestRecord(command, events, effects);
          break;
@@ -722,10 +730,10 @@ index 19857405aaff9b5ef841558a0abc2456604e7098..dc0d3a20dc1514a6315f6c56f44fe25a
        return item;
 diff --git a/apps/server/src/picks/PickRequests.test.ts b/apps/server/src/picks/PickRequests.test.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..79208380c1d05b65f8529cc9f9e4f386b840fe65
+index 0000000000000000000000000000000000000000..9d6b6e923036e27e22360c0896f4e4c0a16729e7
 --- /dev/null
 +++ b/apps/server/src/picks/PickRequests.test.ts
-@@ -0,0 +1,754 @@
+@@ -0,0 +1,913 @@
 +import * as NodeServices from "@effect/platform-node/NodeServices";
 +import {
 +  CommandId,
@@ -747,11 +755,14 @@ index 0000000000000000000000000000000000000000..79208380c1d05b65f8529cc9f9e4f386
 +import * as SecureRandom from "effect/crypto/SecureRandom";
 +import * as DateTime from "effect/DateTime";
 +import * as Effect from "effect/Effect";
++import * as Exit from "effect/Exit";
++import * as Fiber from "effect/Fiber";
 +import * as FileSystem from "effect/FileSystem";
 +import * as Layer from "effect/Layer";
 +import * as Path from "effect/Path";
 +import type * as Scope from "effect/Scope";
 +import * as SqlClient from "effect/sql/SqlClient";
++import * as TestClock from "effect/testing/TestClock";
 +import { McpSchema, McpServer } from "effect/ai";
 +
 +import * as ServerConfig from "../config.ts";
@@ -816,6 +827,12 @@ index 0000000000000000000000000000000000000000..79208380c1d05b65f8529cc9f9e4f386
 +  issuedAt: 1,
 +};
 +
++/** Stand-in media: each type's signature, then a label that tells the copies apart. */
++const PNG = "\x89PNG\r\n\x1a\n";
++const WEBM = "\x1a\x45\xdf\xa3";
++const latin1Bytes = (text: string) => Uint8Array.from(text, (char) => char.charCodeAt(0));
++const latin1Text = (bytes: Uint8Array) => String.fromCharCode(...bytes);
++
 +/** Repeatable "random" bytes, so the shuffle is the same on every run. */
 +const seededBytes = (seed: number) => {
 +  let state = seed;
@@ -829,74 +846,98 @@ index 0000000000000000000000000000000000000000..79208380c1d05b65f8529cc9f9e4f386
 +  };
 +};
 +
-+const makeHarness = Effect.gen(function* () {
-+  const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
-+  const layerDatabase = Layer.succeedContext(database);
-+  const layerOrchestrator = Layer.mergeAll(
-+    layerDatabase,
-+    ProjectionStore.layer.pipe(Layer.provide(layerDatabase)),
-+    ProviderReplayHarness.layerWithRegistry(
-+      { name: "pick-requests" },
-+      ProviderAdapterRegistry.layerFromAdapters([adapter]),
-+      { databaseLayer: layerDatabase, runEffectWorker: false },
-+    ),
-+  ).pipe(
-+    Layer.provide(
-+      Layer.succeed(ProviderContinuationRequests.ProviderContinuationRequests, {
-+        offer: () => Effect.void,
-+        take: Effect.never,
-+      }),
-+    ),
-+  );
-+  const layerThreads = ThreadManagement.layer.pipe(
-+    Layer.provide(CommandReceiptStore.layer.pipe(Layer.provide(layerDatabase))),
-+    Layer.provideMerge(Layer.merge(layerOrchestrator, ServerSettings.layerTest())),
-+  );
-+  const layerConfig = ServerConfig.layerTest(process.cwd(), { prefix: "t3-pick-requests-" }).pipe(
-+    Layer.provide(NodeServices.layer),
-+  );
-+  const here = yield* McpHttpServer.layerPicksToolkit.pipe(
-+    Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
-+    Layer.provideMerge(PickRequests.layer),
-+    Layer.provide(
-+      Layer.succeed(SecureRandom.SecureRandom, SecureRandom.make(seededBytes(20261124))),
-+    ),
-+    Layer.provideMerge(layerThreads),
-+    Layer.provideMerge(layerConfig),
-+    Layer.provideMerge(NodeServices.layer),
-+    Layer.fresh,
-+    Layer.build,
-+  );
-+  const server = Context.get(here, McpServer.McpServer);
-+  const fs = Context.get(here, FileSystem.FileSystem);
-+  const path = Context.get(here, Path.Path);
-+  const media = yield* fs.makeTempDirectoryScoped({ prefix: "t3-picks-media-" });
-+  const file = (name: string, content: string) =>
-+    fs.writeFileString(path.join(media, name), content).pipe(Effect.as(path.join(media, name)));
-+  return {
-+    picks: Context.get(here, PickRequests.PickRequests),
-+    orchestrator: Context.get(here, Orchestrator.OrchestratorV2),
-+    sink: Context.get(here, EventSink.EventSinkV2),
-+    projections: Context.get(here, ProjectionStore.ProjectionStoreV2),
-+    sql: Context.get(database, SqlClient.SqlClient),
-+    attachmentsDir: Context.get(here, ServerConfig.ServerConfig).attachmentsDir,
-+    fs,
-+    path,
-+    files: {
-+      real: yield* file("real.png", "png:real"),
-+      fake: yield* file("fake.png", "png:fake"),
-+      clip: yield* file("clip.webm", "webm:clip"),
-+      notes: yield* file("notes.txt", "text"),
-+    },
-+    call: (args: Record<string, unknown>) =>
-+      server
-+        .callTool({ name: "request_picks", arguments: args })
-+        .pipe(
-+          Effect.provideService(McpInvocationContext.McpInvocationContext, scope),
-+          Effect.provideService(McpSchema.McpServerClient, mcpClient),
-+        ),
-+  };
-+});
++/** Each answer's dispatch waits a second (on the test clock) before it commits. */
++const slowAnswers = Layer.effect(
++  ThreadManagement.ThreadManagementService,
++  Effect.map(ThreadManagement.ThreadManagementService, (threads) =>
++    ThreadManagement.ThreadManagementService.of({
++      ...threads,
++      dispatch: (command) =>
++        command.type === "pick_request.answer"
++          ? Effect.sleep("1 second").pipe(Effect.andThen(threads.dispatch(command)))
++          : threads.dispatch(command),
++    }),
++  ),
++);
++
++const makeHarnessWith = (options: { readonly slowAnswers?: boolean } = {}) =>
++  Effect.gen(function* () {
++    const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
++    const layerDatabase = Layer.succeedContext(database);
++    const layerOrchestrator = Layer.mergeAll(
++      layerDatabase,
++      ProjectionStore.layer.pipe(Layer.provide(layerDatabase)),
++      ProviderReplayHarness.layerWithRegistry(
++        { name: "pick-requests" },
++        ProviderAdapterRegistry.layerFromAdapters([adapter]),
++        { databaseLayer: layerDatabase, runEffectWorker: false },
++      ),
++    ).pipe(
++      Layer.provide(
++        Layer.succeed(ProviderContinuationRequests.ProviderContinuationRequests, {
++          offer: () => Effect.void,
++          take: Effect.never,
++        }),
++      ),
++    );
++    const layerThreads = ThreadManagement.layer.pipe(
++      Layer.provide(CommandReceiptStore.layer.pipe(Layer.provide(layerDatabase))),
++      Layer.provideMerge(Layer.merge(layerOrchestrator, ServerSettings.layerTest())),
++    );
++    const layerConfig = ServerConfig.layerTest(process.cwd(), { prefix: "t3-pick-requests-" }).pipe(
++      Layer.provide(NodeServices.layer),
++    );
++    const here = yield* McpHttpServer.layerPicksToolkit.pipe(
++      Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
++      Layer.provideMerge(
++        options.slowAnswers === true
++          ? PickRequests.layer.pipe(Layer.provide(slowAnswers))
++          : PickRequests.layer,
++      ),
++      Layer.provide(
++        Layer.succeed(SecureRandom.SecureRandom, SecureRandom.make(seededBytes(20261124))),
++      ),
++      Layer.provideMerge(layerThreads),
++      Layer.provideMerge(layerConfig),
++      Layer.provideMerge(NodeServices.layer),
++      Layer.fresh,
++      Layer.build,
++    );
++    const server = Context.get(here, McpServer.McpServer);
++    const fs = Context.get(here, FileSystem.FileSystem);
++    const path = Context.get(here, Path.Path);
++    const media = yield* fs.makeTempDirectoryScoped({ prefix: "t3-picks-media-" });
++    const file = (name: string, content: string) =>
++      fs
++        .writeFile(path.join(media, name), latin1Bytes(content))
++        .pipe(Effect.as(path.join(media, name)));
++    return {
++      picks: Context.get(here, PickRequests.PickRequests),
++      orchestrator: Context.get(here, Orchestrator.OrchestratorV2),
++      sink: Context.get(here, EventSink.EventSinkV2),
++      projections: Context.get(here, ProjectionStore.ProjectionStoreV2),
++      sql: Context.get(database, SqlClient.SqlClient),
++      attachmentsDir: Context.get(here, ServerConfig.ServerConfig).attachmentsDir,
++      fs,
++      path,
++      files: {
++        real: yield* file("real.png", `${PNG}real`),
++        fake: yield* file("fake.png", `${PNG}fake`),
++        clip: yield* file("clip.webm", `${WEBM}clip`),
++        textPng: yield* file("text.png", "not an image"),
++        notes: yield* file("notes.txt", "text"),
++        empty: yield* file("empty.png", ""),
++      },
++      call: (args: Record<string, unknown>) =>
++        server
++          .callTool({ name: "request_picks", arguments: args })
++          .pipe(
++            Effect.provideService(McpInvocationContext.McpInvocationContext, scope),
++            Effect.provideService(McpSchema.McpServerClient, mcpClient),
++          ),
++    };
++  });
++const makeHarness = makeHarnessWith();
 +type Harness = Effect.Success<typeof makeHarness>;
 +
 +/** The thread, mid-turn when its agent asks. */
@@ -1080,8 +1121,10 @@ index 0000000000000000000000000000000000000000..79208380c1d05b65f8529cc9f9e4f386
 +  ],
 +});
 +
-+const scoped = <A, E>(body: (h: Harness) => Effect.Effect<A, E, Scope.Scope>) =>
-+  Effect.scoped(Effect.flatMap(makeHarness, body));
++const scoped = <A, E>(
++  body: (h: Harness) => Effect.Effect<A, E, Scope.Scope>,
++  harness: typeof makeHarness = makeHarness,
++) => Effect.scoped(Effect.flatMap(harness, body));
 +
 +it.live("an agent asks without waiting, and finishing wakes it with every answer", () =>
 +  scoped((h) =>
@@ -1109,11 +1152,13 @@ index 0000000000000000000000000000000000000000..79208380c1d05b65f8529cc9f9e4f386
 +      const copies = [...new Set(stored.map((option) => option.attachmentId))];
 +      expect(copies).toHaveLength(3);
 +      const copied = yield* Effect.forEach(copies, (attachmentId) =>
-+        h.fs.readFileString(
++        h.fs.readFile(
 +          h.path.join(h.attachmentsDir, `${attachmentId}.${attachmentId.split("-").at(-1)}`),
 +        ),
 +      );
-+      expect(copied.toSorted()).toEqual(["png:fake", "png:real", "webm:clip"]);
++      expect(copied.map(latin1Text).toSorted()).toEqual(
++        [`${PNG}fake`, `${PNG}real`, `${WEBM}clip`].toSorted(),
++      );
 +      expect(stored.map(({ mediaKind, mimeType }) => [mediaKind, mimeType])).toEqual([
 +        ["image", "image/png"],
 +        ["image", "image/png"],
@@ -1258,6 +1303,124 @@ index 0000000000000000000000000000000000000000..79208380c1d05b65f8529cc9f9e4f386
 +  ),
 +);
 +
++it.effect("a Done sent while the last answer is saving waits for it and wakes with it", () =>
++  scoped(
++    (h) =>
++      Effect.gen(function* () {
++        yield* seedThread(h);
++        yield* h.call(twoQuestions(h));
++        const [batch] = yield* batchOf(h);
++        if (batch === undefined) return yield* Effect.die("no batch");
++        const input = { threadId, batchId: batch.id };
++        const first = yield* Effect.forkChild(
++          h.picks.answer({ ...input, questionIndex: 0, choice: 0 }),
++        );
++        yield* TestClock.adjust("1 second");
++        yield* Fiber.join(first);
++        // The last answer is mid-save when Done arrives.
++        const answering = yield* Effect.forkChild(
++          h.picks.answer({ ...input, questionIndex: 1, choice: 2, note: "last" }),
++        );
++        const finishing = yield* Effect.forkChild(Effect.exit(h.picks.complete(input)));
++        yield* TestClock.adjust("1 second");
++        yield* Fiber.join(answering);
++        expect(yield* Fiber.join(finishing)).toEqual(Exit.void);
++        const [wake] = yield* wakeMessages(h);
++        expect(wake?.text.split("\n").slice(0, 4)).toEqual([
++          'The user answered the picks "Real person, round 3": 2 of 2 questions.',
++          "",
++          "- face-01 → gpt",
++          "- walk-02 → flux. Note: last",
++        ]);
++      }),
++    makeHarnessWith({ slowAnswers: true }),
++  ),
++);
++
++it.live("Done keeps the batch open when the notes are too long to send", () =>
++  scoped((h) =>
++    Effect.gen(function* () {
++      yield* seedThread(h);
++      const questions = Array.from({ length: 61 }, (_, index) => ({
++        id: `q${index}`,
++        prompt: "Which?",
++        options: [
++          { id: "a", path: h.files.real },
++          { id: "b", path: h.files.fake },
++        ],
++      }));
++      yield* h.call({ title: "Long notes", questions });
++      const [batch] = yield* batchOf(h);
++      if (batch === undefined) return yield* Effect.die("no batch");
++      const input = { threadId, batchId: batch.id };
++      yield* Effect.forEach(questions, (_, questionIndex) =>
++        h.picks.answer({ ...input, questionIndex, choice: 0, note: "n".repeat(1940) }),
++      );
++      expect(yield* h.picks.complete(input).pipe(Effect.flip)).toEqual(
++        new PicksError({ reason: "notes_too_long" }),
++      );
++      expect((yield* batchOf(h))[0]?.pickStatus).toBe("pending");
++      expect(yield* wakeMessages(h)).toEqual([]);
++      // Shortening one note is enough, and Done then sends the answers as compact JSON.
++      yield* h.picks.answer({ ...input, questionIndex: 0, choice: 0, note: "short" });
++      yield* h.picks.complete(input);
++      expect((yield* wakeMessages(h))[0]?.text.split("\n")[2]).toBe("```json");
++    }),
++  ),
++);
++
++it.live("a save carries only what changed, and the server merges it with what is stored", () =>
++  scoped((h) =>
++    Effect.gen(function* () {
++      yield* seedThread(h);
++      yield* h.call(twoQuestions(h));
++      const [batch] = yield* batchOf(h);
++      if (batch === undefined) return yield* Effect.die("no batch");
++      const input = { threadId, batchId: batch.id };
++      const answerOf = (questionIndex: number) =>
++        h.picks.get(input).pipe(Effect.map((view) => view.questions[questionIndex]?.answer));
++      // A note after two choices keeps the later choice.
++      yield* h.picks.answer({ ...input, questionIndex: 0, choice: 0 });
++      yield* h.picks.answer({ ...input, questionIndex: 0, choice: 1 });
++      yield* h.picks.answer({ ...input, questionIndex: 0, note: "sharper" });
++      expect(yield* answerOf(0)).toEqual({ choice: 1, note: "sharper" });
++      // A choice keeps the stored note, and a blank note removes it.
++      yield* h.picks.answer({ ...input, questionIndex: 0, choice: "tie" });
++      expect(yield* answerOf(0)).toEqual({ choice: "tie", note: "sharper" });
++      yield* h.picks.answer({ ...input, questionIndex: 0, note: "  " });
++      expect(yield* answerOf(0)).toEqual({ choice: "tie" });
++      // A note with no choice stored, or a save with nothing in it, is refused.
++      expect(
++        yield* Effect.all([
++          h.picks.answer({ ...input, questionIndex: 1, note: "early" }).pipe(Effect.flip),
++          h.picks.answer({ ...input, questionIndex: 0 }).pipe(Effect.flip),
++        ]),
++      ).toEqual([
++        new PicksError({ reason: "invalid_answer" }),
++        new PicksError({ reason: "invalid_answer" }),
++      ]);
++      // A choice and a note sent together end with both, whichever lands first.
++      yield* h.picks.answer({ ...input, questionIndex: 1, choice: 0 });
++      yield* Effect.all(
++        [
++          h.picks.answer({ ...input, questionIndex: 1, choice: 2 }),
++          h.picks.answer({ ...input, questionIndex: 1, note: "first" }),
++        ],
++        { concurrency: "unbounded" },
++      );
++      expect(yield* answerOf(1)).toEqual({ choice: 2, note: "first" });
++      yield* Effect.all(
++        [
++          h.picks.answer({ ...input, questionIndex: 1, note: "second" }),
++          h.picks.answer({ ...input, questionIndex: 1, choice: 1 }),
++        ],
++        { concurrency: "unbounded" },
++      );
++      expect(yield* answerOf(1)).toEqual({ choice: 1, note: "second" });
++    }),
++  ),
++);
++
 +it.live("answers outside a question's choices are refused", () =>
 +  scoped((h) =>
 +    Effect.gen(function* () {
@@ -1306,6 +1469,7 @@ index 0000000000000000000000000000000000000000..79208380c1d05b65f8529cc9f9e4f386
 +            options: [
 +              { id: "a", path: h.files.real },
 +              { id: "a", path: h.files.notes },
++              { id: "e", path: h.files.textPng },
 +            ],
 +          },
 +          {
@@ -1315,6 +1479,7 @@ index 0000000000000000000000000000000000000000..79208380c1d05b65f8529cc9f9e4f386
 +              { id: "tie", path: missing },
 +              { id: "b", path: "relative/fake.png" },
 +              { id: "c", path: missing },
++              { id: "d", path: h.files.empty },
 +            ],
 +          },
 +        ],
@@ -1327,9 +1492,11 @@ index 0000000000000000000000000000000000000000..79208380c1d05b65f8529cc9f9e4f386
 +          'Question id "q1" is repeated.',
 +          'Question "q1": "tie" is reserved; rename the option.',
 +          `Question "q1" option "a": ${h.files.notes} is not a supported file type (png, apng, jpg, jpeg, webp, gif, avif, mp4, webm, mov).`,
++          `Question "q1" option "e": ${h.files.textPng} isn't a valid PNG file.`,
 +          `Question "q1" option "tie": ${missing} was not found.`,
 +          'Question "q1" option "b": relative/fake.png is not an absolute path.',
 +          `Question "q1" option "c": ${missing} is already another option of this question.`,
++          `Question "q1" option "d": ${h.files.empty} is empty.`,
 +        ].join("\n"),
 +      });
 +      expect(yield* batchOf(h)).toEqual([]);
@@ -1482,10 +1649,10 @@ index 0000000000000000000000000000000000000000..79208380c1d05b65f8529cc9f9e4f386
 +);
 diff --git a/apps/server/src/picks/PickRequests.ts b/apps/server/src/picks/PickRequests.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..79307f333a368f093c45e85d455e3470f822d82e
+index 0000000000000000000000000000000000000000..8fa5b06fe32e4f8c372156744aa70d6a3ef21303
 --- /dev/null
 +++ b/apps/server/src/picks/PickRequests.ts
-@@ -0,0 +1,450 @@
+@@ -0,0 +1,585 @@
 +/**
 + * Batches of picks an agent asks the user for: "which of these looks more like
 + * a real person?". Asking returns at once, the user answers in the Picks inbox,
@@ -1521,32 +1688,120 @@ index 0000000000000000000000000000000000000000..79307f333a368f093c45e85d455e3470
 +import * as Path from "effect/Path";
 +import * as Schema from "effect/Schema";
 +import * as SqlClient from "effect/sql/SqlClient";
++import * as KeyedLock from "@t3tools/shared/KeyedLock";
 +
 +import { resolveAttachmentRelativePath } from "../attachmentPaths.ts";
 +import { createAttachmentId } from "../attachmentStore.ts";
 +import * as ServerConfig from "../config.ts";
 +import * as McpInvocationContext from "../mcp/McpInvocationContext.ts";
++import { pickRequestWake } from "./pickWake.ts";
 +import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 +
 +type PickRequestItem = Extract<OrchestrationV2TurnItem, { readonly type: "pick_request" }>;
++
++const ascii = (text: string) => Array.from(text, (char) => char.charCodeAt(0));
++/** `bytes` begins with `expected` at `offset`. */
++const startsWith = (bytes: Uint8Array, expected: ReadonlyArray<number>, offset = 0) =>
++  expected.every((byte, index) => bytes[offset + index] === byte);
++const isoMedia = (bytes: Uint8Array, boxes: ReadonlyArray<string>) =>
++  boxes.some((box) => startsWith(bytes, ascii(box), 4));
++
++/** What the file's first bytes must be for its type: its signature, not a full decode. */
++const SIGNATURES = {
++  png: (bytes: Uint8Array) => startsWith(bytes, [0x89, ...ascii("PNG\r\n"), 0x1a, 0x0a]),
++  jpeg: (bytes: Uint8Array) => startsWith(bytes, [0xff, 0xd8, 0xff]),
++  gif: (bytes: Uint8Array) =>
++    startsWith(bytes, ascii("GIF87a")) || startsWith(bytes, ascii("GIF89a")),
++  webp: (bytes: Uint8Array) =>
++    startsWith(bytes, ascii("RIFF")) && startsWith(bytes, ascii("WEBP"), 8),
++  ftyp: (bytes: Uint8Array) => isoMedia(bytes, ["ftyp"]),
++  quickTime: (bytes: Uint8Array) => isoMedia(bytes, ["ftyp", "moov", "mdat", "wide", "free"]),
++  webm: (bytes: Uint8Array) => startsWith(bytes, [0x1a, 0x45, 0xdf, 0xa3]),
++};
 +
 +/** What the inbox can show, by file extension. APNG is stored as PNG, which is what it is. */
 +const PICK_MEDIA: Readonly<
 +  Record<
 +    string,
-+    { readonly kind: PickMediaKind; readonly mimeType: string; readonly stored: string }
++    {
++      readonly kind: PickMediaKind;
++      readonly mimeType: string;
++      readonly stored: string;
++      readonly name: string;
++      readonly matches: (bytes: Uint8Array) => boolean;
++    }
 +  >
 +> = {
-+  png: { kind: "image", mimeType: "image/png", stored: "png" },
-+  apng: { kind: "image", mimeType: "image/png", stored: "png" },
-+  jpg: { kind: "image", mimeType: "image/jpeg", stored: "jpg" },
-+  jpeg: { kind: "image", mimeType: "image/jpeg", stored: "jpg" },
-+  webp: { kind: "image", mimeType: "image/webp", stored: "webp" },
-+  gif: { kind: "image", mimeType: "image/gif", stored: "gif" },
-+  avif: { kind: "image", mimeType: "image/avif", stored: "avif" },
-+  mp4: { kind: "video", mimeType: "video/mp4", stored: "mp4" },
-+  webm: { kind: "video", mimeType: "video/webm", stored: "webm" },
-+  mov: { kind: "video", mimeType: "video/quicktime", stored: "mov" },
++  png: {
++    kind: "image",
++    mimeType: "image/png",
++    stored: "png",
++    name: "PNG",
++    matches: SIGNATURES.png,
++  },
++  apng: {
++    kind: "image",
++    mimeType: "image/png",
++    stored: "png",
++    name: "APNG",
++    matches: SIGNATURES.png,
++  },
++  jpg: {
++    kind: "image",
++    mimeType: "image/jpeg",
++    stored: "jpg",
++    name: "JPEG",
++    matches: SIGNATURES.jpeg,
++  },
++  jpeg: {
++    kind: "image",
++    mimeType: "image/jpeg",
++    stored: "jpg",
++    name: "JPEG",
++    matches: SIGNATURES.jpeg,
++  },
++  webp: {
++    kind: "image",
++    mimeType: "image/webp",
++    stored: "webp",
++    name: "WebP",
++    matches: SIGNATURES.webp,
++  },
++  gif: {
++    kind: "image",
++    mimeType: "image/gif",
++    stored: "gif",
++    name: "GIF",
++    matches: SIGNATURES.gif,
++  },
++  avif: {
++    kind: "image",
++    mimeType: "image/avif",
++    stored: "avif",
++    name: "AVIF",
++    matches: SIGNATURES.ftyp,
++  },
++  mp4: {
++    kind: "video",
++    mimeType: "video/mp4",
++    stored: "mp4",
++    name: "MP4",
++    matches: SIGNATURES.ftyp,
++  },
++  webm: {
++    kind: "video",
++    mimeType: "video/webm",
++    stored: "webm",
++    name: "WebM",
++    matches: SIGNATURES.webm,
++  },
++  mov: {
++    kind: "video",
++    mimeType: "video/quicktime",
++    stored: "mov",
++    name: "QuickTime",
++    matches: SIGNATURES.quickTime,
++  },
 +};
 +const PICK_EXTENSIONS = Object.keys(PICK_MEDIA).join(", ");
 +
@@ -1658,6 +1913,10 @@ index 0000000000000000000000000000000000000000..79307f333a368f093c45e85d455e3470
 +        }),
 +      );
 +
++  // One answer or Done per batch at a time, each read and dispatched together: Done
++  // decides from the answers that are saved, and an answer finds a closed batch closed.
++  const batchLocks = yield* KeyedLock.make<TurnItemId>();
++
 +  const readOpenBatch = Effect.fn("PickRequests.readOpenBatch")(function* (input: PicksBatchInput) {
 +    const batch = yield* readBatch(input.threadId, input.batchId).pipe(
 +      Effect.mapError((cause) => new PicksError({ reason: "load_failed", cause })),
@@ -1665,6 +1924,15 @@ index 0000000000000000000000000000000000000000..79307f333a368f093c45e85d455e3470
 +    if (batch === undefined) return yield* new PicksError({ reason: "not_found" });
 +    return batch;
 +  });
++
++  /** A file's first bytes, enough for any signature; nothing when it can't be read. */
++  const readHead = (file: string) =>
++    Effect.scoped(
++      fileSystem.open(file).pipe(Effect.flatMap((handle) => handle.readAlloc(16))),
++    ).pipe(
++      Effect.map((head) => (head._tag === "Some" ? head.value : new Uint8Array())),
++      Effect.orElseSucceed(() => new Uint8Array()),
++    );
 +
 +  /** Checks every option's file before anything is copied, and says what is wrong with each. */
 +  const checkFiles = Effect.fn("PickRequests.checkFiles")(function* (input: PicksRequestInput) {
@@ -1695,6 +1963,10 @@ index 0000000000000000000000000000000000000000..79307f333a368f093c45e85d455e3470
 +            problems.push(`${where}: ${option.path} was not found.`);
 +          } else if (info.value.type !== "File") {
 +            problems.push(`${where}: ${option.path} is not a file.`);
++          } else if (Number(info.value.size) === 0) {
++            problems.push(`${where}: ${option.path} is empty.`);
++          } else if (!type.matches(yield* readHead(option.path))) {
++            problems.push(`${where}: ${option.path} isn't a valid ${type.name} file.`);
 +          } else {
 +            media.set(option.path, type);
 +          }
@@ -1876,21 +2148,40 @@ index 0000000000000000000000000000000000000000..79307f333a368f093c45e85d455e3470
 +    };
 +  });
 +
++  /** Why a dispatch was refused, from the batch as it stands now. */
++  const refusal = (input: PicksBatchInput, cause: unknown) =>
++    readOpenBatch(input).pipe(
++      Effect.flatMap(({ item }) =>
++        Effect.fail(
++          new PicksError({
++            reason: item.pickStatus === "pending" ? "record_failed" : "closed",
++            cause,
++          }),
++        ),
++      ),
++    );
++
 +  const answer: PickRequests["Service"]["answer"] = Effect.fn("PickRequests.answer")(
 +    function* (input) {
 +      const { item } = yield* readOpenBatch(input);
 +      if (item.pickStatus !== "pending") return yield* new PicksError({ reason: "closed" });
 +      const question = item.questions?.[input.questionIndex];
-+      const choice =
-+        input.choice === PICK_TIE
-+          ? item.allowTie
-+            ? PICK_TIE
-+            : undefined
-+          : question?.options[input.choice]?.id;
-+      if (question === undefined || choice === undefined) {
++      if (question === undefined || (input.choice === undefined && input.note === undefined)) {
 +        return yield* new PicksError({ reason: "invalid_answer" });
 +      }
-+      const note = input.note?.trim();
++      // Merged with what is stored, read under this batch's lock: a save carries only what
++      // the owner just did, never a value a client read earlier.
++      const stored = item.answers?.[question.id];
++      const choice =
++        input.choice === undefined
++          ? stored?.choice
++          : input.choice === PICK_TIE
++            ? item.allowTie
++              ? PICK_TIE
++              : undefined
++            : question.options[input.choice]?.id;
++      if (choice === undefined) return yield* new PicksError({ reason: "invalid_answer" });
++      const note = input.note === undefined ? stored?.note : input.note.trim();
 +      const commandKey = yield* random.uuidV4();
 +      yield* threadManagement
 +        .dispatch({
@@ -1901,8 +2192,9 @@ index 0000000000000000000000000000000000000000..79307f333a368f093c45e85d455e3470
 +          questionId: question.id,
 +          answer: { choice, ...(note ? { note } : {}) },
 +        })
-+        .pipe(Effect.mapError((cause) => new PicksError({ reason: "record_failed", cause })));
++        .pipe(Effect.catch((cause) => refusal(input, cause)));
 +    },
++    (effect, input) => batchLocks.withLock(input.batchId, effect),
 +  );
 +
 +  const complete: PickRequests["Service"]["complete"] = Effect.fn("PickRequests.complete")(
@@ -1910,9 +2202,18 @@ index 0000000000000000000000000000000000000000..79307f333a368f093c45e85d455e3470
 +      const { item } = yield* readOpenBatch(input);
 +      if (item.pickStatus === "answered") return;
 +      if (item.pickStatus !== "pending") return yield* new PicksError({ reason: "closed" });
-+      if (item.answeredCount < item.questionCount) {
++      const questions = item.questions ?? [];
++      const answers = item.answers ?? {};
++      if (questions.some((question) => answers[question.id] === undefined)) {
 +        return yield* new PicksError({ reason: "incomplete" });
 +      }
++      const wake = pickRequestWake({
++        batchId: item.id,
++        title: item.title ?? "",
++        questions,
++        answers,
++      });
++      if (wake === undefined) return yield* new PicksError({ reason: "notes_too_long" });
 +      yield* threadManagement
 +        .dispatch({
 +          type: "pick_request.complete",
@@ -1921,8 +2222,9 @@ index 0000000000000000000000000000000000000000..79307f333a368f093c45e85d455e3470
 +          turnItemId: item.id,
 +          messageId: MessageId.make(`message:pick-request:${item.id}`),
 +        })
-+        .pipe(Effect.mapError((cause) => new PicksError({ reason: "record_failed", cause })));
++        .pipe(Effect.catch((cause) => refusal(input, cause)));
 +    },
++    (effect, input) => batchLocks.withLock(input.batchId, effect),
 +  );
 +
 +  return PickRequests.of({ request, list, get, answer, complete });
@@ -1936,29 +2238,99 @@ index 0000000000000000000000000000000000000000..79307f333a368f093c45e85d455e3470
 +});
 +
 +export const layer = Layer.effect(PickRequests, make);
+diff --git a/apps/server/src/picks/pickWake.test.ts b/apps/server/src/picks/pickWake.test.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..c386502414778c19a83edc62cf4e05c47b221177
+--- /dev/null
++++ b/apps/server/src/picks/pickWake.test.ts
+@@ -0,0 +1,58 @@
++import { describe, expect, it } from "@effect/vitest";
++
++import { pickRequestWake } from "./pickWake.ts";
++
++const batch = {
++  batchId: "turn-item:pick-request:b",
++  title: "Round",
++  questions: [
++    { id: "q1", prompt: "Which?", options: [] },
++    { id: "q2", prompt: "Which?", options: [] },
++  ],
++  answers: { q1: { choice: "a" }, q2: { choice: "tie", note: "same" } },
++};
++const json = (indent?: number) =>
++  JSON.stringify(
++    {
++      batchId: batch.batchId,
++      title: "Round",
++      answers: [
++        { questionId: "q1", choice: "a" },
++        { questionId: "q2", choice: "tie", note: "same" },
++      ],
++    },
++    null,
++    indent,
++  );
++const full = [
++  'The user answered the picks "Round": 2 of 2 questions.',
++  "",
++  "- q1 → a",
++  "- q2 → tie (can't tell). Note: same",
++  "",
++  "```json",
++  json(2),
++  "```",
++].join("\n");
++const compact = [
++  'The user answered the picks "Round": 2 of 2 questions.',
++  "",
++  "```json",
++  json(),
++  "```",
++].join("\n");
++const notification = {
++  source: { kind: "background_task" },
++  outcome: "completed",
++  summary: "Answers to picks: Round",
++};
++
++describe("pickRequestWake", () => {
++  it("lists every answer and the same as JSON, then JSON alone past the limit, then nothing", () => {
++    expect([
++      pickRequestWake(batch, full.length),
++      pickRequestWake(batch, full.length - 1),
++      pickRequestWake(batch, compact.length - 1),
++    ]).toEqual([{ text: full, notification }, { text: compact, notification }, undefined]);
++  });
++});
 diff --git a/apps/server/src/picks/pickWake.ts b/apps/server/src/picks/pickWake.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..1a5293d128b844a0c8161d0e7283b84b0d489775
+index 0000000000000000000000000000000000000000..2bfd06865139c3402d6e8ed608b97cf2e68c35db
 --- /dev/null
 +++ b/apps/server/src/picks/pickWake.ts
-@@ -0,0 +1,53 @@
+@@ -0,0 +1,58 @@
 +import {
 +  type OrchestrationV2Notification,
 +  PICK_TIE,
++  PROVIDER_SEND_TURN_MAX_INPUT_CHARS,
 +  type PickAnswers,
 +  type PickStoredQuestion,
 +} from "@t3tools/contracts";
 +
 +/**
 + * The one message that tells the agent every answer, unblinded: a line per
-+ * question for reading, and the same answers as JSON for parsing.
++ * question for reading, and the same answers as JSON for parsing. Past the
++ * provider's message limit it carries the JSON alone, compact; when even that
++ * is too long it is `undefined`, and the batch must not close.
 + */
-+export function pickRequestWake(batch: {
-+  readonly batchId: string;
-+  readonly title: string;
-+  readonly questions: ReadonlyArray<PickStoredQuestion>;
-+  readonly answers: PickAnswers;
-+}): { readonly text: string; readonly notification: OrchestrationV2Notification } {
++export function pickRequestWake(
++  batch: {
++    readonly batchId: string;
++    readonly title: string;
++    readonly questions: ReadonlyArray<PickStoredQuestion>;
++    readonly answers: PickAnswers;
++  },
++  maxChars: number = PROVIDER_SEND_TURN_MAX_INPUT_CHARS,
++): { readonly text: string; readonly notification: OrchestrationV2Notification } | undefined {
 +  const answers = batch.questions.flatMap((question) => {
 +    const answer = batch.answers[question.id];
 +    return answer === undefined
@@ -1971,29 +2343,28 @@ index 0000000000000000000000000000000000000000..1a5293d128b844a0c8161d0e7283b84b
 +          },
 +        ];
 +  });
++  const heading = `The user answered the picks "${batch.title}": ${answers.length} of ${batch.questions.length} questions.`;
 +  const lines = answers.map(
 +    (answer) =>
 +      `- ${answer.questionId} → ${answer.choice === PICK_TIE ? "tie (can't tell)" : answer.choice}${
 +        answer.note === undefined ? "" : `. Note: ${answer.note}`
 +      }`,
 +  );
-+  const json = JSON.stringify({ batchId: batch.batchId, title: batch.title, answers }, null, 2);
-+  return {
-+    text: [
-+      `The user answered the picks "${batch.title}": ${answers.length} of ${batch.questions.length} questions.`,
-+      "",
-+      ...lines,
-+      "",
-+      "```json",
-+      json,
-+      "```",
-+    ].join("\n"),
-+    notification: {
-+      source: { kind: "background_task" },
-+      outcome: "completed",
-+      summary: `Answers to picks: ${batch.title}`,
-+    },
-+  };
++  const json = (indent?: number) =>
++    JSON.stringify({ batchId: batch.batchId, title: batch.title, answers }, null, indent);
++  const full = [heading, "", ...lines, "", "```json", json(2), "```"].join("\n");
++  const compact = [heading, "", "```json", json(), "```"].join("\n");
++  const text = full.length <= maxChars ? full : compact.length <= maxChars ? compact : undefined;
++  return text === undefined
++    ? undefined
++    : {
++        text,
++        notification: {
++          source: { kind: "background_task" },
++          outcome: "completed",
++          summary: `Answers to picks: ${batch.title}`,
++        },
++      };
 +}
 diff --git a/apps/server/src/provider/AgentContextBudget.test.ts b/apps/server/src/provider/AgentContextBudget.test.ts
 index c0a11aa3e6114caf1347a36bbb3a107fe7982124..e20103b4296de236b7057a54743d70e7335bdb63 100644
@@ -2223,19 +2594,98 @@ index 5ea743025444f1baf66b470103c897698b6b6df5..7b29f2800e9a9e37b88dbebabb2a1a8a
    return (
      <V2LifecycleRow
        environmentId={ctx.activeThreadEnvironmentId}
+diff --git a/apps/web/src/components/picks/PickBatchGate.tsx b/apps/web/src/components/picks/PickBatchGate.tsx
+new file mode 100644
+index 0000000000000000000000000000000000000000..508221dacc57c90d9a1bb5a3f93ca3dbf2b60adf
+--- /dev/null
++++ b/apps/web/src/components/picks/PickBatchGate.tsx
+@@ -0,0 +1,66 @@
++import type { PickSaveQueue } from "@t3tools/client-runtime/picks";
++import { useGT } from "gt-react";
++import { type ReactNode, Suspense, use, useState } from "react";
++
++import { Skeleton } from "../ui/skeleton";
++
++const STILL_SAVING_AFTER_MS = 10_000;
++
++/**
++ * Holds a reopened batch until every save and Done queued for it has landed, then asks for a
++ * fresh read and passes on when it opened. For display only: the queue keeps saves in order
++ * whatever this shows, so after a while it opens anyway and says they are still saving.
++ */
++export function PickBatchGate(props: {
++  readonly saveQueue: PickSaveQueue;
++  readonly onSettled: () => void;
++  readonly children: (openedAt: number) => ReactNode;
++  readonly stillSavingAfterMs?: number;
++}) {
++  const gt = useGT();
++  // Made once per mount, outside the boundary that waits on it, so waiting can't remake it.
++  const [opened] = useState(() => {
++    let timer: ReturnType<typeof setTimeout> | undefined;
++    const timedOut = new Promise<boolean>((resolve) => {
++      timer = setTimeout(() => resolve(true), props.stillSavingAfterMs ?? STILL_SAVING_AFTER_MS);
++    });
++    return Promise.race([props.saveQueue.settled().then(() => false), timedOut]).then(
++      (stillSaving) => {
++        clearTimeout(timer);
++        const openedAt = Date.now();
++        props.onSettled();
++        return { openedAt, stillSaving };
++      },
++    );
++  });
++  return (
++    <Suspense
++      fallback={
++        <div className="flex flex-col gap-2 p-6">
++          <p className="text-sm text-muted-foreground">{gt("Saving…")}</p>
++          <Skeleton className="h-96" />
++        </div>
++      }
++    >
++      <PickBatchOpened opened={opened}>{props.children}</PickBatchOpened>
++    </Suspense>
++  );
++}
++
++function PickBatchOpened(props: {
++  readonly opened: Promise<{ readonly openedAt: number; readonly stillSaving: boolean }>;
++  readonly children: (openedAt: number) => ReactNode;
++}) {
++  const gt = useGT();
++  const { openedAt, stillSaving } = use(props.opened);
++  return (
++    <>
++      {stillSaving ? (
++        <p role="status" className="px-6 pt-4 text-sm text-muted-foreground">
++          {gt("Earlier answers are still saving…")}
++        </p>
++      ) : null}
++      {props.children(openedAt)}
++    </>
++  );
++}
 diff --git a/apps/web/src/components/picks/PickerView.browser.test.tsx b/apps/web/src/components/picks/PickerView.browser.test.tsx
 new file mode 100644
-index 0000000000000000000000000000000000000000..fb12bd6407fc49f207e5d5033c1ed0e2ee2fef23
+index 0000000000000000000000000000000000000000..e2ed434a66d372844fb59cdc120e057f35e8bf90
 --- /dev/null
 +++ b/apps/web/src/components/picks/PickerView.browser.test.tsx
-@@ -0,0 +1,120 @@
+@@ -0,0 +1,626 @@
++import { makePickSaveQueue } from "@t3tools/client-runtime/picks";
 +import { EnvironmentId, type PicksBatchView, ThreadId, TurnItemId } from "@t3tools/contracts";
 +import { expect, it, vi } from "vite-plus/test";
 +import { userEvent } from "vite-plus/test/browser";
 +
 +import "~/index.css";
 +import { render } from "../../../test/render";
-+import { PickerView, type PickMediaProps, type PickOptionView } from "./PickerView";
++import { PickBatchGate } from "./PickBatchGate";
++import {
++  PICK_VIDEO_CLASS,
++  PickerView,
++  type PickMediaProps,
++  type PickOptionView,
++} from "./PickerView";
 +
 +const image = (attachmentId: string): PickOptionView => ({
 +  attachmentId,
@@ -2261,8 +2711,17 @@ index 0000000000000000000000000000000000000000..fb12bd6407fc49f207e5d5033c1ed0e2
 +  ],
 +};
 +
++/** Stands in for the page's media: a video is a 64×48 picture, sized as the real one is. */
 +function StubMedia({ option, pixelated }: PickMediaProps) {
-+  return (
++  return option.mediaKind === "video" ? (
++    <canvas
++      width={64}
++      height={48}
++      data-testid={`media-${option.attachmentId}`}
++      data-pixelated={pixelated}
++      className={PICK_VIDEO_CLASS}
++    />
++  ) : (
 +    <div data-testid={`media-${option.attachmentId}`} data-pixelated={pixelated}>
 +      {option.attachmentId}
 +    </div>
@@ -2276,6 +2735,7 @@ index 0000000000000000000000000000000000000000..fb12bd6407fc49f207e5d5033c1ed0e2
 +    <PickerView
 +      environmentId={EnvironmentId.make("environment:picks")}
 +      view={view}
++      saveQueue={makePickSaveQueue()}
 +      canAnswer
 +      onAnswer={onAnswer}
 +      onComplete={onComplete}
@@ -2327,7 +2787,7 @@ index 0000000000000000000000000000000000000000..fb12bd6407fc49f207e5d5033c1ed0e2
 +  expect(onAnswer.mock.calls).toEqual([
 +    [{ questionIndex: 0, choice: 1 }],
 +    [{ questionIndex: 1, choice: "tie" }],
-+    [{ questionIndex: 1, choice: "tie", note: "1 stiff" }],
++    [{ questionIndex: 1, note: "1 stiff" }],
 +    [{ questionIndex: 0, choice: 0 }],
 +    [{ questionIndex: 2, choice: 0 }],
 +  ]);
@@ -2339,6 +2799,7 @@ index 0000000000000000000000000000000000000000..fb12bd6407fc49f207e5d5033c1ed0e2
 +    <PickerView
 +      environmentId={EnvironmentId.make("environment:picks")}
 +      view={view}
++      saveQueue={makePickSaveQueue()}
 +      canAnswer={false}
 +      onAnswer={onAnswer}
 +      onComplete={async () => null}
@@ -2349,12 +2810,500 @@ index 0000000000000000000000000000000000000000..fb12bd6407fc49f207e5d5033c1ed0e2
 +  await expect.element(screen.getByText("This connection can't answer picks.")).toBeInTheDocument();
 +  expect(onAnswer).not.toHaveBeenCalled();
 +});
++
++/** An onAnswer whose saves finish only when the test says, in order. */
++function heldSaves() {
++  const releases: Array<(failure: string | null) => void> = [];
++  const onAnswer = vi.fn(() => new Promise<string | null>((resolve) => releases.push(resolve)));
++  return {
++    onAnswer,
++    release: (index: number, failure: string | null = null) => releases[index]?.(failure),
++  };
++}
++
++it("Done waits for pending saves and saves the open note first", async () => {
++  const { onAnswer, release } = heldSaves();
++  const onComplete = vi.fn(async () => null);
++  await using screen = await render(
++    <PickerView
++      environmentId={EnvironmentId.make("environment:picks")}
++      view={view}
++      saveQueue={makePickSaveQueue()}
++      canAnswer
++      onAnswer={onAnswer}
++      onComplete={onComplete}
++      Media={StubMedia}
++    />,
++  );
++  const done = screen.getByRole("button", { name: "Done" });
++  await userEvent.keyboard("111");
++  await expect
++    .element(screen.getByTestId("picker-progress"))
++    .toHaveTextContent("Question 3 of 3 · 3 answered");
++  // Done is ready at once; it waits for the saves itself.
++  await expect.element(done).toBeEnabled();
++  await userEvent.keyboard("n");
++  await userEvent.keyboard("late note");
++  await userEvent.click(done);
++  // While Done waits, picks and the note are visibly off: they would land after its answers.
++  await expect.element(screen.getByRole("button", { name: "Option 2" })).toBeDisabled();
++  await expect.element(screen.getByRole("button", { name: /Can't tell/ })).toBeDisabled();
++  await expect.element(screen.getByRole("textbox", { name: "Note" })).toBeDisabled();
++  // Saves run one after another: each starts only when the one before ends.
++  for (const index of [0, 1, 2]) {
++    await vi.waitFor(() => expect(onAnswer).toHaveBeenCalledTimes(index + 1));
++    release(index);
++  }
++  await vi.waitFor(() => expect(onAnswer).toHaveBeenCalledTimes(4));
++  expect(onAnswer).toHaveBeenLastCalledWith({ questionIndex: 2, note: "late note" });
++  expect(onComplete).not.toHaveBeenCalled();
++  release(3);
++  await vi.waitFor(() => expect(onComplete).toHaveBeenCalledOnce());
++  // Finished: input stays off until the batch shows answered, so a key picks nothing.
++  await userEvent.keyboard("1");
++  await expect.element(screen.getByRole("button", { name: "Option 2" })).toBeDisabled();
++  expect(onAnswer).toHaveBeenCalledTimes(4);
++});
++
++it("a failed save takes back only its own question, and Done says so and goes there", async () => {
++  const { onAnswer, release } = heldSaves();
++  const onComplete = vi.fn(async () => null);
++  await using screen = await render(
++    <PickerView
++      environmentId={EnvironmentId.make("environment:picks")}
++      view={view}
++      saveQueue={makePickSaveQueue()}
++      canAnswer
++      onAnswer={onAnswer}
++      onComplete={onComplete}
++      Media={StubMedia}
++    />,
++  );
++  const progress = screen.getByTestId("picker-progress");
++  await userEvent.keyboard("111");
++  for (const index of [0, 1, 2]) {
++    await vi.waitFor(() => expect(onAnswer).toHaveBeenCalledTimes(index + 1));
++    release(index);
++  }
++  // A changed answer to question 2 fails: it goes back to the saved one, the others stay.
++  await userEvent.keyboard("{ArrowLeft}2");
++  await vi.waitFor(() => expect(onAnswer).toHaveBeenCalledTimes(4));
++  release(3, "Saving failed.");
++  await expect.element(screen.getByRole("alert")).toHaveTextContent("Saving failed.");
++  await expect.element(progress).toHaveTextContent("Question 3 of 3 · 3 answered");
++  // A later save succeeds and clears the alert; Done still won't finish with one unsaved.
++  await userEvent.keyboard("1");
++  await vi.waitFor(() => expect(onAnswer).toHaveBeenCalledTimes(5));
++  release(4);
++  await userEvent.click(screen.getByRole("button", { name: "Done" }));
++  await expect
++    .element(screen.getByRole("alert"))
++    .toHaveTextContent("An answer wasn't saved. Pick it again.");
++  await expect.element(progress).toHaveTextContent("Question 2 of 3 · 3 answered");
++  expect(onComplete).not.toHaveBeenCalled();
++  // Keys still reach the picker: pick it again.
++  await userEvent.keyboard("1");
++  await vi.waitFor(() => expect(onAnswer).toHaveBeenCalledTimes(6));
++  expect(onAnswer).toHaveBeenLastCalledWith({ questionIndex: 1, choice: 0 });
++});
++
++const video = (attachmentId: string): PickOptionView => ({
++  attachmentId,
++  mediaKind: "video",
++  mimeType: "video/webm",
++});
++
++it("a click on a video doesn't pick, a click elsewhere on its card does, and keys keep working", async () => {
++  const onAnswer = vi.fn(async () => null);
++  await using screen = await render(
++    <PickerView
++      environmentId={EnvironmentId.make("environment:picks")}
++      view={{
++        ...view,
++        allowTie: false,
++        questions: [
++          {
++            prompt: "Which walk?",
++            display: { width: 120, height: 90 },
++            options: [video("v1"), video("v2")],
++          },
++          { prompt: "Which face?", options: [image("a1"), image("a2")] },
++        ],
++      }}
++      saveQueue={makePickSaveQueue()}
++      canAnswer
++      onAnswer={onAnswer}
++      onComplete={async () => null}
++      Media={StubMedia}
++    />,
++  );
++  const progress = screen.getByTestId("picker-progress");
++  await expect
++    .element(screen.getByTestId("picker-keys"))
++    .toHaveTextContent("1–2 pick · N note · ← → move · Esc leaves the note");
++  await userEvent.click(screen.getByTestId("media-v1"));
++  await expect.element(progress).toHaveTextContent("Question 1 of 2 · 0 answered");
++  // The card's number strip, below the video, picks.
++  await userEvent.click(screen.getByTestId("picker-option-2"), { position: { x: 69, y: 117 } });
++  await expect.element(progress).toHaveTextContent("Question 2 of 2 · 1 answered");
++  // Focus stayed in the picker, so the next key still picks.
++  await userEvent.keyboard("1");
++  await expect.element(progress).toHaveTextContent("Question 2 of 2 · 2 answered");
++  expect(onAnswer.mock.calls).toEqual([
++    [{ questionIndex: 0, choice: 1 }],
++    [{ questionIndex: 1, choice: 0 }],
++  ]);
++});
++
++it("an exact box wider than the picker scrolls instead of being clipped on the left", async () => {
++  await using screen = await render(
++    <PickerView
++      environmentId={EnvironmentId.make("environment:picks")}
++      view={{
++        ...view,
++        questions: [
++          {
++            prompt: "Which?",
++            display: { width: 3000, height: 50 },
++            options: [image("w1"), image("w2")],
++          },
++        ],
++      }}
++      saveQueue={makePickSaveQueue()}
++      canAnswer
++      onAnswer={async () => null}
++      onComplete={async () => null}
++      Media={StubMedia}
++    />,
++  );
++  const row = screen.getByTestId("picker-options").element();
++  const first = screen.getByTestId("picker-option-1").element();
++  expect(first.getBoundingClientRect().left).toBeGreaterThanOrEqual(
++    row.getBoundingClientRect().left,
++  );
++  expect(row.scrollWidth).toBeGreaterThan(row.clientWidth);
++});
++
++it("a small video in an exact pixelated box is drawn at the box's size", async () => {
++  await using screen = await render(
++    <PickerView
++      environmentId={EnvironmentId.make("environment:picks")}
++      view={{
++        ...view,
++        questions: [
++          {
++            prompt: "Which sprite walks better?",
++            display: { width: 256, height: 192, pixelated: true },
++            options: [video("s1"), video("s2")],
++          },
++        ],
++      }}
++      saveQueue={makePickSaveQueue()}
++      canAnswer
++      onAnswer={async () => null}
++      onComplete={async () => null}
++      Media={StubMedia}
++    />,
++  );
++  const drawn = screen.getByTestId("media-s1").element().getBoundingClientRect();
++  expect([drawn.width, drawn.height]).toEqual([256, 192]);
++  await expect.element(screen.getByTestId("media-s1")).toHaveAttribute("data-pixelated", "true");
++});
++
++it("a picker opened again on a batch saves after the one before, and Done sends the later answer", async () => {
++  const { onAnswer, release } = heldSaves();
++  const onComplete = vi.fn(async () => null);
++  const saveQueue = makePickSaveQueue();
++  {
++    await using _first = await render(
++      <PickerView
++        environmentId={EnvironmentId.make("environment:picks")}
++        view={view}
++        saveQueue={saveQueue}
++        canAnswer
++        onAnswer={onAnswer}
++        onComplete={onComplete}
++        Media={StubMedia}
++      />,
++    );
++    // Two answers changed on a slow connection, then the owner leaves with both still saving.
++    await userEvent.keyboard("12");
++    await vi.waitFor(() => expect(onAnswer).toHaveBeenCalledOnce());
++  }
++
++  // Reopened: the server has the first and third answers, and the second is still saving.
++  const [face, walk, sprite] = view.questions;
++  if (face === undefined || walk === undefined || sprite === undefined) throw new Error("view");
++  await using screen = await render(
++    <PickerView
++      environmentId={EnvironmentId.make("environment:picks")}
++      view={{
++        ...view,
++        questions: [{ ...face, answer: { choice: 0 } }, walk, { ...sprite, answer: { choice: 0 } }],
++      }}
++      saveQueue={saveQueue}
++      canAnswer
++      onAnswer={onAnswer}
++      onComplete={onComplete}
++      Media={StubMedia}
++    />,
++  );
++  await expect
++    .element(screen.getByTestId("picker-progress"))
++    .toHaveTextContent("Question 2 of 3 · 2 answered");
++  await userEvent.keyboard("3");
++  // The newer answer waits behind the saves the closed picker queued.
++  expect(onAnswer).toHaveBeenCalledOnce();
++  await userEvent.click(screen.getByRole("button", { name: "Done" }));
++  for (const index of [0, 1, 2]) {
++    await vi.waitFor(() => expect(onAnswer).toHaveBeenCalledTimes(index + 1));
++    release(index);
++  }
++  await vi.waitFor(() => expect(onComplete).toHaveBeenCalledOnce());
++  expect(onAnswer.mock.calls).toEqual([
++    [{ questionIndex: 0, choice: 0 }],
++    [{ questionIndex: 1, choice: 1 }],
++    [{ questionIndex: 1, choice: 2 }],
++  ]);
++});
++
++it("two failed picks on one question go back to no answer, not the first pick", async () => {
++  const { onAnswer, release } = heldSaves();
++  await using screen = await render(
++    <PickerView
++      environmentId={EnvironmentId.make("environment:picks")}
++      view={view}
++      saveQueue={makePickSaveQueue()}
++      canAnswer
++      onAnswer={onAnswer}
++      onComplete={async () => null}
++      Media={StubMedia}
++    />,
++  );
++  await expect
++    .element(screen.getByRole("textbox", { name: "Note" }))
++    .toHaveAttribute("maxlength", "2000");
++  await userEvent.keyboard("1{ArrowLeft}2");
++  await vi.waitFor(() => expect(onAnswer).toHaveBeenCalledOnce());
++  release(0, "First failed.");
++  await vi.waitFor(() => expect(onAnswer).toHaveBeenCalledTimes(2));
++  release(1, "Second failed.");
++  await expect.element(screen.getByRole("alert")).toHaveTextContent("Second failed.");
++  await expect
++    .element(screen.getByTestId("picker-progress"))
++    .toHaveTextContent("Question 2 of 3 · 0 answered");
++});
++
++/** The view as the server would send it with these answers, by question. */
++const answered = (...answers: ReadonlyArray<PicksBatchView["questions"][number]["answer"]>) => ({
++  ...view,
++  questions: view.questions.map((question, index) => {
++    const answer = answers[index];
++    return answer === undefined ? question : { ...question, answer };
++  }),
++});
++
++const pickerProps = (overrides: Partial<Parameters<typeof PickerView>[0]> = {}) => ({
++  environmentId: EnvironmentId.make("environment:picks"),
++  view,
++  saveQueue: makePickSaveQueue(),
++  canAnswer: true,
++  onAnswer: async () => null,
++  onComplete: async () => null,
++  Media: StubMedia,
++  ...overrides,
++});
++
++it("a note added on a reopened picker is sent alone, never with the choice it opened on", async () => {
++  const { onAnswer, release } = heldSaves();
++  const saveQueue = makePickSaveQueue();
++  {
++    await using _first = await render(<PickerView {...pickerProps({ onAnswer, saveQueue })} />);
++    await userEvent.keyboard("1{ArrowLeft}2");
++    await vi.waitFor(() => expect(onAnswer).toHaveBeenCalledOnce());
++  }
++  // Reopened before the second choice landed: the view still shows option 1.
++  await using _second = await render(
++    <PickerView {...pickerProps({ onAnswer, saveQueue, view: answered({ choice: 0 }) })} />,
++  );
++  await userEvent.keyboard("{ArrowLeft}n");
++  await userEvent.keyboard("sharper");
++  await userEvent.keyboard("{Escape}");
++  for (const index of [0, 1]) {
++    await vi.waitFor(() => expect(onAnswer).toHaveBeenCalledTimes(index + 1));
++    release(index);
++  }
++  await vi.waitFor(() => expect(onAnswer).toHaveBeenCalledTimes(3));
++  expect(onAnswer.mock.calls).toEqual([
++    [{ questionIndex: 0, choice: 0 }],
++    [{ questionIndex: 0, choice: 1 }],
++    [{ questionIndex: 0, note: "sharper" }],
++  ]);
++});
++
++it("a choice made on a view that shows a note sends no note", async () => {
++  const onAnswer = vi.fn(async () => null);
++  await using _screen = await render(
++    <PickerView {...pickerProps({ onAnswer, view: answered({ choice: 0, note: "old" }) })} />,
++  );
++  await userEvent.keyboard("{ArrowLeft}2");
++  await vi.waitFor(() => expect(onAnswer).toHaveBeenCalledOnce());
++  expect(onAnswer).toHaveBeenCalledWith({ questionIndex: 0, choice: 1 });
++});
++
++it("Done is in line with the saves: one made after it, in a reopened picker, lands after it", async () => {
++  const { onAnswer, release } = heldSaves();
++  const onComplete = vi.fn(async () => null);
++  const saveQueue = makePickSaveQueue();
++  const all = answered({ choice: 0 }, { choice: 0 }, { choice: 0 });
++  {
++    await using screen = await render(
++      <PickerView {...pickerProps({ onAnswer, onComplete, saveQueue, view: all })} />,
++    );
++    await userEvent.keyboard("2");
++    await vi.waitFor(() => expect(onAnswer).toHaveBeenCalledOnce());
++    await userEvent.click(screen.getByRole("button", { name: "Done" }));
++  }
++  await using _second = await render(
++    <PickerView {...pickerProps({ onAnswer, onComplete, saveQueue, view: all })} />,
++  );
++  await userEvent.keyboard("1");
++  release(0);
++  await vi.waitFor(() => expect(onAnswer).toHaveBeenCalledTimes(2));
++  expect(onComplete).toHaveBeenCalledOnce();
++  const [held, later] = onAnswer.mock.invocationCallOrder;
++  const [done] = onComplete.mock.invocationCallOrder;
++  expect([held, done, later].map((order) => order ?? 0).toSorted((a, b) => a - b)).toEqual([
++    held,
++    done,
++    later,
++  ]);
++});
++
++it("Done sends a note edited on another question that wasn't saved", async () => {
++  const { onAnswer, release } = heldSaves();
++  const onComplete = vi.fn(async () => null);
++  await using screen = await render(
++    <PickerView
++      {...pickerProps({
++        onAnswer,
++        onComplete,
++        view: answered({ choice: 0 }, { choice: 0 }, { choice: 0 }),
++      })}
++    />,
++  );
++  await userEvent.keyboard("n");
++  await userEvent.keyboard("x");
++  await userEvent.keyboard("{Escape}");
++  await vi.waitFor(() => expect(onAnswer).toHaveBeenCalledOnce());
++  release(0, "Note not saved.");
++  await expect.element(screen.getByRole("alert")).toHaveTextContent("Note not saved.");
++  await userEvent.keyboard("{ArrowRight}");
++  await userEvent.click(screen.getByRole("button", { name: "Done" }));
++  await vi.waitFor(() => expect(onAnswer).toHaveBeenCalledTimes(2));
++  expect(onComplete).not.toHaveBeenCalled();
++  release(1);
++  await vi.waitFor(() => expect(onComplete).toHaveBeenCalledOnce());
++  expect(onAnswer.mock.calls).toEqual([
++    [{ questionIndex: 0, note: "x" }],
++    [{ questionIndex: 0, note: "x" }],
++  ]);
++});
++
++it("a reopened batch shows no picker until its saves land, then reads it again", async () => {
++  const { onAnswer, release } = heldSaves();
++  const saveQueue = makePickSaveQueue();
++  void saveQueue.enqueue({ questionIndex: 0, fields: ["choice"] }, () => onAnswer());
++  const onSettled = vi.fn();
++  await using screen = await render(
++    <PickBatchGate saveQueue={saveQueue} onSettled={onSettled}>
++      {() => <p>Picker</p>}
++    </PickBatchGate>,
++  );
++  await expect.element(screen.getByText("Saving…")).toBeInTheDocument();
++  await expect.element(screen.getByText("Picker")).not.toBeInTheDocument();
++  expect(onSettled).not.toHaveBeenCalled();
++  release(0);
++  await expect.element(screen.getByText("Picker")).toBeInTheDocument();
++  expect(onSettled).toHaveBeenCalledOnce();
++});
++
++it("a reopened batch whose saves never land opens anyway after a while, saying so", async () => {
++  const saveQueue = makePickSaveQueue();
++  void saveQueue.enqueue(
++    { questionIndex: 0, fields: ["choice"] },
++    () => new Promise<string | null>(() => undefined),
++  );
++  const onSettled = vi.fn();
++  await using screen = await render(
++    <PickBatchGate saveQueue={saveQueue} onSettled={onSettled} stillSavingAfterMs={50}>
++      {() => <p>Picker</p>}
++    </PickBatchGate>,
++  );
++  await expect.element(screen.getByText("Picker")).toBeInTheDocument();
++  await expect
++    .element(screen.getByRole("status"))
++    .toHaveTextContent("Earlier answers are still saving…");
++  expect(onSettled).toHaveBeenCalledOnce();
++});
++
++it("a note that failed in a closed picker still stops Done after another picker re-picks", async () => {
++  const { onAnswer, release } = heldSaves();
++  const onComplete = vi.fn(async () => null);
++  const saveQueue = makePickSaveQueue();
++  const all = answered({ choice: 0 }, { choice: 0 }, { choice: 0 });
++  {
++    await using _first = await render(
++      <PickerView {...pickerProps({ onAnswer, onComplete, saveQueue, view: all })} />,
++    );
++    await userEvent.keyboard("n");
++    await userEvent.keyboard("x");
++    await userEvent.keyboard("{Escape}");
++    await vi.waitFor(() => expect(onAnswer).toHaveBeenCalledOnce());
++  }
++  release(0, "Note not saved.");
++  await using screen = await render(
++    <PickerView {...pickerProps({ onAnswer, onComplete, saveQueue, view: all })} />,
++  );
++  await userEvent.keyboard("2");
++  await vi.waitFor(() => expect(onAnswer).toHaveBeenCalledTimes(2));
++  release(1);
++  await userEvent.click(screen.getByRole("button", { name: "Done" }));
++  await expect
++    .element(screen.getByRole("alert"))
++    .toHaveTextContent("A note wasn't saved. Write it again.");
++  await expect
++    .element(screen.getByTestId("picker-progress"))
++    .toHaveTextContent("Question 1 of 3 · 3 answered");
++  expect(onComplete).not.toHaveBeenCalled();
++  expect(onAnswer.mock.calls).toEqual([
++    [{ questionIndex: 0, note: "x" }],
++    [{ questionIndex: 0, choice: 1 }],
++  ]);
++});
++
++it("a pick after a note was sent carries no note", async () => {
++  const onAnswer = vi.fn(async () => null);
++  await using _screen = await render(
++    <PickerView {...pickerProps({ onAnswer, view: answered({ choice: 0 }) })} />,
++  );
++  await userEvent.keyboard("{ArrowLeft}n");
++  await userEvent.keyboard("x");
++  await userEvent.keyboard("{Escape}");
++  await vi.waitFor(() => expect(onAnswer).toHaveBeenCalledOnce());
++  await userEvent.keyboard("2");
++  await vi.waitFor(() => expect(onAnswer).toHaveBeenCalledTimes(2));
++  expect(onAnswer.mock.calls).toEqual([
++    [{ questionIndex: 0, note: "x" }],
++    [{ questionIndex: 0, choice: 1 }],
++  ]);
++});
 diff --git a/apps/web/src/components/picks/PickerView.tsx b/apps/web/src/components/picks/PickerView.tsx
 new file mode 100644
-index 0000000000000000000000000000000000000000..c4d823f1b75b01a9f607ecc56585372f88544d03
+index 0000000000000000000000000000000000000000..122a9281bd8c9ff64e360f222499829a2d6a1d28
 --- /dev/null
 +++ b/apps/web/src/components/picks/PickerView.tsx
-@@ -0,0 +1,292 @@
+@@ -0,0 +1,420 @@
 +import {
 +  movedQuestion,
 +  type PickerAnswer,
@@ -2362,11 +3311,14 @@ index 0000000000000000000000000000000000000000..c4d823f1b75b01a9f607ecc56585372f
 +  pickerKeyAction,
 +  pickerProgress,
 +  pickOptionBox,
++  type PickField,
++  type PickSaveQueue,
 +  questionAfterAnswer,
 +  savedNote,
 +} from "@t3tools/client-runtime/picks";
 +import {
 +  type EnvironmentId,
++  PICK_NOTE_MAX_LENGTH,
 +  PICK_TIE,
 +  type PickViewChoice,
 +  type PicksBatchView,
@@ -2383,6 +3335,12 @@ index 0000000000000000000000000000000000000000..c4d823f1b75b01a9f607ecc56585372f
 +
 +export type PickOptionView = PicksBatchView["questions"][number]["options"][number];
 +
++/**
++ * A video fills its box, so small clips scale up to the size asked for; it takes its own
++ * clicks (letterbox bands included) for its controls, and the rest of the card picks.
++ */
++export const PICK_VIDEO_CLASS = "pointer-events-auto size-full object-contain";
++
 +export interface PickMediaProps {
 +  readonly environmentId: EnvironmentId;
 +  readonly option: PickOptionView;
@@ -2393,12 +3351,15 @@ index 0000000000000000000000000000000000000000..c4d823f1b75b01a9f607ecc56585372f
 +export interface PickerViewProps {
 +  readonly environmentId: EnvironmentId;
 +  readonly view: PicksBatchView;
++  /** This batch's saves, shared with every other picker open on it. */
++  readonly saveQueue: PickSaveQueue;
 +  /** Whether this connection may answer; the server checks again. */
 +  readonly canAnswer: boolean;
 +  /** Saves one answer. Resolves to an error message, or null once saved. */
++  /** Saves what the owner just did: a choice, a note, or both. */
 +  readonly onAnswer: (input: {
 +    readonly questionIndex: number;
-+    readonly choice: PickViewChoice;
++    readonly choice?: PickViewChoice;
 +    readonly note?: string;
 +  }) => Promise<string | null>;
 +  /** Finishes the batch. Resolves to an error message, or null once done. */
@@ -2420,6 +3381,7 @@ index 0000000000000000000000000000000000000000..c4d823f1b75b01a9f607ecc56585372f
 +export function PickerView({
 +  environmentId,
 +  view,
++  saveQueue,
 +  canAnswer,
 +  onAnswer,
 +  onComplete,
@@ -2427,10 +3389,20 @@ index 0000000000000000000000000000000000000000..c4d823f1b75b01a9f607ecc56585372f
 +}: PickerViewProps) {
 +  const gt = useGT();
 +  const [index, setIndex] = useState(() => firstUnanswered(view));
++  // This picker's choices over the batch as read, choice only; `notes` overlays the notes.
 +  const [saved, setSaved] = useState<ReadonlyMap<number, PickerAnswer>>(() => new Map());
++  // Notes edited in this picker, by question, as typed.
 +  const [notes, setNotes] = useState<ReadonlyMap<number, string>>(() => new Map());
 +  const [error, setError] = useState<string | null>(null);
 +  const [completing, setCompleting] = useState(false);
++  // Each question's choice as the server last confirmed it here: what a failed save goes back to.
++  const acknowledged = useRef(new Map<number, PickerAnswer>());
++  // Each question's choice as last made here, read by handlers that may run before a re-render.
++  const latest = useRef(new Map<number, PickerAnswer>());
++  // The note this picker last sent for each question; one whose save failed is unsent again.
++  const sentNotes = useRef(new Map<number, string>());
++  // Set while Done runs: no pick or note may land after the saves it waits for.
++  const finishing = useRef(false);
 +  const containerRef = useRef<HTMLDivElement | null>(null);
 +  const noteRef = useRef<HTMLTextAreaElement | null>(null);
 +  // A ref callback, not an effect: keys reach the picker from the moment it shows. One
@@ -2445,34 +3417,88 @@ index 0000000000000000000000000000000000000000..c4d823f1b75b01a9f607ecc56585372f
 +  const question = view.questions[index];
 +  const answer = answers[index];
 +  const open = view.status === "pending" && canAnswer;
-+  const note = notes.get(index) ?? answer?.note ?? "";
++  const note = notes.get(index) ?? view.questions[index]?.answer?.note ?? "";
 +
-+  const save = async (questionIndex: number, next: PickerAnswer) => {
-+    const previous = saved;
-+    setSaved(new Map(saved).set(questionIndex, next));
++  // Queued with any other picker's saves on this batch, so the server keeps the last one
++  // made. A save carries only what the owner just did; the server merges it.
++  const send = (input: Parameters<PickerViewProps["onAnswer"]>[0]) => {
++    const fields: Array<PickField> = [];
++    if (input.choice !== undefined) fields.push("choice");
++    if (input.note !== undefined) fields.push("note");
++    return saveQueue.enqueue({ questionIndex: input.questionIndex, fields }, () => onAnswer(input));
++  };
++
++  /** A note edited here, as it would be sent: trimmed, and blank to remove it. */
++  const editedNote = (questionIndex: number) => {
++    const text = notes.get(questionIndex);
++    return text === undefined ? undefined : (savedNote(text) ?? "");
++  };
++
++  const sendNote = (questionIndex: number, text: string) => {
++    sentNotes.current.set(questionIndex, text);
 +    setError(null);
-+    const failure = await onAnswer({
-+      questionIndex,
-+      choice: next.choice,
-+      ...(next.note === undefined ? {} : { note: next.note }),
-+    });
-+    if (failure !== null) {
-+      setSaved(previous);
++    void send({ questionIndex, note: text }).then((failure) => {
++      if (failure === null) return;
++      // The text stays in the box, unsent: the next blur or Done sends it again.
++      if (sentNotes.current.get(questionIndex) === text) sentNotes.current.delete(questionIndex);
 +      setError(failure);
-+    }
++    });
 +  };
 +
 +  const choose = (choice: PickViewChoice) => {
-+    if (!open || question === undefined) return;
-+    const chosen = savedNote(note);
-+    void save(index, { choice, ...(chosen === undefined ? {} : { note: chosen }) });
++    if (!open || question === undefined || finishing.current) return;
++    const questionIndex = index;
++    const next: PickerAnswer = { choice };
++    // Only a note changed here since it was last sent: one already sent may since have been
++    // replaced in another window.
++    const edited = editedNote(questionIndex);
++    const text = edited === sentNotes.current.get(questionIndex) ? undefined : edited;
++    if (text !== undefined) sentNotes.current.set(questionIndex, text);
++    latest.current.set(questionIndex, next);
++    setSaved((current) => new Map(current).set(questionIndex, next));
++    setError(null);
++    void send({ questionIndex, choice, ...(text === undefined ? {} : { note: text }) }).then(
++      (failure) => {
++        if (failure === null) {
++          acknowledged.current.set(questionIndex, next);
++          return;
++        }
++        if (text !== undefined && sentNotes.current.get(questionIndex) === text) {
++          sentNotes.current.delete(questionIndex);
++        }
++        // Only if nothing newer was chosen for it: back to the last choice the server took.
++        const confirmed = acknowledged.current.get(questionIndex);
++        if (latest.current.get(questionIndex) === next) {
++          if (confirmed === undefined) latest.current.delete(questionIndex);
++          else latest.current.set(questionIndex, confirmed);
++        }
++        setSaved((current) => {
++          if (current.get(questionIndex) !== next) return current;
++          const restored = new Map(current);
++          if (confirmed === undefined) restored.delete(questionIndex);
++          else restored.set(questionIndex, confirmed);
++          return restored;
++        });
++        setError(failure);
++      },
++    );
 +    setIndex(questionAfterAnswer(index, view.questions.length));
++    // The chosen option's button goes with its question; keys must keep reaching the picker.
++    containerRef.current?.focus();
++  };
++
++  /** Sends a question's note if it was edited here, isn't sent yet, and the question has a choice. */
++  const flushNote = (questionIndex: number) => {
++    const text = editedNote(questionIndex);
++    const answered =
++      latest.current.has(questionIndex) || view.questions[questionIndex]?.answer !== undefined;
++    if (text === undefined || !answered || sentNotes.current.get(questionIndex) === text) return;
++    sendNote(questionIndex, text);
 +  };
 +
 +  const saveNote = () => {
-+    if (!open || answer === undefined || savedNote(note) === answer.note) return;
-+    const chosen = savedNote(note);
-+    void save(index, { choice: answer.choice, ...(chosen === undefined ? {} : { note: chosen }) });
++    if (finishing.current || !open) return;
++    flushNote(index);
 +  };
 +
 +  const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
@@ -2501,12 +3527,43 @@ index 0000000000000000000000000000000000000000..c4d823f1b75b01a9f607ecc56585372f
 +    }
 +  };
 +
-+  const finish = async () => {
++  // Done is queued behind every save made before it, here or in another picker on this
++  // batch; it reports and refocuses on a failure. Resolves to whether the batch finished.
++  const finishSaved = async () => {
++    const outcome = await saveQueue.finish(onComplete);
++    if (outcome._tag === "Unsaved") {
++      const [first] = outcome.unsaved;
++      setError(
++        first === undefined || first.fields.has("choice")
++          ? gt("An answer wasn't saved. Pick it again.")
++          : gt("A note wasn't saved. Write it again."),
++      );
++      if (first !== undefined) setIndex(first.questionIndex);
++      // Done is disabled while it runs, so focus fell to the page; keys must reach the picker.
++      containerRef.current?.focus();
++      return false;
++    }
++    setError(outcome.result);
++    if (outcome.result !== null) containerRef.current?.focus();
++    return outcome.result === null;
++  };
++
++  const finish = () => {
++    if (finishing.current || !open) return;
++    // Every note edited here and not yet sent, on any question, goes before Done.
++    for (const questionIndex of notes.keys()) flushNote(questionIndex);
++    finishing.current = true;
 +    setCompleting(true);
 +    setError(null);
-+    const failure = await onComplete();
-+    setCompleting(false);
-+    setError(failure);
++    // Reset unless it finished, even if a callback rejects (a promise, not try/finally: the
++    // React Compiler doesn't compile that). A finished batch stays off until it shows closed.
++    void finishSaved()
++      .catch(() => false)
++      .then((finished) => {
++        if (finished) return;
++        finishing.current = false;
++        setCompleting(false);
++      });
 +  };
 +
 +  if (question === undefined) return null;
@@ -2517,7 +3574,7 @@ index 0000000000000000000000000000000000000000..c4d823f1b75b01a9f607ecc56585372f
 +      tabIndex={-1}
 +      onKeyDown={onKeyDown}
 +      data-testid="picker"
-+      className="scrollbar-gutter-both flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-4 outline-none sm:p-6"
++      className="scrollbar-gutter-both flex min-h-0 flex-1 scroll-pb-14 flex-col gap-4 overflow-y-auto p-4 outline-none sm:p-6"
 +    >
 +      <div className="flex flex-wrap items-baseline justify-between gap-2">
 +        <div className="flex min-w-0 flex-col gap-1">
@@ -2535,29 +3592,42 @@ index 0000000000000000000000000000000000000000..c4d823f1b75b01a9f607ecc56585372f
 +        </p>
 +      </div>
 +
-+      <div className="flex shrink-0 flex-wrap items-start justify-center gap-4">
++      {/* Centred only when the boxes fit; a wider exact box scrolls instead of being clipped. */}
++      <div
++        data-testid="picker-options"
++        className="flex shrink-0 items-start justify-center-safe gap-4 overflow-x-auto"
++      >
 +        {question.options.map((option, place) => {
 +          const label = gt("Option {number}", { number: place + 1 });
 +          return (
-+            <button
++            <div
 +              key={`${index}:${option.attachmentId}`}
-+              type="button"
-+              aria-label={label}
-+              aria-pressed={answer?.choice === place}
-+              disabled={!open}
-+              onClick={() => choose(place)}
++              data-testid={`picker-option-${place + 1}`}
 +              className={cn(
-+                "flex flex-col items-center gap-2 rounded-xl border p-2 transition-colors",
++                "relative flex shrink-0 flex-col items-center gap-2 rounded-xl border p-2 transition-colors",
 +                box.kind === "fit" && "min-w-0 flex-1 basis-0",
 +                answer?.choice === place
 +                  ? "border-primary bg-primary/8"
 +                  : "border-border/60 hover:border-border",
 +              )}
 +            >
++              {/* The whole card picks, except on a video, whose own controls take its clicks. */}
++              <button
++                type="button"
++                aria-label={label}
++                aria-pressed={answer?.choice === place}
++                disabled={!open || completing}
++                onClick={() => choose(place)}
++                className="absolute inset-0 cursor-pointer rounded-xl disabled:cursor-default"
++              />
 +              <div
++                data-testid={`picker-media-${place + 1}`}
 +                className={cn(
-+                  "flex items-center justify-center overflow-hidden",
-+                  box.kind === "fit" ? "h-[55vh] w-full" : "shrink-0",
++                  "pointer-events-none relative flex items-center justify-center overflow-hidden",
++                  // Room left below for the controls, the note and the Done row.
++                  box.kind === "fit"
++                    ? "h-[max(8rem,min(55vh,calc(100dvh-26rem)))] w-full"
++                    : "shrink-0",
 +                )}
 +                style={box.kind === "exact" ? { width: box.width, height: box.height } : undefined}
 +              >
@@ -2568,8 +3638,10 @@ index 0000000000000000000000000000000000000000..c4d823f1b75b01a9f607ecc56585372f
 +                  pixelated={box.kind === "exact" && box.pixelated}
 +                />
 +              </div>
-+              <Kbd>{place + 1}</Kbd>
-+            </button>
++              <span className="pointer-events-none relative">
++                <Kbd>{place + 1}</Kbd>
++              </span>
++            </div>
 +          );
 +        })}
 +      </div>
@@ -2588,7 +3660,7 @@ index 0000000000000000000000000000000000000000..c4d823f1b75b01a9f607ecc56585372f
 +          <Button
 +            variant={answer?.choice === PICK_TIE ? "secondary" : "outline"}
 +            aria-pressed={answer?.choice === PICK_TIE}
-+            disabled={!open}
++            disabled={!open || completing}
 +            onClick={() => choose(PICK_TIE)}
 +          >
 +            {gt("Can't tell")}
@@ -2610,28 +3682,33 @@ index 0000000000000000000000000000000000000000..c4d823f1b75b01a9f607ecc56585372f
 +        <Textarea
 +          ref={noteRef}
 +          rows={2}
++          maxLength={PICK_NOTE_MAX_LENGTH}
 +          size="sm"
 +          aria-label={gt("Note")}
 +          placeholder={gt("Note (N)")}
-+          disabled={!open}
++          disabled={!open || completing}
 +          value={note}
 +          onChange={(event) => setNotes(new Map(notes).set(index, event.target.value))}
 +          onBlur={saveNote}
 +        />
-+        <p className="text-xs text-muted-foreground">
-+          {gt("1–4 pick · 0 can't tell · N note · ← → move · Esc leaves the note")}
++        <p className="text-xs text-muted-foreground" data-testid="picker-keys">
++          {[
++            gt("1–{last} pick", { last: question.options.length }),
++            ...(view.allowTie ? [gt("0 can't tell")] : []),
++            gt("N note · ← → move · Esc leaves the note"),
++          ].join(" · ")}
 +        </p>
 +      </div>
 +
-+      {error === null ? null : (
-+        <p role="alert" className="text-center text-sm text-destructive">
-+          {error}
-+        </p>
-+      )}
-+
-+      <div className="flex justify-center">
++      {/* Kept in view at the bottom of the picker, however tall the options are. */}
++      <div className="sticky bottom-0 mt-auto flex flex-col items-center gap-2 bg-background py-2">
++        {error === null ? null : (
++          <p role="alert" className="text-center text-sm text-destructive">
++            {error}
++          </p>
++        )}
 +        {open ? (
-+          <Button disabled={!progress.complete || completing} onClick={() => void finish()}>
++          <Button disabled={!progress.complete || completing} onClick={finish}>
 +            {gt("Done")}
 +          </Button>
 +        ) : (
@@ -2649,17 +3726,26 @@ index 0000000000000000000000000000000000000000..c4d823f1b75b01a9f607ecc56585372f
 +}
 diff --git a/apps/web/src/components/picks/PicksPage.tsx b/apps/web/src/components/picks/PicksPage.tsx
 new file mode 100644
-index 0000000000000000000000000000000000000000..9538b2bde399a7a239f40e73b4ad80b3d56f298d
+index 0000000000000000000000000000000000000000..b10082e3b8693aeea16f1c6aec2200102dd72520
 --- /dev/null
 +++ b/apps/web/src/components/picks/PicksPage.tsx
-@@ -0,0 +1,199 @@
+@@ -0,0 +1,233 @@
 +import { useAtomValue } from "@effect/atom-react";
-+import type { AssetResource, EnvironmentId, ThreadId, TurnItemId } from "@t3tools/contracts";
++import { pickSaveQueue } from "@t3tools/client-runtime/picks";
++import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
++import {
++  type AssetResource,
++  type EnvironmentId,
++  PicksError,
++  type ThreadId,
++  type TurnItemId,
++} from "@t3tools/contracts";
 +import { Link, useSearch } from "@tanstack/react-router";
 +import * as DateTime from "effect/DateTime";
++import * as Schema from "effect/Schema";
 +import { useGT, useMessages } from "gt-react";
 +import { ScaleIcon } from "lucide-react";
-+import type { CSSProperties } from "react";
++import { type CSSProperties, useState } from "react";
 +
 +import { useAssetUrlState } from "~/assets/assetUrls";
 +import { WorkspaceBreadcrumb, WorkspaceBreadcrumbItem } from "~/components/WorkspaceBreadcrumb";
@@ -2672,7 +3758,10 @@ index 0000000000000000000000000000000000000000..9538b2bde399a7a239f40e73b4ad80b3
 +import { useEnvironmentQuery } from "~/state/query";
 +import { useAtomCommand } from "~/state/use-atom-command";
 +import { formatRelativeTimeLabel } from "~/timestampFormat";
-+import { PickerView, type PickMediaProps } from "./PickerView";
++import { PickBatchGate } from "./PickBatchGate";
++import { PICK_VIDEO_CLASS, PickerView, type PickMediaProps } from "./PickerView";
++
++const isPicksError = Schema.is(PicksError);
 +
 +export interface PicksSearch {
 +  readonly environmentId?: EnvironmentId;
@@ -2787,37 +3876,51 @@ index 0000000000000000000000000000000000000000..9538b2bde399a7a239f40e73b4ad80b3
 +    reportFailure: false,
 +  });
 +  const canAnswer = useAtomValue(picksEnvironment.answer.permissionAtom(props.environmentId));
-+  if (batch.data === null) {
-+    return batch.error === null ? (
-+      <Skeleton className="m-6 h-96" />
-+    ) : (
-+      <p role="alert" className="p-6 text-sm text-destructive">
-+        {batch.error}
-+      </p>
-+    );
-+  }
++  const saveQueue = pickSaveQueue({ environmentId: props.environmentId, ...input });
++  // The picker starts from a read made after this batch's earlier saves landed, never a cached
++  // one; the queue, not this gate, keeps the saves in order.
 +  return (
-+    <PickerView
-+      environmentId={props.environmentId}
-+      view={batch.data}
-+      canAnswer={canAnswer}
-+      Media={PickMedia}
-+      onAnswer={async (choice) => {
-+        const result = await answer({
-+          environmentId: props.environmentId,
-+          input: { ...input, ...choice },
-+        });
-+        return result._tag === "Success" ? null : gt("The answer could not be saved.");
-+      }}
-+      onComplete={async () => {
-+        const result = await complete({ environmentId: props.environmentId, input });
-+        return result._tag === "Success" ? null : gt("The picks could not be finished.");
-+      }}
-+    />
++    <PickBatchGate saveQueue={saveQueue} onSettled={batch.refresh}>
++      {(openedAt) =>
++        batch.data === null || batch.dataUpdatedAt < openedAt ? (
++          batch.error === null ? (
++            <Skeleton className="m-6 h-96" />
++          ) : (
++            <p role="alert" className="p-6 text-sm text-destructive">
++              {batch.error}
++            </p>
++          )
++        ) : (
++          <PickerView
++            environmentId={props.environmentId}
++            view={batch.data}
++            saveQueue={saveQueue}
++            canAnswer={canAnswer}
++            Media={PickMedia}
++            onAnswer={async (choice) => {
++              const result = await answer({
++                environmentId: props.environmentId,
++                input: { ...input, ...choice },
++              });
++              return result._tag === "Success" ? null : gt("The answer could not be saved.");
++            }}
++            onComplete={async () => {
++              const result = await complete({ environmentId: props.environmentId, input });
++              if (result._tag === "Success") return null;
++              const failure = squashAtomCommandFailure(result);
++              return isPicksError(failure) && failure.reason === "notes_too_long"
++                ? gt("The notes are too long to send. Shorten some and press Done again.")
++                : gt("The picks could not be finished.");
++            }}
++          />
++        )
++      }
++    </PickBatchGate>
 +  );
 +}
 +
 +function PickMedia({ environmentId, option, label, pixelated }: PickMediaProps) {
++  const gt = useGT();
 +  const resource: AssetResource = {
 +    _tag: "attachment",
 +    attachmentId: option.attachmentId,
@@ -2825,9 +3928,14 @@ index 0000000000000000000000000000000000000000..9538b2bde399a7a239f40e73b4ad80b3
 +    disposition: "inline",
 +  };
 +  const asset = useAssetUrlState(environmentId, resource);
++  const [failedUrl, setFailedUrl] = useState<string | null>(null);
 +  if (asset._tag === "Loading") return <Skeleton className="size-full" />;
-+  if (asset._tag === "Failure") {
-+    return <p className="p-2 text-xs text-destructive">{label}</p>;
++  if (asset._tag === "Failure" || failedUrl === asset.url) {
++    return (
++      <p className="p-2 text-center text-xs text-muted-foreground">
++        {gt("Couldn't load this option")}
++      </p>
++    );
 +  }
 +  const style: CSSProperties | undefined = pixelated ? { imageRendering: "pixelated" } : undefined;
 +  return option.mediaKind === "video" ? (
@@ -2839,7 +3947,9 @@ index 0000000000000000000000000000000000000000..9538b2bde399a7a239f40e73b4ad80b3
 +      loop
 +      controls
 +      playsInline
-+      className="size-full object-contain"
++      onError={() => setFailedUrl(asset.url)}
++      // Its box lets clicks through to the card; the video keeps its own, for its controls.
++      className={PICK_VIDEO_CLASS}
 +      style={style}
 +    />
 +  ) : (
@@ -2847,6 +3957,7 @@ index 0000000000000000000000000000000000000000..9538b2bde399a7a239f40e73b4ad80b3
 +      src={asset.url}
 +      alt={label}
 +      draggable={false}
++      onError={() => setFailedUrl(asset.url)}
 +      className="size-full object-contain"
 +      style={style}
 +    />
@@ -2959,19 +4070,24 @@ index daa18b618a41ac095b48b125b4b7a5e31d1496f8..e07208f505a465ec7b95224d2e6b0738
  }
  
 diff --git a/apps/web/src/i18n/translations/de.json b/apps/web/src/i18n/translations/de.json
-index 5439ee39688eade31897af144b50a5f5383f290e..414dd9e20a26f32a76b3598b1a6f051888d01d9c 100644
+index f6d163cac02f6e5ddb358e41aef770980a48f73c..53f509e172b920f8472eb468d817ea32430db654 100644
 --- a/apps/web/src/i18n/translations/de.json
 +++ b/apps/web/src/i18n/translations/de.json
-@@ -1,4 +1,22 @@
+@@ -1,4 +1,29 @@
  {
 +  "a801984e45be10d2": "Picks beantwortet: {title}",
 +  "caff86de8d0d03c8": "Picks geschlossen: {title}",
 +  "0025abfaafd4bdb1": "Picks angefragt: {title} · {answered}/{total} beantwortet",
 +  "b2be70822d55f16a": "Öffnen",
++  "b2cd21d6ac05d2b3": "Frühere Antworten werden noch gespeichert…",
++  "c5981976cc990fe9": "Eine Antwort wurde nicht gespeichert. Wähle sie erneut.",
++  "8ea743fd3f6ac064": "Eine Notiz wurde nicht gespeichert. Schreibe sie erneut.",
 +  "8fa89f90f12f6b89": "Frage {current} von {total} · {answered} beantwortet",
 +  "715bfb4388c67edb": "Nicht erkennbar",
 +  "f1e0fdb58055bb67": "Notiz (N)",
-+  "1ab37a0bb021938f": "1–4 wählen · 0 nicht erkennbar · N Notiz · ← → wechseln · Esc verlässt die Notiz",
++  "2646664dfaa93ce9": "1–{last} wählen",
++  "5efaa9465c1e5857": "0 nicht erkennbar",
++  "5e3947f6c54104f3": "N Notiz · ← → wechseln · Esc verlässt die Notiz",
 +  "42a2d185f83c1e59": "Diese Picks sind beantwortet.",
 +  "ece8d13cb4d303fc": "Diese Picks wurden geschlossen.",
 +  "b438efee5a823d14": "Diese Verbindung kann keine Picks beantworten.",
@@ -2980,25 +4096,32 @@ index 5439ee39688eade31897af144b50a5f5383f290e..414dd9e20a26f32a76b3598b1a6f0518
 +  "3e78c596207fd4f6": "Keine Picks offen",
 +  "7fcb7906fed9b62e": "{answered}/{total}",
 +  "00fbcbe335067bd4": "Die Antwort konnte nicht gespeichert werden.",
++  "5c5b56862056d81d": "Die Notizen sind zu lang zum Senden. Kürze einige und drücke erneut auf Fertig.",
 +  "3175abc8e9463339": "Die Picks konnten nicht abgeschlossen werden.",
++  "bf8cbaec6273720b": "Diese Option konnte nicht geladen werden",
 +  "285162933fb81ed0": "Picks, {count} offen",
    "4bcfa3b976a421cf": "Nebenchat",
    "23be753133ae6950": "Thread",
    "0001ae5846061bb6": "Thread auf {machine}",
 diff --git a/apps/web/src/i18n/translations/en.json b/apps/web/src/i18n/translations/en.json
-index c378e66342505d9a5fa15fb0767a74aad29325d5..821139f3cabf4581cada257c3398c937e9d21041 100644
+index 504b699b0bb997aa41827b27ba3414b9afdb4310..0f4d1952a76c8cfe763d7a2750921d03815bed90 100644
 --- a/apps/web/src/i18n/translations/en.json
 +++ b/apps/web/src/i18n/translations/en.json
-@@ -1,4 +1,22 @@
+@@ -1,4 +1,29 @@
  {
 +  "a801984e45be10d2": "Picks answered: {title}",
 +  "caff86de8d0d03c8": "Picks closed: {title}",
 +  "0025abfaafd4bdb1": "Picks requested: {title} · {answered}/{total} answered",
 +  "b2be70822d55f16a": "Open",
++  "b2cd21d6ac05d2b3": "Earlier answers are still saving…",
++  "c5981976cc990fe9": "An answer wasn't saved. Pick it again.",
++  "8ea743fd3f6ac064": "A note wasn't saved. Write it again.",
 +  "8fa89f90f12f6b89": "Question {current} of {total} · {answered} answered",
 +  "715bfb4388c67edb": "Can't tell",
 +  "f1e0fdb58055bb67": "Note (N)",
-+  "1ab37a0bb021938f": "1–4 pick · 0 can't tell · N note · ← → move · Esc leaves the note",
++  "2646664dfaa93ce9": "1–{last} pick",
++  "5efaa9465c1e5857": "0 can't tell",
++  "5e3947f6c54104f3": "N note · ← → move · Esc leaves the note",
 +  "42a2d185f83c1e59": "These picks are answered.",
 +  "ece8d13cb4d303fc": "These picks were closed.",
 +  "b438efee5a823d14": "This connection can't answer picks.",
@@ -3007,25 +4130,32 @@ index c378e66342505d9a5fa15fb0767a74aad29325d5..821139f3cabf4581cada257c3398c937
 +  "3e78c596207fd4f6": "No picks waiting",
 +  "7fcb7906fed9b62e": "{answered}/{total}",
 +  "00fbcbe335067bd4": "The answer could not be saved.",
++  "5c5b56862056d81d": "The notes are too long to send. Shorten some and press Done again.",
 +  "3175abc8e9463339": "The picks could not be finished.",
++  "bf8cbaec6273720b": "Couldn't load this option",
 +  "285162933fb81ed0": "Picks, {count} waiting",
    "4bcfa3b976a421cf": "Side chat",
    "23be753133ae6950": "Thread",
    "0001ae5846061bb6": "Thread on {machine}",
 diff --git a/apps/web/src/i18n/translations/es.json b/apps/web/src/i18n/translations/es.json
-index 1538850527718730a5137e340ce7f8f44d40e643..2385eb8d4cd5a0e9aa9b990700a3a2a7dab9276a 100644
+index 84bfa2d71d81e48e525f0ae68a986a871a4d1445..daf462ecf8460b39a333f30c83d2f821502bcbb6 100644
 --- a/apps/web/src/i18n/translations/es.json
 +++ b/apps/web/src/i18n/translations/es.json
-@@ -1,4 +1,22 @@
+@@ -1,4 +1,29 @@
  {
 +  "a801984e45be10d2": "Elecciones respondidas: {title}",
 +  "caff86de8d0d03c8": "Elecciones cerradas: {title}",
 +  "0025abfaafd4bdb1": "Elecciones solicitadas: {title} · {answered}/{total} respondidas",
 +  "b2be70822d55f16a": "Abrir",
++  "b2cd21d6ac05d2b3": "Las respuestas anteriores aún se están guardando…",
++  "c5981976cc990fe9": "Una respuesta no se guardó. Vuelve a elegirla.",
++  "8ea743fd3f6ac064": "Una nota no se guardó. Vuelve a escribirla.",
 +  "8fa89f90f12f6b89": "Pregunta {current} de {total} · {answered} respondidas",
 +  "715bfb4388c67edb": "No lo sé",
 +  "f1e0fdb58055bb67": "Nota (N)",
-+  "1ab37a0bb021938f": "1–4 elegir · 0 no lo sé · N nota · ← → moverse · Esc sale de la nota",
++  "2646664dfaa93ce9": "1–{last} elegir",
++  "5efaa9465c1e5857": "0 no lo sé",
++  "5e3947f6c54104f3": "N nota · ← → moverse · Esc sale de la nota",
 +  "42a2d185f83c1e59": "Estas elecciones están respondidas.",
 +  "ece8d13cb4d303fc": "Estas elecciones se cerraron.",
 +  "b438efee5a823d14": "Esta conexión no puede responder elecciones.",
@@ -3034,25 +4164,32 @@ index 1538850527718730a5137e340ce7f8f44d40e643..2385eb8d4cd5a0e9aa9b990700a3a2a7
 +  "3e78c596207fd4f6": "No hay elecciones pendientes",
 +  "7fcb7906fed9b62e": "{answered}/{total}",
 +  "00fbcbe335067bd4": "No se pudo guardar la respuesta.",
++  "5c5b56862056d81d": "Las notas son demasiado largas para enviarlas. Acorta algunas y pulsa Hecho otra vez.",
 +  "3175abc8e9463339": "No se pudieron terminar las elecciones.",
++  "bf8cbaec6273720b": "No se pudo cargar esta opción",
 +  "285162933fb81ed0": "Elecciones, {count} pendientes",
    "4bcfa3b976a421cf": "Chat lateral",
    "23be753133ae6950": "Hilo",
    "0001ae5846061bb6": "Hilo en {machine}",
 diff --git a/apps/web/src/i18n/translations/fr.json b/apps/web/src/i18n/translations/fr.json
-index b9166940ccf6600d3a91ab869aa0279f7c05258a..beb1eedbee6cf5add3560b5cc6f1330e7b2ffd35 100644
+index d287cfa26d9ed22e7feae528246aadc49504879a..7aaf8e7b9dd489f7ac5802724b332e5f7fec0241 100644
 --- a/apps/web/src/i18n/translations/fr.json
 +++ b/apps/web/src/i18n/translations/fr.json
-@@ -1,4 +1,22 @@
+@@ -1,4 +1,29 @@
  {
 +  "a801984e45be10d2": "Choix répondus : {title}",
 +  "caff86de8d0d03c8": "Choix clos : {title}",
 +  "0025abfaafd4bdb1": "Choix demandés : {title} · {answered}/{total} répondus",
 +  "b2be70822d55f16a": "Ouvrir",
++  "b2cd21d6ac05d2b3": "Les réponses précédentes sont encore en cours d'enregistrement…",
++  "c5981976cc990fe9": "Une réponse n'a pas été enregistrée. Choisis-la à nouveau.",
++  "8ea743fd3f6ac064": "Une note n'a pas été enregistrée. Écris-la à nouveau.",
 +  "8fa89f90f12f6b89": "Question {current} sur {total} · {answered} répondues",
 +  "715bfb4388c67edb": "Impossible à dire",
 +  "f1e0fdb58055bb67": "Note (N)",
-+  "1ab37a0bb021938f": "1–4 choisir · 0 impossible à dire · N note · ← → naviguer · Échap quitte la note",
++  "2646664dfaa93ce9": "1–{last} choisir",
++  "5efaa9465c1e5857": "0 impossible à dire",
++  "5e3947f6c54104f3": "N note · ← → naviguer · Échap quitte la note",
 +  "42a2d185f83c1e59": "Ces choix sont répondus.",
 +  "ece8d13cb4d303fc": "Ces choix ont été clos.",
 +  "b438efee5a823d14": "Cette connexion ne peut pas répondre aux choix.",
@@ -3061,25 +4198,32 @@ index b9166940ccf6600d3a91ab869aa0279f7c05258a..beb1eedbee6cf5add3560b5cc6f1330e
 +  "3e78c596207fd4f6": "Aucun choix en attente",
 +  "7fcb7906fed9b62e": "{answered}/{total}",
 +  "00fbcbe335067bd4": "La réponse n'a pas pu être enregistrée.",
++  "5c5b56862056d81d": "Les notes sont trop longues pour être envoyées. Raccourcis-en quelques-unes et appuie à nouveau sur Terminé.",
 +  "3175abc8e9463339": "Les choix n'ont pas pu être terminés.",
++  "bf8cbaec6273720b": "Impossible de charger cette option",
 +  "285162933fb81ed0": "Choix, {count} en attente",
    "4bcfa3b976a421cf": "Discussion annexe",
    "23be753133ae6950": "Fil",
    "0001ae5846061bb6": "Fil sur {machine}",
 diff --git a/apps/web/src/i18n/translations/ja.json b/apps/web/src/i18n/translations/ja.json
-index da6a34749df883d48fa5ec7db9008751c412cd09..fc4ab8b5da325a9aec176fc5e7f8dbaefa0e6593 100644
+index f34cf813f7b9b8970a840861707455a1e765deae..b89c19d94ee8729093bfd854d8c11600700f498e 100644
 --- a/apps/web/src/i18n/translations/ja.json
 +++ b/apps/web/src/i18n/translations/ja.json
-@@ -1,4 +1,22 @@
+@@ -1,4 +1,29 @@
  {
 +  "a801984e45be10d2": "選択に回答済み: {title}",
 +  "caff86de8d0d03c8": "選択は終了: {title}",
 +  "0025abfaafd4bdb1": "選択を依頼: {title} · {answered}/{total} 回答済み",
 +  "b2be70822d55f16a": "開く",
++  "b2cd21d6ac05d2b3": "以前の回答をまだ保存中です…",
++  "c5981976cc990fe9": "回答が保存されませんでした。もう一度選んでください。",
++  "8ea743fd3f6ac064": "メモが保存されませんでした。もう一度書いてください。",
 +  "8fa89f90f12f6b89": "質問 {current}/{total} · {answered} 件回答済み",
 +  "715bfb4388c67edb": "判断できない",
 +  "f1e0fdb58055bb67": "メモ (N)",
-+  "1ab37a0bb021938f": "1–4 選択 · 0 判断できない · N メモ · ← → 移動 · Esc でメモを離れる",
++  "2646664dfaa93ce9": "1–{last} 選択",
++  "5efaa9465c1e5857": "0 判断できない",
++  "5e3947f6c54104f3": "N メモ · ← → 移動 · Esc でメモを離れる",
 +  "42a2d185f83c1e59": "この選択は回答済みです。",
 +  "ece8d13cb4d303fc": "この選択は終了しました。",
 +  "b438efee5a823d14": "この接続では選択に回答できません。",
@@ -3088,25 +4232,32 @@ index da6a34749df883d48fa5ec7db9008751c412cd09..fc4ab8b5da325a9aec176fc5e7f8dbae
 +  "3e78c596207fd4f6": "待機中の選択はありません",
 +  "7fcb7906fed9b62e": "{answered}/{total}",
 +  "00fbcbe335067bd4": "回答を保存できませんでした。",
++  "5c5b56862056d81d": "メモが長すぎて送信できません。いくつか短くしてから、もう一度完了を押してください。",
 +  "3175abc8e9463339": "選択を完了できませんでした。",
++  "bf8cbaec6273720b": "この選択肢を読み込めませんでした",
 +  "285162933fb81ed0": "選択、{count} 件待機中",
    "4bcfa3b976a421cf": "サイドチャット",
    "23be753133ae6950": "スレッド",
    "0001ae5846061bb6": "{machine} 上のスレッド",
 diff --git a/apps/web/src/i18n/translations/ko.json b/apps/web/src/i18n/translations/ko.json
-index f38e81a9b93989d17c0eda0dedd40d6c3a7ef3d3..3516a2b6c6a79dfb91958d6774fd1a8c4c1b6a5c 100644
+index 31f32f568d5d8aeb36e163ef80ed81e133a92b1f..96ff2e950d6549b03ce12e8e2ced4f471a59f70f 100644
 --- a/apps/web/src/i18n/translations/ko.json
 +++ b/apps/web/src/i18n/translations/ko.json
-@@ -1,4 +1,22 @@
+@@ -1,4 +1,29 @@
  {
 +  "a801984e45be10d2": "선택 응답 완료: {title}",
 +  "caff86de8d0d03c8": "선택 닫힘: {title}",
 +  "0025abfaafd4bdb1": "선택 요청: {title} · {answered}/{total} 응답",
 +  "b2be70822d55f16a": "열기",
++  "b2cd21d6ac05d2b3": "이전 응답을 아직 저장하는 중입니다…",
++  "c5981976cc990fe9": "응답이 저장되지 않았습니다. 다시 선택하세요.",
++  "8ea743fd3f6ac064": "메모가 저장되지 않았습니다. 다시 작성하세요.",
 +  "8fa89f90f12f6b89": "질문 {current}/{total} · {answered}개 응답",
 +  "715bfb4388c67edb": "판단 불가",
 +  "f1e0fdb58055bb67": "메모 (N)",
-+  "1ab37a0bb021938f": "1–4 선택 · 0 판단 불가 · N 메모 · ← → 이동 · Esc 메모 나가기",
++  "2646664dfaa93ce9": "1–{last} 선택",
++  "5efaa9465c1e5857": "0 판단 불가",
++  "5e3947f6c54104f3": "N 메모 · ← → 이동 · Esc 메모 나가기",
 +  "42a2d185f83c1e59": "이 선택은 응답되었습니다.",
 +  "ece8d13cb4d303fc": "이 선택은 닫혔습니다.",
 +  "b438efee5a823d14": "이 연결에서는 선택에 응답할 수 없습니다.",
@@ -3115,25 +4266,32 @@ index f38e81a9b93989d17c0eda0dedd40d6c3a7ef3d3..3516a2b6c6a79dfb91958d6774fd1a8c
 +  "3e78c596207fd4f6": "대기 중인 선택이 없습니다",
 +  "7fcb7906fed9b62e": "{answered}/{total}",
 +  "00fbcbe335067bd4": "응답을 저장할 수 없습니다.",
++  "5c5b56862056d81d": "메모가 너무 길어 보낼 수 없습니다. 일부를 줄이고 다시 완료를 누르세요.",
 +  "3175abc8e9463339": "선택을 완료할 수 없습니다.",
++  "bf8cbaec6273720b": "이 선택지를 불러올 수 없습니다",
 +  "285162933fb81ed0": "선택, {count}개 대기 중",
    "4bcfa3b976a421cf": "사이드 채팅",
    "23be753133ae6950": "스레드",
    "0001ae5846061bb6": "{machine}의 스레드",
 diff --git a/apps/web/src/i18n/translations/pt-BR.json b/apps/web/src/i18n/translations/pt-BR.json
-index 24ce6764ab312c0d95c39c915b54103a0fd9ab21..7a4d2ed03d8db597b7eef0fc2b7451f21659d355 100644
+index e9049c2fbe37c5dab6ad7d9e138c74b59322ab41..b65168e8d78ae3de83ceca814f5e03a0396068d7 100644
 --- a/apps/web/src/i18n/translations/pt-BR.json
 +++ b/apps/web/src/i18n/translations/pt-BR.json
-@@ -1,4 +1,22 @@
+@@ -1,4 +1,29 @@
  {
 +  "a801984e45be10d2": "Escolhas respondidas: {title}",
 +  "caff86de8d0d03c8": "Escolhas encerradas: {title}",
 +  "0025abfaafd4bdb1": "Escolhas solicitadas: {title} · {answered}/{total} respondidas",
 +  "b2be70822d55f16a": "Abrir",
++  "b2cd21d6ac05d2b3": "As respostas anteriores ainda estão sendo salvas…",
++  "c5981976cc990fe9": "Uma resposta não foi salva. Escolha de novo.",
++  "8ea743fd3f6ac064": "Uma nota não foi salva. Escreva de novo.",
 +  "8fa89f90f12f6b89": "Pergunta {current} de {total} · {answered} respondidas",
 +  "715bfb4388c67edb": "Não sei dizer",
 +  "f1e0fdb58055bb67": "Nota (N)",
-+  "1ab37a0bb021938f": "1–4 escolher · 0 não sei dizer · N nota · ← → mover · Esc sai da nota",
++  "2646664dfaa93ce9": "1–{last} escolher",
++  "5efaa9465c1e5857": "0 não sei dizer",
++  "5e3947f6c54104f3": "N nota · ← → mover · Esc sai da nota",
 +  "42a2d185f83c1e59": "Estas escolhas foram respondidas.",
 +  "ece8d13cb4d303fc": "Estas escolhas foram encerradas.",
 +  "b438efee5a823d14": "Esta conexão não pode responder escolhas.",
@@ -3142,25 +4300,32 @@ index 24ce6764ab312c0d95c39c915b54103a0fd9ab21..7a4d2ed03d8db597b7eef0fc2b7451f2
 +  "3e78c596207fd4f6": "Nenhuma escolha pendente",
 +  "7fcb7906fed9b62e": "{answered}/{total}",
 +  "00fbcbe335067bd4": "Não foi possível salvar a resposta.",
++  "5c5b56862056d81d": "As notas são longas demais para enviar. Encurte algumas e pressione Concluir de novo.",
 +  "3175abc8e9463339": "Não foi possível concluir as escolhas.",
++  "bf8cbaec6273720b": "Não foi possível carregar esta opção",
 +  "285162933fb81ed0": "Escolhas, {count} pendentes",
    "4bcfa3b976a421cf": "Chat paralelo",
    "23be753133ae6950": "Thread",
    "0001ae5846061bb6": "Thread em {machine}",
 diff --git a/apps/web/src/i18n/translations/ru.json b/apps/web/src/i18n/translations/ru.json
-index a5f0c249e2ffc2be56462b457778a176924b8c9b..dbad468274cdffefd3990651bc677347f8e1596b 100644
+index 8564890b28ca102015bd514005dc163220fe3429..3748f7281dbc45cad607cff6e2128b1560b7cf70 100644
 --- a/apps/web/src/i18n/translations/ru.json
 +++ b/apps/web/src/i18n/translations/ru.json
-@@ -1,4 +1,22 @@
+@@ -1,4 +1,29 @@
  {
 +  "a801984e45be10d2": "Выбор завершён: {title}",
 +  "caff86de8d0d03c8": "Выбор закрыт: {title}",
 +  "0025abfaafd4bdb1": "Запрошен выбор: {title} · отвечено {answered}/{total}",
 +  "b2be70822d55f16a": "Открыть",
++  "b2cd21d6ac05d2b3": "Предыдущие ответы ещё сохраняются…",
++  "c5981976cc990fe9": "Ответ не сохранён. Выберите его снова.",
++  "8ea743fd3f6ac064": "Заметка не сохранена. Напишите её снова.",
 +  "8fa89f90f12f6b89": "Вопрос {current} из {total} · отвечено {answered}",
 +  "715bfb4388c67edb": "Не могу сказать",
 +  "f1e0fdb58055bb67": "Заметка (N)",
-+  "1ab37a0bb021938f": "1–4 выбрать · 0 не могу сказать · N заметка · ← → перейти · Esc выйти из заметки",
++  "2646664dfaa93ce9": "1–{last} выбрать",
++  "5efaa9465c1e5857": "0 не могу сказать",
++  "5e3947f6c54104f3": "N заметка · ← → перейти · Esc выйти из заметки",
 +  "42a2d185f83c1e59": "На этот выбор уже ответили.",
 +  "ece8d13cb4d303fc": "Этот выбор закрыт.",
 +  "b438efee5a823d14": "Это подключение не может отвечать на выбор.",
@@ -3169,25 +4334,32 @@ index a5f0c249e2ffc2be56462b457778a176924b8c9b..dbad468274cdffefd3990651bc677347
 +  "3e78c596207fd4f6": "Нет ожидающих выборов",
 +  "7fcb7906fed9b62e": "{answered}/{total}",
 +  "00fbcbe335067bd4": "Не удалось сохранить ответ.",
++  "5c5b56862056d81d": "Заметки слишком длинные для отправки. Сократите некоторые и снова нажмите «Готово».",
 +  "3175abc8e9463339": "Не удалось завершить выбор.",
++  "bf8cbaec6273720b": "Не удалось загрузить этот вариант",
 +  "285162933fb81ed0": "Выбор, ожидает: {count}",
    "4bcfa3b976a421cf": "Боковой чат",
    "23be753133ae6950": "Тред",
    "0001ae5846061bb6": "Тред на {machine}",
 diff --git a/apps/web/src/i18n/translations/sv.json b/apps/web/src/i18n/translations/sv.json
-index 353df28a8a9aa036f0fc25eb10340f3a03156f99..bb929b72575f9d9ab3eca5865ad34f3b082871e5 100644
+index f66afa7404b88be175caa17f981f8b6b42994855..72ec3b54e434e71a1b43eaffa0c0caa8bc8a8dd5 100644
 --- a/apps/web/src/i18n/translations/sv.json
 +++ b/apps/web/src/i18n/translations/sv.json
-@@ -1,4 +1,22 @@
+@@ -1,4 +1,29 @@
  {
 +  "a801984e45be10d2": "Val besvarade: {title}",
 +  "caff86de8d0d03c8": "Val stängda: {title}",
 +  "0025abfaafd4bdb1": "Val efterfrågade: {title} · {answered}/{total} besvarade",
 +  "b2be70822d55f16a": "Öppna",
++  "b2cd21d6ac05d2b3": "Tidigare svar sparas fortfarande…",
++  "c5981976cc990fe9": "Ett svar sparades inte. Välj det igen.",
++  "8ea743fd3f6ac064": "En anteckning sparades inte. Skriv den igen.",
 +  "8fa89f90f12f6b89": "Fråga {current} av {total} · {answered} besvarade",
 +  "715bfb4388c67edb": "Kan inte avgöra",
 +  "f1e0fdb58055bb67": "Anteckning (N)",
-+  "1ab37a0bb021938f": "1–4 välj · 0 kan inte avgöra · N anteckning · ← → flytta · Esc lämnar anteckningen",
++  "2646664dfaa93ce9": "1–{last} välj",
++  "5efaa9465c1e5857": "0 kan inte avgöra",
++  "5e3947f6c54104f3": "N anteckning · ← → flytta · Esc lämnar anteckningen",
 +  "42a2d185f83c1e59": "Dessa val är besvarade.",
 +  "ece8d13cb4d303fc": "Dessa val stängdes.",
 +  "b438efee5a823d14": "Den här anslutningen kan inte besvara val.",
@@ -3196,25 +4368,32 @@ index 353df28a8a9aa036f0fc25eb10340f3a03156f99..bb929b72575f9d9ab3eca5865ad34f3b
 +  "3e78c596207fd4f6": "Inga val väntar",
 +  "7fcb7906fed9b62e": "{answered}/{total}",
 +  "00fbcbe335067bd4": "Svaret kunde inte sparas.",
++  "5c5b56862056d81d": "Anteckningarna är för långa för att skickas. Korta några och tryck på Klar igen.",
 +  "3175abc8e9463339": "Valen kunde inte slutföras.",
++  "bf8cbaec6273720b": "Det gick inte att läsa in det här alternativet",
 +  "285162933fb81ed0": "Val, {count} väntar",
    "4bcfa3b976a421cf": "Sidochatt",
    "23be753133ae6950": "Tråd",
    "0001ae5846061bb6": "Tråd på {machine}",
 diff --git a/apps/web/src/i18n/translations/zh.json b/apps/web/src/i18n/translations/zh.json
-index 4acdfc14e2cb43a8480093dcafb4de404d8cfc85..b1d228ed259fc8838e06b90df4770dd6f97f4132 100644
+index b5f04569397eca7275c2cd42f96fb1331a38d9a2..202385462e2659dad9f3674e41fdc72c7a0e22b3 100644
 --- a/apps/web/src/i18n/translations/zh.json
 +++ b/apps/web/src/i18n/translations/zh.json
-@@ -1,4 +1,22 @@
+@@ -1,4 +1,29 @@
  {
 +  "a801984e45be10d2": "已回答选择：{title}",
 +  "caff86de8d0d03c8": "选择已关闭：{title}",
 +  "0025abfaafd4bdb1": "请求选择：{title} · 已回答 {answered}/{total}",
 +  "b2be70822d55f16a": "打开",
++  "b2cd21d6ac05d2b3": "之前的答案仍在保存…",
++  "c5981976cc990fe9": "有一个答案未保存。请重新选择。",
++  "8ea743fd3f6ac064": "有一条备注未保存。请重新填写。",
 +  "8fa89f90f12f6b89": "第 {current} 题，共 {total} 题 · 已回答 {answered}",
 +  "715bfb4388c67edb": "无法判断",
 +  "f1e0fdb58055bb67": "备注 (N)",
-+  "1ab37a0bb021938f": "1–4 选择 · 0 无法判断 · N 备注 · ← → 切换 · Esc 离开备注",
++  "2646664dfaa93ce9": "1–{last} 选择",
++  "5efaa9465c1e5857": "0 无法判断",
++  "5e3947f6c54104f3": "N 备注 · ← → 切换 · Esc 离开备注",
 +  "42a2d185f83c1e59": "这些选择已回答。",
 +  "ece8d13cb4d303fc": "这些选择已关闭。",
 +  "b438efee5a823d14": "此连接无法回答选择。",
@@ -3223,7 +4402,9 @@ index 4acdfc14e2cb43a8480093dcafb4de404d8cfc85..b1d228ed259fc8838e06b90df4770dd6
 +  "3e78c596207fd4f6": "没有待处理的选择",
 +  "7fcb7906fed9b62e": "{answered}/{total}",
 +  "00fbcbe335067bd4": "无法保存答案。",
++  "5c5b56862056d81d": "备注太长，无法发送。请缩短一些后再按完成。",
 +  "3175abc8e9463339": "无法完成选择。",
++  "bf8cbaec6273720b": "无法加载此选项",
 +  "285162933fb81ed0": "选择，{count} 个待处理",
    "4bcfa3b976a421cf": "侧聊",
    "23be753133ae6950": "会话",
@@ -3464,14 +4645,16 @@ index 182c28a319120644f4fc6dfacf6f6ee93b2ea89a..4ce14b2a11a5b58187c65adef37e317f
        "default": "./src/state/environmentHttpAuth.ts"
 diff --git a/packages/client-runtime/src/picks.test.ts b/packages/client-runtime/src/picks.test.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..09d3fb0bab96694e7b05a3d8668d81f9c79fba4e
+index 0000000000000000000000000000000000000000..c3c7121ddbfc7bb2e383778d9e561290af87c71a
 --- /dev/null
 +++ b/packages/client-runtime/src/picks.test.ts
-@@ -0,0 +1,108 @@
+@@ -0,0 +1,182 @@
 +import { describe, expect, it } from "@effect/vitest";
 +
 +import {
++  makePickSaveQueue,
 +  movedQuestion,
++  type PickField,
 +  pickerAnswers,
 +  pickerKeyAction,
 +  pickerProgress,
@@ -3576,12 +4759,84 @@ index 0000000000000000000000000000000000000000..09d3fb0bab96694e7b05a3d8668d81f9
 +    ]);
 +  });
 +});
++
++describe("makePickSaveQueue", () => {
++  it("runs saves in order, keeps going past a thrown one, and reports the latest failures", async () => {
++    const queue = makePickSaveQueue();
++    const order: Array<string> = [];
++    const results = await Promise.allSettled([
++      queue.enqueue(choice(0), async () => (order.push("a"), "no")),
++      queue.enqueue(choice(1), async () => {
++        order.push("b");
++        throw new Error("lost");
++      }),
++      queue.enqueue(choice(2), async () => (order.push("c"), null)),
++      queue.enqueue(choice(0), async () => (order.push("d"), null)),
++    ]);
++    expect(order).toEqual(["a", "b", "c", "d"]);
++    expect(results.map((result) => result.status)).toEqual([
++      "fulfilled",
++      "rejected",
++      "fulfilled",
++      "fulfilled",
++    ]);
++    expect([...(await queue.settled())]).toEqual([]);
++  });
++});
++
++describe("PickSaveQueue.finish", () => {
++  it("runs after the saves before it and before the saves after it", async () => {
++    const queue = makePickSaveQueue();
++    const order: Array<string> = [];
++    const saved = queue.enqueue(choice(0), async () => (order.push("save 0"), null));
++    const finished = queue.finish(async () => (order.push("complete"), "done"));
++    const after = queue.enqueue(choice(1), async () => (order.push("save 1"), null));
++    expect(await Promise.all([saved, finished, after])).toEqual([
++      null,
++      { _tag: "Completed", result: "done" },
++      null,
++    ]);
++    expect(order).toEqual(["save 0", "complete", "save 1"]);
++  });
++
++  it("skips complete and reports the questions whose latest save failed", async () => {
++    const queue = makePickSaveQueue();
++    const order: Array<string> = [];
++    void queue.enqueue(choice(0), async () => "lost");
++    void queue.enqueue(choice(2), async () => "lost");
++    void queue.enqueue(choice(2), async () => null);
++    expect(await queue.finish(async () => order.push("complete"))).toEqual({
++      _tag: "Unsaved",
++      unsaved: [{ questionIndex: 0, fields: new Set(["choice"]) }],
++    });
++    expect(order).toEqual([]);
++  });
++
++  it("keeps a failed note unsaved when a later save carried only the choice", async () => {
++    const queue = makePickSaveQueue();
++    void queue.enqueue({ questionIndex: 0, fields: ["note"] }, async () => "lost");
++    void queue.enqueue(choice(0), async () => null);
++    expect(await queue.finish(async () => "done")).toEqual({
++      _tag: "Unsaved",
++      unsaved: [{ questionIndex: 0, fields: new Set(["note"]) }],
++    });
++    void queue.enqueue({ questionIndex: 0, fields: ["choice", "note"] }, async () => null);
++    expect(await queue.finish(async () => "done")).toEqual({ _tag: "Completed", result: "done" });
++  });
++});
++
++const choice = (
++  questionIndex: number,
++): {
++  readonly questionIndex: number;
++  readonly fields: ReadonlyArray<PickField>;
++} => ({ questionIndex, fields: ["choice"] });
 diff --git a/packages/client-runtime/src/picks.ts b/packages/client-runtime/src/picks.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..9ca10c3234e88741f93258175cd58faabf8c5db3
+index 0000000000000000000000000000000000000000..fa3ac22e79175e78cbfa014fe50c795626a54811
 --- /dev/null
 +++ b/packages/client-runtime/src/picks.ts
-@@ -0,0 +1,84 @@
+@@ -0,0 +1,173 @@
 +import {
 +  PICK_TIE,
 +  type OrchestrationV2TurnItem,
@@ -3666,6 +4921,95 @@ index 0000000000000000000000000000000000000000..9ca10c3234e88741f93258175cd58faa
 +  const trimmed = note.trim();
 +  return trimmed.length === 0 ? undefined : trimmed;
 +}
++
++/**
++ * One batch's saves, one after another, shared by every picker open on it: a save a closed
++ * picker queued still lands before a later one, and Done waits for all of them.
++ */
++/** What a save carries: the choice, the note, or both. */
++export type PickField = "choice" | "note";
++
++export interface PickSaveQueue {
++  /**
++   * Runs `save` after every save before it; resolves to its error, or null. Its outcome
++   * counts only for the fields it carries.
++   */
++  readonly enqueue: (
++    target: { readonly questionIndex: number; readonly fields: ReadonlyArray<PickField> },
++    save: () => Promise<string | null>,
++  ) => Promise<string | null>;
++  /**
++   * Done, in line with the saves: after every save before it, `complete` runs unless some
++   * field's latest save failed; saves queued after it run after it.
++   */
++  readonly finish: <A>(complete: () => Promise<A>) => Promise<PickFinishOutcome<A>>;
++  /** Waits for every queued save and Done; the questions with a field whose latest save failed. */
++  readonly settled: () => Promise<ReadonlySet<number>>;
++}
++
++/** A question whose latest save failed for these fields. */
++export interface PickUnsaved {
++  readonly questionIndex: number;
++  readonly fields: ReadonlySet<PickField>;
++}
++
++export type PickFinishOutcome<A> =
++  | { readonly _tag: "Unsaved"; readonly unsaved: ReadonlyArray<PickUnsaved> }
++  | { readonly _tag: "Completed"; readonly result: A };
++
++export function makePickSaveQueue(): PickSaveQueue {
++  let tail: Promise<unknown> = Promise.resolve();
++  // By question, the fields whose latest save failed: a choice saved later doesn't clear a note.
++  const failed = new Map<number, Set<PickField>>();
++  const unsaved = (): ReadonlyArray<PickUnsaved> =>
++    [...failed.entries()]
++      .filter(([, fields]) => fields.size > 0)
++      .map(([questionIndex, fields]) => ({ questionIndex, fields: new Set(fields) }))
++      .sort((left, right) => left.questionIndex - right.questionIndex);
++  return {
++    enqueue: ({ questionIndex, fields }, save) => {
++      const run = tail.then(save).then((failure) => {
++        const current = failed.get(questionIndex) ?? new Set<PickField>();
++        for (const field of fields) {
++          if (failure === null) current.delete(field);
++          else current.add(field);
++        }
++        failed.set(questionIndex, current);
++        return failure;
++      });
++      // A save that throws fails on its own; the ones after it still run.
++      tail = run.catch(() => undefined);
++      return run;
++    },
++    finish: <A>(complete: () => Promise<A>) => {
++      const run = tail.then(async (): Promise<PickFinishOutcome<A>> => {
++        const pending = unsaved();
++        return pending.length > 0
++          ? { _tag: "Unsaved", unsaved: pending }
++          : { _tag: "Completed", result: await complete() };
++      });
++      tail = run.catch(() => undefined);
++      return run;
++    },
++    settled: () => tail.then(() => new Set(unsaved().map(({ questionIndex }) => questionIndex))),
++  };
++}
++
++const saveQueues = new Map<string, PickSaveQueue>();
++
++/** The save queue for a batch on an environment, made on first use. */
++export function pickSaveQueue(batch: {
++  readonly environmentId: string;
++  readonly threadId: string;
++  readonly batchId: string;
++}): PickSaveQueue {
++  const key = JSON.stringify([batch.environmentId, batch.threadId, batch.batchId]);
++  const existing = saveQueues.get(key);
++  if (existing !== undefined) return existing;
++  const queue = makePickSaveQueue();
++  saveQueues.set(key, queue);
++  return queue;
++}
 diff --git a/packages/client-runtime/src/state/commandPermissions.test.ts b/packages/client-runtime/src/state/commandPermissions.test.ts
 index 0fc89a1fd2f63e2a7eac6b3b7fe8124c1f13ee51..851dea562710c49564c9669f55a091159d9b95c4 100644
 --- a/packages/client-runtime/src/state/commandPermissions.test.ts
@@ -3696,10 +5040,10 @@ index 0fc89a1fd2f63e2a7eac6b3b7fe8124c1f13ee51..851dea562710c49564c9669f55a09115
      const registry = yield* setup;
 diff --git a/packages/client-runtime/src/state/picks.ts b/packages/client-runtime/src/state/picks.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..45777c3199e0c4810f5f83429ac10b4026ebbc05
+index 0000000000000000000000000000000000000000..a9d7a97275cbcffb24c3bd221dfe4de83c9be9e0
 --- /dev/null
 +++ b/packages/client-runtime/src/state/picks.ts
-@@ -0,0 +1,48 @@
+@@ -0,0 +1,55 @@
 +import { WS_METHODS } from "@t3tools/contracts";
 +import * as Effect from "effect/Effect";
 +import { Atom } from "effect/reactivity";
@@ -3719,9 +5063,11 @@ index 0000000000000000000000000000000000000000..45777c3199e0c4810f5f83429ac10b40
 +    staleTimeMs: 5_000,
 +    refreshIntervalMs: PICKS_LIST_REFRESH_MS,
 +  });
++  // Read again on every open: another window, or this one before, may have answered since.
 +  const get = createEnvironmentRpcQueryAtomFamily(runtime, {
 +    label: "environment-data:picks:get",
 +    tag: WS_METHODS.picksGet,
++    staleTimeMs: 0,
 +  });
 +  return {
 +    list,
@@ -3729,8 +5075,13 @@ index 0000000000000000000000000000000000000000..45777c3199e0c4810f5f83429ac10b40
 +    answer: createEnvironmentRpcCommand(runtime, {
 +      label: "environment-data:picks:answer",
 +      tag: WS_METHODS.picksAnswer,
-+      onSuccess: ({ environmentId }, registry) =>
-+        Effect.sync(() => registry.refresh(list({ environmentId, input: {} }))),
++      onSuccess: ({ environmentId, input }, registry) =>
++        Effect.sync(() => {
++          registry.refresh(list({ environmentId, input: {} }));
++          registry.refresh(
++            get({ environmentId, input: { threadId: input.threadId, batchId: input.batchId } }),
++          );
++        }),
 +    }),
 +    complete: createEnvironmentRpcCommand(runtime, {
 +      label: "environment-data:picks:complete",
@@ -3867,10 +5218,10 @@ index 573607abc7e97450425bae03401b3030516b33c1..30473916aaa82feb55d34e14d0125bf5
  
 diff --git a/packages/contracts/src/picks.ts b/packages/contracts/src/picks.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..b8a0ce41046fc9d911f86389e3a9cf61c58c68a9
+index 0000000000000000000000000000000000000000..19b11cd8106b02da39279752ad89f159e159b183
 --- /dev/null
 +++ b/packages/contracts/src/picks.ts
-@@ -0,0 +1,195 @@
+@@ -0,0 +1,205 @@
 +import * as Schema from "effect/Schema";
 +
 +import {
@@ -3886,7 +5237,7 @@ index 0000000000000000000000000000000000000000..b8a0ce41046fc9d911f86389e3a9cf61
 +const PICKS_MAX_OPTIONS = 4;
 +/** The choice an answer records when the user can't tell the options apart. */
 +export const PICK_TIE = "tie";
-+const PICK_NOTE_MAX_LENGTH = 2000;
++export const PICK_NOTE_MAX_LENGTH = 2000;
 +
 +const PickId = TrimmedNonEmptyString.check(Schema.isMaxLength(128));
 +const PickText = (maxLength: number) => TrimmedNonEmptyString.check(Schema.isMaxLength(maxLength));
@@ -3934,7 +5285,11 @@ index 0000000000000000000000000000000000000000..b8a0ce41046fc9d911f86389e3a9cf61
 +  allowTie: Schema.optionalKey(
 +    Schema.Boolean.annotate({ description: 'Offer "Can\'t tell". Default true.' }),
 +  ),
-+  clientRequestId: Schema.optionalKey(PickText(256)),
++  clientRequestId: Schema.optionalKey(
++    PickText(256).annotate({
++      description: "Retry key. A repeat with the same key returns the batch already recorded.",
++    }),
++  ),
 +});
 +export type PicksRequestInput = typeof PicksRequestInput.Type;
 +
@@ -4030,11 +5385,15 @@ index 0000000000000000000000000000000000000000..b8a0ce41046fc9d911f86389e3a9cf61
 +});
 +export type PicksBatchView = typeof PicksBatchView.Type;
 +
++/**
++ * Only what the owner just did. Without `choice` the stored one stays; without `note` the
++ * stored note stays, and a blank one removes it. The server merges under the batch's lock.
++ */
 +export const PicksAnswerInput = Schema.Struct({
 +  threadId: ThreadId,
 +  batchId: TurnItemId,
 +  questionIndex: NonNegativeInt,
-+  choice: PickViewChoice,
++  choice: Schema.optionalKey(PickViewChoice),
 +  note: Schema.optionalKey(PickNote),
 +});
 +export type PicksAnswerInput = typeof PicksAnswerInput.Type;
@@ -4044,6 +5403,7 @@ index 0000000000000000000000000000000000000000..b8a0ce41046fc9d911f86389e3a9cf61
 +  "closed",
 +  "invalid_answer",
 +  "incomplete",
++  "notes_too_long",
 +  "load_failed",
 +  "record_failed",
 +]);
@@ -4054,6 +5414,7 @@ index 0000000000000000000000000000000000000000..b8a0ce41046fc9d911f86389e3a9cf61
 +  closed: "This batch of picks is closed.",
 +  invalid_answer: "That answer is not one of this question's choices.",
 +  incomplete: "Answer every question before finishing.",
++  notes_too_long: "The notes are too long to send to the agent. Shorten some and press Done again.",
 +  load_failed: "The picks could not be read.",
 +  record_failed: "The picks could not be saved.",
 +};
@@ -5322,10 +6683,10 @@ HcmV?d00001
 
 diff --git a/patcher/journeys/picks.mjs b/patcher/journeys/picks.mjs
 new file mode 100644
-index 0000000000000000000000000000000000000000..836a90fa0a0e9b85d899723d057caa971bb72270
+index 0000000000000000000000000000000000000000..b844babe62cebe335c56e50d7d8e6990ac42237c
 --- /dev/null
 +++ b/patcher/journeys/picks.mjs
-@@ -0,0 +1,174 @@
+@@ -0,0 +1,183 @@
 +// Journey: an agent asks for picks over the real MCP endpoint, the user answers in the Picks inbox
 +// with the keyboard and Done, and the asking thread wakes with every answer. The agent is
 +// fixtures/picks-agent.mjs, a provider in the journey's own T3 home; the server's CLI starts it.
@@ -5447,6 +6808,15 @@ index 0000000000000000000000000000000000000000..836a90fa0a0e9b85d899723d057caa97
 +      await progress
 +        .getByText("Question 2 of 3 · 1 answered")
 +        .waitFor({ timeout: STEP_TIMEOUT_MS });
++      step("leaving and reopening the batch");
++      await page.getByRole("link", { name: "Picks", exact: true }).click();
++      await page.getByText("1/3").waitFor({ timeout: STEP_TIMEOUT_MS });
++      await page.getByRole("link", { name: PICKS_TITLE }).click();
++      // It reopens on the saved answer, at the next question.
++      await progress
++        .getByText("Question 2 of 3 · 1 answered")
++        .waitFor({ timeout: STEP_TIMEOUT_MS });
++      step("answering the rest with the keyboard");
 +      await page.keyboard.press("0");
 +      await progress
 +        .getByText("Question 3 of 3 · 2 answered")
