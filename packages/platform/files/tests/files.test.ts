@@ -201,7 +201,11 @@ describe("installed record", () => {
         patches: [{ id: (yield* manifest("a")).id, version: 2 }],
         installedAt: "2026-11-24T10:00:00.000Z",
         feed: FEED_URL,
-        update: { command: ["/usr/bin/python3", "/repo/scripts/patcher.py", "update"], cwd: "/repo" },
+        update: {
+          command: ["/usr/bin/python3", "/repo/scripts/patcher.py", "update"],
+          cwd: "/repo",
+          path: "/opt/homebrew/bin:/usr/bin:/bin",
+        },
       };
       const missing = yield* loadInstalled(at("user"));
       yield* saveInstalled(at("user"), record);

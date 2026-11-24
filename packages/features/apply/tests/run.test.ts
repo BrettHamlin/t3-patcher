@@ -303,6 +303,27 @@ describe("run", () => {
       ]);
     }));
 
+  it.effect("with saving off, names the patches rebased onto this version but saves none", () =>
+    Effect.gen(function* () {
+      const fake = yield* fakes();
+      const baseCommit = yield* commit("b");
+      const moved = yield* patch("a", { baseCommit: yield* commit("c") });
+      const same = yield* patch("b", { baseCommit });
+      const report = yield* run(target({ checks: [], build: [] }), [moved, same], false, folders, {
+        version: "0.1.12",
+        save: false,
+      }).pipe(Effect.provide(fake.layer));
+      expect(report.steps.map((step) => `${step.name}: ${step.status} ${step.note}`)).toEqual([
+        "T3 Code source: passed 0.1.12 (v0.1.12)",
+        "a: passed applied; rebased for 0.1.12",
+        "b: passed applied",
+        "a: a-journey: passed ",
+        "b: b-journey: passed ",
+        "save patches: passed a rebased for 0.1.12; not saved: publish rebased patches from a workspace",
+      ]);
+      expect(yield* Ref.get(fake.written)).toEqual([]);
+    }));
+
   it.effect("an update whose build fails never reaches the install step, so the app isn't quit or replaced", () =>
     Effect.gen(function* () {
       const fake = yield* fakes({ failing: new Set(["build"]) });
@@ -330,7 +351,11 @@ describe("run", () => {
     }));
 });
 
-const update = { command: ["/usr/bin/python3", "/repo/scripts/patcher.py", "update"], cwd: "/repo" } as const;
+const update = {
+  command: ["/usr/bin/python3", "/repo/scripts/patcher.py", "update"],
+  cwd: "/repo",
+  path: "/opt/homebrew/bin:/usr/bin:/bin",
+} as const;
 
 describe("installedRecord", () => {
   it.effect("records the version and each patch installed, when the run installed and every step passed", () =>

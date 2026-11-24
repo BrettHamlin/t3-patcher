@@ -123,7 +123,8 @@ export type Feed = typeof Feed.Type;
 
 /**
  * <user data>/installed.json: what the last install put in place, where updates are published, and how the app runs
- * the patcher's `update` (an absolute command and its folder, since the app runs it without a shell).
+ * the patcher's `update`: an absolute command, its folder, and the PATH the patcher ran with, since the app runs it
+ * without a shell and with its own PATH.
  */
 export const InstalledRecord = Schema.Struct({
   t3Version: Text,
@@ -133,6 +134,7 @@ export const InstalledRecord = Schema.Struct({
   update: Schema.Struct({
     command: Schema.Array(Text).pipe(Schema.check(Schema.isMinLength(1))),
     cwd: Text,
+    path: Text,
   }),
 });
 export type InstalledRecord = typeof InstalledRecord.Type;

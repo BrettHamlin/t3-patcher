@@ -4,8 +4,9 @@ import {
   Installation,
   installedRecord,
   openWorkspace,
-  PatchRepository,
   Progress,
+  PublishedPatches,
+  type Synced,
   run,
   updates,
   type PatchWriter,
@@ -46,7 +47,7 @@ import {
   selected,
   StackStore,
 } from "@app/stack";
-import { commandResolver, commandShell, gitPatchRepository, gitSource, macInstallation } from "@app/system";
+import { commandResolver, commandShell, gitPublishedPatches, gitSource, macInstallation } from "@app/system";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -150,7 +151,7 @@ export const settingsIn = Effect.fn("settingsIn")(function* (userdata: string) {
 export const stackServices = (userdata: string, settings: Settings): Layer.Layer<Library | StackStore> =>
   Layer.merge(fileLibrary(settings.patches), fileStackStore(userdata)).pipe(Layer.provide(NodeServices.layer));
 
-export type Services = Library | StackStore | PatchWriter | Source | Shell | Resolver | Installation | PatchRepository;
+export type Services = Library | StackStore | PatchWriter | Source | Shell | Resolver | Installation | PublishedPatches;
 
 /** Every real service for `settings`: the patches and stack, git, commands and the installed app. */
 export const servicesFor = (userdata: string, settings: Settings): Layer.Layer<Services> =>
@@ -164,7 +165,7 @@ export const servicesFor = (userdata: string, settings: Settings): Layer.Layer<S
         commandShell(logs),
         commandResolver({ command: settings.resolver, logs }),
         macInstallation({ installed: settings.target.installed, backups: path.join(settings.work, "backups") }),
-        gitPatchRepository(settings.patches),
+        gitPublishedPatches({ source: settings.patches, clone: path.join(settings.work, "published") }),
       );
     }),
   ).pipe(Layer.provide(NodeServices.layer), Layer.merge(stackServices(userdata, settings)));
@@ -235,11 +236,22 @@ const short = (commit: string): string => commit.slice(0, 7);
 
 const pull = (status: Step["status"], note: string): Step => ({ kind: "pull", name: "patches", status, note });
 
+/** The pull step's note: what the sync of the published clone did. */
+export const syncedNote = (synced: Synced): string => {
+  if (synced.from === null) return `cloned ${synced.url} at ${short(synced.to)}`;
+  if (synced.from === synced.to) return `up to date at ${short(synced.to)}`;
+  return `${short(synced.from)} → ${short(synced.to)}${synced.reset ? " (reset to the published branch)" : ""}`;
+};
+
+const libraryIn = (folder: string) => fileLibrary(folder).pipe(Layer.provide(NodeServices.layer));
+
 /**
- * Update: fast-forward the patches repository from its published branch (patches that are new join the stack off),
- * then apply the stack and install it, building `request.t3` if given, else the installed version. Each report is
- * saved as the last run as it changes, so the app can follow it; the first step is the pull. Nothing is installed
- * unless every step passes. After an install, saves the installed record. Holds the lock throughout.
+ * Update: sync the published patches (a clone of the patches repository's origin, under the work folder, which
+ * nothing else edits) to their published branch; patches that are new there join the stack off. Then apply the
+ * stack, with the published patches, and install it, building `request.t3` if given, else the installed version.
+ * Patches rebased onto that version aren't saved: the clone stays as published. Each report is saved as the last run
+ * as it changes, so the app can follow it; the first step is the pull. Nothing is installed unless every step
+ * passes. After an install, saves the installed record. Holds the lock throughout.
  */
 export const updateStack = Effect.fn("updateStack")(function* (
   userdata: string,
@@ -262,18 +274,27 @@ export const updateStack = Effect.fn("updateStack")(function* (
           Effect.provideService(Path.Path, path),
         );
       });
-      const was = yield* library;
       yield* tell({ version: "", install: true, steps: [pull("running", "")] });
-      const pulled = yield* (yield* PatchRepository).pull(FEED_BRANCH).pipe(Effect.result);
+      const published = yield* PublishedPatches;
+      const pulled = yield* Effect.gen(function* () {
+        const folder = yield* published.folder;
+        // Before the sync: the published patches last used, or, the first time, the patches folder.
+        const last = (yield* fs.exists(folder).pipe(Effect.orElseSucceed(() => false))) ? folder : settings.patches;
+        const was = yield* library.pipe(Effect.provide(libraryIn(last)));
+        const synced = yield* published.sync(FEED_BRANCH);
+        return { folder, was, synced };
+      }).pipe(Effect.result);
       if (Result.isFailure(pulled)) {
-        const failed: RunReport = { version: "", install: true, steps: [pull("failed", pulled.failure.reason)] };
+        const reason = pulled.failure._tag === "StepFailed" ? pulled.failure.reason : pulled.failure.message;
+        const failed: RunReport = { version: "", install: true, steps: [pull("failed", reason)] };
         yield* tell(failed);
         return failed;
       }
-      const { from, to } = pulled.success;
-      const pulledStep = pull("passed", from === to ? `up to date at ${short(to)}` : `${short(from)} → ${short(to)}`);
-      const patches = yield* (yield* Library).patches;
-      const stack = yield* saveStack(joinedOff(patches, was.stack));
+      const { folder, was, synced } = pulled.success;
+      const pulledStep = pull("passed", syncedNote(synced));
+      const publishedLibrary = libraryIn(folder);
+      const patches = yield* Library.use((found) => found.patches).pipe(Effect.provide(publishedLibrary));
+      const stack = yield* saveStack(joinedOff(patches, was.stack)).pipe(Effect.provide(publishedLibrary));
       const chosen = selected(stack, patches);
       const installed = yield* (yield* Installation).version.pipe(Effect.orElseSucceed(() => "unknown"));
       const updating = updates({
@@ -287,6 +308,7 @@ export const updateStack = Effect.fn("updateStack")(function* (
       const prefixed = Layer.succeed(Progress)({ report: Effect.fn("Progress.report")((report) => tell(withPull(report))) });
       const options: RunOptions = {
         updating,
+        save: false,
         ...(request.t3 === undefined ? {} : { version: request.t3 }),
         ...(request.relaunch === undefined ? {} : { relaunch: request.relaunch }),
       };
@@ -299,6 +321,10 @@ export const updateStack = Effect.fn("updateStack")(function* (
     }),
   );
 });
+
+/** `searchPath` (a PATH value) with each folder once, where it first appears. */
+export const distinctPath = (searchPath: string): string =>
+  [...new Set(searchPath.split(":").filter((folder) => folder !== ""))].join(":");
 
 /** The first `name` in the folders of `searchPath` (a PATH value), as an absolute path; undefined if none has it. */
 export const onPath = Effect.fn("onPath")(function* (name: string, searchPath: string) {
@@ -315,7 +341,8 @@ export const onPath = Effect.fn("onPath")(function* (name: string, searchPath: s
 
 /**
  * How the app runs this repository's `update` with `userdata`: python3 (absolute, found on `searchPath`) running
- * scripts/patcher.py in `repository`, since the app runs it without a shell or the user's PATH.
+ * scripts/patcher.py in `repository`, with `searchPath` (each folder once) as its PATH. The app runs it without a
+ * shell, with that PATH, so an update it starts finds the same python3 and tools and records the same again.
  */
 export const updateCommand = Effect.fn("updateCommand")(function* (
   repository: string,
@@ -323,9 +350,10 @@ export const updateCommand = Effect.fn("updateCommand")(function* (
   searchPath: string,
 ) {
   const path = yield* Path.Path;
-  const python = (yield* onPath("python3", searchPath)) ?? "/usr/bin/python3";
+  const kept = distinctPath(searchPath);
+  const python = (yield* onPath("python3", kept)) ?? "/usr/bin/python3";
   const command = [python, path.join(repository, "scripts", "patcher.py"), "update", "--userdata", path.resolve(userdata)];
-  const update: InstalledRecord["update"] = { command, cwd: repository };
+  const update: InstalledRecord["update"] = { command, cwd: repository, path: kept };
   return update;
 });
 

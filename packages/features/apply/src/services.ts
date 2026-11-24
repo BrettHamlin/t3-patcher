@@ -77,16 +77,32 @@ export interface PatchWriterShape {
 }
 export class PatchWriter extends Context.Service<PatchWriter, PatchWriterShape>()("@app/apply/services/PatchWriter") {}
 
-/** The git repository the patches folder is in, published from a branch of its `origin` remote. */
-export interface PatchRepositoryShape {
-  /**
-   * Fast-forward the repository to `origin`'s `branch`; returns the commits before and after. Fails, changing
-   * nothing, if it has local changes, isn't on `branch`, or has commits `origin` doesn't (it can't fast-forward).
-   */
-  readonly pull: (branch: string) => Effect.Effect<{ readonly from: string; readonly to: string }, StepFailed>;
+/** What a sync of the published patches did. */
+export interface Synced {
+  /** Where the published repository was cloned from: the patches repository's `origin`. */
+  readonly url: string;
+  /** The clone's commit before, or null when this sync made the clone. */
+  readonly from: string | null;
+  readonly to: string;
+  /** Whether the clone couldn't fast-forward and was reset to the published branch. */
+  readonly reset: boolean;
 }
-export class PatchRepository extends Context.Service<PatchRepository, PatchRepositoryShape>()(
-  "@app/apply/services/PatchRepository",
+
+/**
+ * The published patches: a clone, kept by the patcher and edited by nothing else, of the patches repository's
+ * `origin`. Updates use it, so the repository authors work in (on any branch, with any changes) never holds them up.
+ */
+export interface PublishedPatchesShape {
+  /** The patches folder in the clone (it may not exist yet). */
+  readonly folder: Effect.Effect<string, StepFailed>;
+  /**
+   * Bring the clone to `origin`'s `branch`: clone it the first time, then fetch and fast-forward, or reset when it
+   * can't fast-forward. Fails if the patches repository has no `origin`, or it can't be reached.
+   */
+  readonly sync: (branch: string) => Effect.Effect<Synced, StepFailed>;
+}
+export class PublishedPatches extends Context.Service<PublishedPatches, PublishedPatchesShape>()(
+  "@app/apply/services/PublishedPatches",
 ) {}
 
 /** Hears about a run as it goes: called with the whole report after every change. */

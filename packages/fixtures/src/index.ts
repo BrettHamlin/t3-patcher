@@ -330,16 +330,18 @@ export const publishedWorld = (data: string, world: World): Promise<void> => nod
 export const publish = (data: string, changes: ReadonlyArray<Publication>): Promise<void> =>
   node(Effect.forEach(changes, (change) => publishOne(data, change), { discard: true }));
 
-/** Commit a change in the world's clone (<data>/repo) that isn't published, so it can no longer fast-forward. */
-export const commitUnpublished = (data: string): Promise<void> =>
+/** Commit a new file in the git repository at `folder`, so it has a commit its origin doesn't. */
+export const commitUnpublished = (folder: string): Promise<void> =>
   node(
     Effect.gen(function* () {
-      const repo = (yield* Path.Path).join(data, "repo");
-      yield* writeAll(repo, { "local.txt": "local\n" });
-      yield* git(repo, ["add", "--all"]);
-      yield* git(repo, ["commit", "--quiet", "-m", "Local"]);
+      yield* writeAll(folder, { "local.txt": "local\n" });
+      yield* git(folder, ["add", "--all"]);
+      yield* git(folder, ["commit", "--quiet", "-m", "Local"]);
     }),
   );
+
+/** Run git in `folder` with `args`; its output. */
+export const gitIn = (folder: string, ...args: ReadonlyArray<string>): Promise<string> => node(git(folder, args));
 
 /** The commit HEAD names in the git repository at `folder`. */
 export const headOf = (folder: string): Promise<string> =>

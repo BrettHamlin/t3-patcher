@@ -33,6 +33,11 @@ export interface RunOptions {
   readonly relaunch?: number;
   /** What the run updates, for its report. */
   readonly updating?: ReadonlyArray<UpdateItem>;
+  /**
+   * Whether patches rebased onto this version are saved back to the patches folder (default true). An update's
+   * patches come from a published clone, which nothing but a sync changes.
+   */
+  readonly save?: boolean;
 }
 
 const withVersion = (text: string, version: string): string => text.replaceAll("{version}", version);
@@ -102,7 +107,7 @@ const shellStep = (kind: StepKind, name: string, command: (opened: Opened) => Co
     Shell.use((shell) => shell.run(opened.workspace.path, command(opened), env(opened))).pipe(Effect.as("")),
 });
 
-const patchStep = (patch: Patch): Action => ({
+const patchStep = (patch: Patch, save: boolean): Action => ({
   kind: "patch",
   name: patch.manifest.id,
   perform: Effect.fn("patchStep")(function* (opened: Opened) {
@@ -114,7 +119,7 @@ const patchStep = (patch: Patch): Action => ({
       base: { version: opened.version, commit: opened.workspace.base },
     };
     yield* Ref.update(opened.saves, (saves) => [...saves, { manifest, diff }]);
-    return `${applied}; to be saved for ${opened.version}`;
+    return `${applied}; ${save ? "to be saved" : "rebased"} for ${opened.version}`;
   }),
 });
 
@@ -132,12 +137,14 @@ const journeyStep = (target: Target, folders: RunFolders, patch: Patch, journey:
   );
 };
 
-const saveStep = (): Action => ({
+const saveStep = (save: boolean): Action => ({
   kind: "save",
   name: "save patches",
   perform: Effect.fn("saveStep")(function* (opened: Opened) {
     const saves = yield* Ref.get(opened.saves);
     if (saves.length === 0) return "nothing to save";
+    const ids = saves.map((patch) => patch.manifest.id).join(", ");
+    if (!save) return `${ids} rebased for ${opened.version}; not saved: publish rebased patches from a workspace`;
     const writer = yield* PatchWriter;
     yield* Effect.forEach(saves, (patch) => writer.write(patch), { discard: true });
     return `saved ${saves.map((patch) => patch.manifest.id).join(", ")}`;
@@ -165,17 +172,18 @@ const actions = (
   install: boolean,
   folders: RunFolders,
   relaunch: number | undefined,
+  save: boolean,
 ): ReadonlyArray<Action> => {
   const env = (opened: Opened) => commandEnv(target, opened);
   return [
-    ...patches.map(patchStep),
+    ...patches.map((patch) => patchStep(patch, save)),
     ...target.checks.map((check) => shellStep("check", check.name, targetCommand(check), env)),
     ...patches.flatMap((patch) =>
       patch.manifest.checks.map((check) => shellStep("check", `${patch.manifest.id}: ${check.name}`, () => check, env)),
     ),
     ...target.build.map((command) => shellStep("build", command.name, targetCommand(command), env)),
     ...patches.flatMap((patch) => patch.manifest.journeys.map((journey) => journeyStep(target, folders, patch, journey))),
-    saveStep(),
+    saveStep(save),
     ...(install ? [installStep(target, relaunch)] : []),
   ];
 };
@@ -202,7 +210,7 @@ export const run: (
 ) => Effect.Effect<RunReport, never, Installation | Source | Resolver | Shell | PatchWriter | Progress> = Effect.fn("run")(
   function* (target, patches, install, folders, options = {}) {
     const progress = yield* Progress;
-    const rest = actions(target, patches, install, folders, options.relaunch);
+    const rest = actions(target, patches, install, folders, options.relaunch, options.save ?? true);
     const steps = [planned("source", `${target.name} source`), ...rest.map((action) => planned(action.kind, action.name))];
     const report = yield* Ref.make<RunReport>(
       options.updating === undefined
