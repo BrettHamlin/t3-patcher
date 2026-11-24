@@ -74,9 +74,17 @@ const CACHES = [
   ["electron_config_cache", "electron-cache"],
 ] as const;
 
+/** The system compiler each variable names, so the build never picks up another `cc` on PATH. */
+const COMPILERS = [
+  ["CC", "/usr/bin/cc"],
+  ["CXX", "/usr/bin/c++"],
+  ["CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER", "/usr/bin/cc"],
+  ["CARGO_TARGET_X86_64_APPLE_DARWIN_LINKER", "/usr/bin/cc"],
+] as const;
+
 /**
  * The build environment script (`$T3_PATCHER_ENV`), sourced from a checkout's root: PATH is `path` with the
- * checkout's node_modules/.bin in front, and every cache is a folder under `folder`, made if missing.
+ * checkout's node_modules/.bin in front, C compilers and Rust's linker are the system's, and every cache is a folder under `folder`, made if missing.
  */
 export const buildEnv = (folder: string, path: string): string =>
   [
@@ -85,6 +93,8 @@ export const buildEnv = (folder: string, path: string): string =>
     `export PATH="$PWD/node_modules/.bin":${quoted(path)}`,
     // The patcher's own pnpm settings would put the checkout's packages in the patcher's virtual store.
     "unset pnpm_config_virtual_store_dir npm_config_virtual_store_dir",
+    // A tool on PATH named `cc` (a shell helper, say) would otherwise be what Rust links with.
+    ...COMPILERS.map(([name, tool]) => `export ${name}=${tool}`),
     ...CACHES.map(([name, sub]) => `export ${name}="$BE/${sub}"`),
     `mkdir -p ${CACHES.map(([name]) => `"$${name}"`).join(" ")}`,
     "",
