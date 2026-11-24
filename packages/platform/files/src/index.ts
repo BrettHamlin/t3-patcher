@@ -209,6 +209,8 @@ export const defaultSettings = (input: { readonly patches: string; readonly work
     built: "release/mac-arm64/T3 Code (Beta).app",
     checks: [
       { name: "install packages", run: `. "$T3_PATCHER_ENV" && pnpm install --frozen-lockfile` },
+      // The full Chromium T3's browser tests use (journey-kit), into the build env's browser folder.
+      { name: "test browser", run: `. "$T3_PATCHER_ENV" && pnpm --dir apps/web exec playwright install chromium` },
       { name: "changed files", run: `. "$T3_PATCHER_ENV" && pnpm exec vp run check:changed v{version}` },
     ],
     build: [
