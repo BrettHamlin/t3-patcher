@@ -1,5 +1,5 @@
 diff --git a/apps/web/src/components/chat/MessagesTimeline.browser.test.tsx b/apps/web/src/components/chat/MessagesTimeline.browser.test.tsx
-index 7dc87ff67cfc766237ee74a41c859e42ba13bb79..ffb6a5b4f77359790ee1e119c40cd5fcb541399d 100644
+index 7dc87ff67cfc766237ee74a41c859e42ba13bb79..36f32ca9e9ee448720a7979b7e0a27dc08bc6648 100644
 --- a/apps/web/src/components/chat/MessagesTimeline.browser.test.tsx
 +++ b/apps/web/src/components/chat/MessagesTimeline.browser.test.tsx
 @@ -56,6 +56,7 @@ import { toastManager } from "../ui/toast";
@@ -43,7 +43,7 @@ index 7dc87ff67cfc766237ee74a41c859e42ba13bb79..ffb6a5b4f77359790ee1e119c40cd5fc
      await expect.element(heading).toHaveStyle({ pointerEvents: "auto" });
      const viewport = props.listRef.current!.getScrollableNode()!;
      const distanceFromEnd = () =>
-@@ -458,6 +467,36 @@ describe("MessagesTimeline work rows", () => {
+@@ -458,6 +467,34 @@ describe("MessagesTimeline work rows", () => {
    );
  });
  
@@ -61,18 +61,16 @@ index 7dc87ff67cfc766237ee74a41c859e42ba13bb79..ffb6a5b4f77359790ee1e119c40cd5fc
 +    };
 +    using _timers = fakeTimers({ now: new Date(2026, 2, 17, 23, 59) });
 +    await using screen = await render(<WorkEndTime endIso={endedAt.toISOString()} />);
-+    const output = screen.getByRole("status");
-+    await expect
-+      .element(output)
-+      .toHaveTextContent(new Intl.DateTimeFormat(undefined, time).format(endedAt), { exact: true });
++    const shown = () => screen.getByRole("status").element().textContent;
++    await vi.waitFor(() =>
++      expect(shown()).toBe(new Intl.DateTimeFormat(undefined, time).format(endedAt)),
++    );
 +
 +    await act(() => vi.advanceTimersByTime(2 * 60_000));
 +
-+    await expect.element(output).toHaveTextContent(
-+      new Intl.DateTimeFormat(undefined, { ...time, month: "short", day: "numeric" }).format(
-+        endedAt,
-+      ),
-+      { exact: true },
++    const withDate: Intl.DateTimeFormatOptions = { ...time, month: "short", day: "numeric" };
++    await vi.waitFor(() =>
++      expect(shown()).toBe(new Intl.DateTimeFormat(undefined, withDate).format(endedAt)),
 +    );
 +  });
 +});
