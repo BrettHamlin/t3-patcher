@@ -1,5 +1,5 @@
 diff --git a/apps/web/src/components/chat/MessagesTimeline.browser.test.tsx b/apps/web/src/components/chat/MessagesTimeline.browser.test.tsx
-index 7dc87ff67cfc766237ee74a41c859e42ba13bb79..36f32ca9e9ee448720a7979b7e0a27dc08bc6648 100644
+index 7dc87ff67cfc766237ee74a41c859e42ba13bb79..f2a06f0bee2c8e6452d91998508f49576b4b86e0 100644
 --- a/apps/web/src/components/chat/MessagesTimeline.browser.test.tsx
 +++ b/apps/web/src/components/chat/MessagesTimeline.browser.test.tsx
 @@ -56,6 +56,7 @@ import { toastManager } from "../ui/toast";
@@ -25,7 +25,24 @@ index 7dc87ff67cfc766237ee74a41c859e42ba13bb79..36f32ca9e9ee448720a7979b7e0a27dc
  
  type TimelineProps = ComponentProps<typeof MessagesTimeline>;
  type Entry = TimelineProps["timelineEntries"][number];
-@@ -321,7 +330,7 @@ describe("MessagesTimeline work rows", () => {
+@@ -281,8 +290,16 @@ describe("MessagesTimeline work rows", () => {
+     );
+     const viewport = props.listRef.current!.getScrollableNode()!;
+     const frame = screen.getByTitle("Tall preview").element() as HTMLIFrameElement;
++    // The list places rows by their last measured size; the reply sits flush once it catches up.
++    const gapAboveReply = () => {
++      const [preview, reply] = ["preview", "entry-preview-done"].map((id) =>
++        viewport.querySelector(`[data-timeline-row-id="${id}"]`)?.getBoundingClientRect(),
++      );
++      return preview && reply ? Math.round(reply.top - preview.bottom) : null;
++    };
+     await vi.waitFor(() => {
+       expect(frame.clientHeight).toBe(1437);
++      expect(gapAboveReply()).toBe(0);
+       expect(viewport.scrollTop).toBeGreaterThan(0);
+       expect(viewport.scrollHeight - viewport.clientHeight - viewport.scrollTop).toBeLessThan(2);
+     });
+@@ -321,7 +338,7 @@ describe("MessagesTimeline work rows", () => {
        />,
        { container },
      );
@@ -34,7 +51,7 @@ index 7dc87ff67cfc766237ee74a41c859e42ba13bb79..36f32ca9e9ee448720a7979b7e0a27dc
      // LegendList keeps rows click-through until its initial scroll settles on animation
      // frames, which the fake clock below would freeze.
      await expect.element(heading).toHaveStyle({ pointerEvents: "auto" });
-@@ -362,7 +371,7 @@ describe("MessagesTimeline work rows", () => {
+@@ -362,7 +379,7 @@ describe("MessagesTimeline work rows", () => {
      await using screen = await render(<MessagesTimeline {...props} timelineEntries={entries} />, {
        container,
      });
@@ -43,7 +60,7 @@ index 7dc87ff67cfc766237ee74a41c859e42ba13bb79..36f32ca9e9ee448720a7979b7e0a27dc
      await expect.element(heading).toHaveStyle({ pointerEvents: "auto" });
      const viewport = props.listRef.current!.getScrollableNode()!;
      const distanceFromEnd = () =>
-@@ -458,6 +467,34 @@ describe("MessagesTimeline work rows", () => {
+@@ -458,6 +475,34 @@ describe("MessagesTimeline work rows", () => {
    );
  });
  
