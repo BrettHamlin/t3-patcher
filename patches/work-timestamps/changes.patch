@@ -1,5 +1,5 @@
 diff --git a/apps/web/src/components/chat/MessagesTimeline.browser.test.tsx b/apps/web/src/components/chat/MessagesTimeline.browser.test.tsx
-index 7dc87ff67cfc766237ee74a41c859e42ba13bb79..f2a06f0bee2c8e6452d91998508f49576b4b86e0 100644
+index 7dc87ff67cfc766237ee74a41c859e42ba13bb79..abdfb23acff06e209278a71e96c2051c191a19f0 100644
 --- a/apps/web/src/components/chat/MessagesTimeline.browser.test.tsx
 +++ b/apps/web/src/components/chat/MessagesTimeline.browser.test.tsx
 @@ -56,6 +56,7 @@ import { toastManager } from "../ui/toast";
@@ -60,7 +60,7 @@ index 7dc87ff67cfc766237ee74a41c859e42ba13bb79..f2a06f0bee2c8e6452d91998508f4957
      await expect.element(heading).toHaveStyle({ pointerEvents: "auto" });
      const viewport = props.listRef.current!.getScrollableNode()!;
      const distanceFromEnd = () =>
-@@ -458,6 +475,34 @@ describe("MessagesTimeline work rows", () => {
+@@ -458,6 +475,70 @@ describe("MessagesTimeline work rows", () => {
    );
  });
  
@@ -88,6 +88,42 @@ index 7dc87ff67cfc766237ee74a41c859e42ba13bb79..f2a06f0bee2c8e6452d91998508f4957
 +    const withDate: Intl.DateTimeFormatOptions = { ...time, month: "short", day: "numeric" };
 +    await vi.waitFor(() =>
 +      expect(shown()).toBe(new Intl.DateTimeFormat(undefined, withDate).format(endedAt)),
++    );
++  });
++
++  it("uses the OS locale from desktopBridge.getSystemLocale when available", async () => {
++    const endedAt = new Date(2026, 2, 17, 23, 58);
++    const time: Intl.DateTimeFormatOptions = {
++      hour: "numeric",
++      minute: "2-digit",
++      timeZoneName: "short",
++    };
++    using _timers = fakeTimers({ now: new Date(2026, 2, 17, 23, 59) });
++    using _bridge = stubGlobal("desktopBridge", {
++      getSystemLocale: () => "en-US-u-hc-h23",
++    });
++    await using screen = await render(<WorkEndTime endIso={endedAt.toISOString()} />);
++    const shown = () => screen.getByRole("status").element().textContent;
++    await vi.waitFor(() =>
++      expect(shown()).toBe(new Intl.DateTimeFormat("en-US-u-hc-h23", time).format(endedAt)),
++    );
++  });
++
++  it("falls back to the runtime locale when desktopBridge.getSystemLocale is invalid", async () => {
++    const endedAt = new Date(2026, 2, 17, 23, 58);
++    const time: Intl.DateTimeFormatOptions = {
++      hour: "numeric",
++      minute: "2-digit",
++      timeZoneName: "short",
++    };
++    using _timers = fakeTimers({ now: new Date(2026, 2, 17, 23, 59) });
++    using _bridge = stubGlobal("desktopBridge", {
++      getSystemLocale: () => "not_a_valid_locale!!!",
++    });
++    await using screen = await render(<WorkEndTime endIso={endedAt.toISOString()} />);
++    const shown = () => screen.getByRole("status").element().textContent;
++    await vi.waitFor(() =>
++      expect(shown()).toBe(new Intl.DateTimeFormat(undefined, time).format(endedAt)),
 +    );
 +  });
 +});
@@ -490,7 +526,7 @@ index e94c052e40b37f7f06f20112d7c189d80da2fe2c..8fe9650de30558cf93c2617b21203940
    const rows = useStableRows(rawRows, listIdentityKey);
    const matchedApprovalRequestIds = new Set<string>();
 diff --git a/apps/web/src/components/chat/useTimelineRows.ts b/apps/web/src/components/chat/useTimelineRows.ts
-index 3ea5c9f55681daf1b57e5692f90ef67573f13757..fa7d7cfd35db5d42305c1b7d1b77e9330007c722 100644
+index 3ea5c9f55681daf1b57e5692f90ef67573f13757..8ae5c6f72c1f426f9a4e11d5ee241f1f10aeb10b 100644
 --- a/apps/web/src/components/chat/useTimelineRows.ts
 +++ b/apps/web/src/components/chat/useTimelineRows.ts
 @@ -8,8 +8,11 @@ import {
@@ -505,15 +541,31 @@ index 3ea5c9f55681daf1b57e5692f90ef67573f13757..fa7d7cfd35db5d42305c1b7d1b77e933
  
  const EMPTY_TIMELINE_RUNS: ReadonlyArray<HandoffTimelineRun> = [];
  
-@@ -36,6 +39,21 @@ export function useStableHandoffRuns(
+@@ -36,6 +39,37 @@ export function useStableHandoffRuns(
    return value;
  }
  
++function readSystemLocale(): string | undefined {
++  if (typeof window === "undefined") return undefined;
++  const tag = window.desktopBridge?.getSystemLocale()?.trim();
++  if (!tag) return undefined;
++  try {
++    Intl.DateTimeFormat.supportedLocalesOf([tag]);
++    return tag;
++  } catch {
++    return undefined;
++  }
++}
++
 +function readWorkEndTimeFormat() {
 +  const now = new Date();
 +  const nextDay = new Date(now);
 +  nextDay.setHours(24, 0, 0, 0);
-+  return { nextDayMs: nextDay.getTime(), format: workEndTimeFormat({ now }) };
++  const locale = readSystemLocale();
++  return {
++    nextDayMs: nextDay.getTime(),
++    format: workEndTimeFormat(locale === undefined ? { now } : { now, locale }),
++  };
 +}
 +
 +/** Rebuilt at local midnight, so a turn that ended yesterday gains its date. */
@@ -789,10 +841,10 @@ index 0000000000000000000000000000000000000000..a3511622457bae9a5f8c0b6c3814d604
 +});
 diff --git a/patcher/journeys/work-timestamps.mjs b/patcher/journeys/work-timestamps.mjs
 new file mode 100644
-index 0000000000000000000000000000000000000000..7e61817beeb978e107983b2b4e75035ad41363a1
+index 0000000000000000000000000000000000000000..5e987d5729049099fda90e9bb97dc131f5d26947
 --- /dev/null
 +++ b/patcher/journeys/work-timestamps.mjs
-@@ -0,0 +1,137 @@
+@@ -0,0 +1,145 @@
 +// Journey: an agent finishes a turn with work in it, and the thread's fold row names how long it
 +// worked and when it ended, in this Mac's locale and time zone. The agent is
 +// fixtures/work-timestamps-agent.mjs, a provider in the journey's own T3 home.
@@ -897,24 +949,32 @@ index 0000000000000000000000000000000000000000..7e61817beeb978e107983b2b4e75035a
 +      const match = /^Worked for ([0-9hms. ]+) · (.+)$/.exec(label);
 +      if (match === null) throw new Error(`the fold row reads ${JSON.stringify(label)}`);
 +      // Each minute the turn could have ended in, formatted as the app's renderer would in this
-+      // Mac's locale and zone: time only when it's today there, with the date otherwise.
-+      const expected = await page.evaluate(
++      // Mac's OS locale (from desktopBridge.getSystemLocale()) and time zone: time only when it's
++      // today there, with the date otherwise.
++      const { systemLocale, expected } = await page.evaluate(
 +        ({ from, to }) => {
++          const rawLocale = window.desktopBridge?.getSystemLocale()?.trim() || "";
++          const locale = rawLocale || undefined;
 +          const time = { hour: "numeric", minute: "2-digit", timeZoneName: "short" };
 +          const today = new Date().toDateString();
 +          const times = [];
-+          for (let at = from - 60_000; at <= to + 60_000; at += 30_000) {
++          const firstMinute = Math.floor(from / 60_000) * 60_000;
++          const lastMinute = Math.floor(to / 60_000) * 60_000;
++          for (let at = firstMinute; at <= lastMinute; at += 60_000) {
 +            const sameDay = new Date(at).toDateString() === today;
 +            const options = sameDay ? time : { ...time, month: "short", day: "numeric" };
-+            times.push(new Intl.DateTimeFormat(undefined, options).format(at));
++            times.push(new Intl.DateTimeFormat(locale, options).format(at));
 +          }
-+          return [...new Set(times)];
++          return { systemLocale: rawLocale, expected: [...new Set(times)] };
 +        },
 +        { from: startedMs, to: endedMs },
 +      );
++      if (!systemLocale) {
++        throw new Error("desktopBridge.getSystemLocale() returned empty in the packaged app");
++      }
 +      if (!expected.includes(match[2])) {
 +        throw new Error(
-+          `the fold row's end time ${JSON.stringify(match[2])} is none of ${JSON.stringify(expected)}`,
++          `the fold row's end time ${JSON.stringify(match[2])} is none of ${JSON.stringify(expected)} (locale ${systemLocale})`,
 +        );
 +      }
 +      if (/\d:\d\d:\d\d/.test(match[2])) throw new Error(`the end time has seconds: ${match[2]}`);
