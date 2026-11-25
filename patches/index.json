@@ -17,6 +17,12 @@
       "title": "Picks",
       "summary": "Agents ask the owner for human judgments in T3 Code itself. A new MCP tool, request_picks, takes a batch of 1-200 questions, each with 2-4 image or video options (absolute paths, copied into the attachments store) and an optional exact display box; it returns pending at once. The server shuffles each question's options and the Picks inbox (a sidebar item with the open count, and a /picks page across connected environments) shows them by place only, one question at a time, with keys 1-4, 0 for can't tell, N for a note and arrows. Each answer is saved as it is made; Done records the batch answered and wakes the asking thread with one message listing every answer unblinded, plus the same as JSON. Batches are a pick_request turn item on the asking thread, closed without a wake when the thread is stopped, settled, archived or deleted. The open-batch partial index is created idempotently at startup rather than as a numbered migration, so the patch never collides with upstream's migration ids.",
       "version": 1
+    },
+    {
+      "id": "work-timestamps",
+      "title": "Work timestamps",
+      "summary": "Each finished turn's fold row in the thread timeline names when the work ended, next to how long it took: \"Worked for 3m 30s · 9:42 PM EST\", \"You stopped after 12s · 9:42 PM EST\", and \"Continued for …\" on the rows below a steer. The time is the instant the duration is measured to, in the system's locale (12- or 24-hour) and time zone, without seconds, with the month and day added when the turn ended before today; the label gains its date at local midnight. Rows still working, and rows without a duration, show no time. The label strings take the time as a placeholder, translated in every web catalog.",
+      "version": 1
     }
   ]
 }
