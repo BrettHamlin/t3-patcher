@@ -40,7 +40,6 @@ import {
   appended,
   arranged,
   before,
-  joinedOff,
   library,
   Library,
   parsePatchId,
@@ -255,7 +254,7 @@ const libraryIn = (folder: string) => fileLibrary(folder).pipe(Layer.provide(Nod
 
 /**
  * Update: sync the published patches (a clone of the patches repository's origin, under the work folder, which
- * nothing else edits) to their published branch; patches that are new there join the stack off. Then apply the
+ * nothing else edits) to their published branch; patches that are new there join the stack on. Then apply the
  * stack, with the published patches, and install it, building `request.t3` if given, else the installed version.
  * Patches rebased onto that version aren't saved: the clone stays as published. Each report is saved as the last run
  * as it changes, so the app can follow it; the first step is the pull. Nothing is installed unless every step
@@ -302,7 +301,7 @@ export const updateStack = Effect.fn("updateStack")(function* (
       const pulledStep = pull("passed", syncedNote(synced));
       const publishedLibrary = libraryIn(folder);
       const patches = yield* Library.use((found) => found.patches).pipe(Effect.provide(publishedLibrary));
-      const stack = yield* saveStack(joinedOff(patches, was.stack)).pipe(Effect.provide(publishedLibrary));
+      const stack = yield* saveStack(was.stack).pipe(Effect.provide(publishedLibrary));
       const chosen = selected(stack, patches);
       const installed = yield* (yield* Installation).version.pipe(Effect.orElseSucceed(() => "unknown"));
       const updating = updates({

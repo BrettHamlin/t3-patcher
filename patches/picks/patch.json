@@ -1,11 +1,11 @@
 {
   "id": "picks",
   "title": "Picks",
-  "summary": "Agents ask the owner for human judgments in T3 Code itself. A new MCP tool, request_picks, takes a batch of 1-200 questions, each with 2-4 image or video options (absolute paths, copied into the attachments store) and an optional exact display box; it returns pending at once. The server shuffles each question's options and the Picks inbox (a sidebar item with the open count, and a /picks page across connected environments) shows them by place only, one question at a time, with keys 1-4, 0 for can't tell, N for a note and arrows. Each answer is saved as it is made; Done records the batch answered and wakes the asking thread with one message listing every answer unblinded, plus the same as JSON. Batches are a pick_request turn item on the asking thread, closed without a wake when the thread is stopped, settled, archived or deleted. The open-batch partial index is created idempotently at startup rather than as a numbered migration, so the patch never collides with upstream's migration ids.",
-  "version": 1,
+  "summary": "Agents ask the owner for human judgments in T3 Code itself. A new MCP tool, request_picks, takes a batch of 1-200 questions, each with 2-4 image or video options (absolute paths, copied into the attachments store) and an optional exact display box; it returns pending at once. The server shuffles each question's options, and the Picks inbox (a sidebar item with the open count, and a /picks page across connected environments whose rows open a batch and show its first prompt, its progress and Not sent once every answer is in) shows them by place only, one question at a time, with the thread sidebar hidden. Options sit on one dark stage colour at a fixed, stated size (480, 320 or 240 px for 2, 3 or 4 options, never upscaled) or at the agent's exact box, in one row, 2x2, or one at a time with F to flip when they don't fit; a question takes picks once all its media has loaded. Videos have no controls, start together and are driven by Space, S (half speed), R (replay) and comma or period (one frame). Keys: 1-4 pick and, after 350 ms, move to the next blank or auto-send when picking the last unanswered question (Escape or N cancels the hold); 0 can't tell; N a note on the question on screen; Shift+N the note of the last one answered; U the next blank; arrows move; a progress strip jumps to any question. Each answer is saved as it is made; auto-sending on the last unanswered pick or pressing Send picks (Cmd/Ctrl+Enter) records the batch answered and wakes the asking thread with one message listing every answer unblinded, plus the same as JSON, and the thread's card lists what was sent. Batches are a pick_request turn item on the asking thread, closed without a wake when the thread is stopped, settled, archived or deleted. The open-batch partial index is created idempotently at startup rather than as a numbered migration, so the patch never collides with upstream's migration ids.",
+  "version": 2,
   "base": {
-    "version": "0.1.11",
-    "commit": "59651c1761f6c63e9b6056839067066968e6a406"
+    "version": "0.1.12",
+    "commit": "ca81b7b97a1c4b91e5ac25768d0f6629f37732fd"
   },
   "checks": [
     {
@@ -17,7 +17,7 @@
       "run": ". \"$T3_PATCHER_ENV\" && cd packages/client-runtime && pnpm exec vp test run src/picks.test.ts src/state/commandPermissions.test.ts"
     },
     {
-      "name": "picker keys and Done",
+      "name": "picker layout, keys, video and Send picks",
       "run": ". \"$T3_PATCHER_ENV\" && cd apps/web && pnpm exec vp test run src/components/picks/PickerView.browser.test.tsx"
     },
     {
@@ -28,7 +28,7 @@
   "journeys": [
     {
       "name": "picks",
-      "proves": "A fixture ACP agent calls request_picks on the built app's real /mcp endpoint with its thread's credential; the sidebar shows 1 waiting; the owner answers the first question, leaves for the inbox (1/3) and reopens the batch at question 2, answers the rest with 0 (can't tell), N plus a note and 1, and presses Done; the asking thread shows the answered card and the wake, and the agent replies with every answer unblinded from the wake's JSON.",
+      "proves": "A fixture ACP agent calls request_picks twice on the built app's real /mcp endpoint with its thread's credential; the sidebar shows 2 waiting; at 1100x780 the owner opens the batch of 640x480 boxes, which shows one option at a time, flips to option 2 with F, answers both and presses Escape during the hold to leave it unsent (showing Send picks), and the inbox marks it Not sent beside the fresh batch; the owner answers the other batch's first question at default size, leaves for the inbox (1 of 3 answered, Resume) and reopens it at question 2's four options, answers with 0 (can't tell), then on the 160x160 pixelated video pair, playing with no controls, adds a note with N and picks 1 on the last unanswered question, which auto-sends after the hold; the asking thread shows the Sent 3 picks card listing each answer and the note, the wake, and the agent replying with every answer unblinded from the wake's JSON.",
       "run": ". \"$T3_PATCHER_ENV\" && node patcher/journeys/picks.mjs"
     }
   ]

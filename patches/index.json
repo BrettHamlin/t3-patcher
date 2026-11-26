@@ -4,25 +4,25 @@
       "id": "journey-kit",
       "title": "Journey kit",
       "summary": "patcher/journeys/support.mjs launches the built app for patch journeys: a throwaway HOME and T3CODE_HOME seeded with the release launch fixture, Chromium's mock keychain, no Dock icon and no window ever shown or focused (a journey fails if one is), telemetry and auto-update off, logs and screenshots into $T3_PATCHER_EVIDENCE. Every other patch's journeys use it. T3's browser tests run in full headless Chromium, which draws frames on a locked Mac.",
-      "version": 2
+      "version": 3
     },
     {
       "id": "patch-updates",
       "title": "Patch updates",
-      "summary": "On a build made by T3 Patcher (with <T3 home>/userdata/patcher/installed.json), the sidebar's update pill offers newer versions of the installed patches from the patcher's feed, and new T3 Code versions, and Update runs the patcher's update command (rebuild with every patch, check, install, relaunch) instead of electron-updater, showing its steps live. T3CODE_PATCH_UPDATE_FEED overrides the feed.",
-      "version": 1
+      "summary": "On a build made by T3 Patcher (with <T3 home>/userdata/patcher/installed.json), the sidebar's update pill offers newer versions of installed patches, brand-new published patches (enabled by default unless turned off in stack.json), and new T3 Code versions; Update runs the patcher's update command (rebuild with every enabled patch, check, install, relaunch) instead of electron-updater, showing its steps live. T3CODE_PATCH_UPDATE_FEED overrides the feed.",
+      "version": 2
     },
     {
       "id": "picks",
       "title": "Picks",
-      "summary": "Agents ask the owner for human judgments in T3 Code itself. A new MCP tool, request_picks, takes a batch of 1-200 questions, each with 2-4 image or video options (absolute paths, copied into the attachments store) and an optional exact display box; it returns pending at once. The server shuffles each question's options and the Picks inbox (a sidebar item with the open count, and a /picks page across connected environments) shows them by place only, one question at a time, with keys 1-4, 0 for can't tell, N for a note and arrows. Each answer is saved as it is made; Done records the batch answered and wakes the asking thread with one message listing every answer unblinded, plus the same as JSON. Batches are a pick_request turn item on the asking thread, closed without a wake when the thread is stopped, settled, archived or deleted. The open-batch partial index is created idempotently at startup rather than as a numbered migration, so the patch never collides with upstream's migration ids.",
-      "version": 1
+      "summary": "Agents ask the owner for human judgments in T3 Code itself. A new MCP tool, request_picks, takes a batch of 1-200 questions, each with 2-4 image or video options (absolute paths, copied into the attachments store) and an optional exact display box; it returns pending at once. The server shuffles each question's options, and the Picks inbox (a sidebar item with the open count, and a /picks page across connected environments whose rows open a batch and show its first prompt, its progress and Not sent once every answer is in) shows them by place only, one question at a time, with the thread sidebar hidden. Options sit on one dark stage colour at a fixed, stated size (480, 320 or 240 px for 2, 3 or 4 options, never upscaled) or at the agent's exact box, in one row, 2x2, or one at a time with F to flip when they don't fit; a question takes picks once all its media has loaded. Videos have no controls, start together and are driven by Space, S (half speed), R (replay) and comma or period (one frame). Keys: 1-4 pick and, after 350 ms, move to the next blank or auto-send when picking the last unanswered question (Escape or N cancels the hold); 0 can't tell; N a note on the question on screen; Shift+N the note of the last one answered; U the next blank; arrows move; a progress strip jumps to any question. Each answer is saved as it is made; auto-sending on the last unanswered pick or pressing Send picks (Cmd/Ctrl+Enter) records the batch answered and wakes the asking thread with one message listing every answer unblinded, plus the same as JSON, and the thread's card lists what was sent. Batches are a pick_request turn item on the asking thread, closed without a wake when the thread is stopped, settled, archived or deleted. The open-batch partial index is created idempotently at startup rather than as a numbered migration, so the patch never collides with upstream's migration ids.",
+      "version": 2
     },
     {
       "id": "work-timestamps",
       "title": "Work timestamps",
       "summary": "Each finished turn's fold row in the thread timeline names when the work ended, next to how long it took: \"Worked for 3m 30s · 9:42 PM EST\", \"You stopped after 12s · 9:42 PM EST\", and \"Continued for …\" on the rows below a steer. The time is the instant the duration is measured to, in the system's locale (12- or 24-hour) and time zone, without seconds, with the month and day added when the turn ended before today; the label gains its date at local midnight. Rows still working, and rows without a duration, show no time. The label strings take the time as a placeholder, translated in every web catalog.",
-      "version": 1
+      "version": 2
     }
   ]
 }

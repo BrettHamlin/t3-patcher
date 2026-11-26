@@ -1,8 +1,8 @@
 diff --git a/apps/web/src/components/chat/MessagesTimeline.browser.test.tsx b/apps/web/src/components/chat/MessagesTimeline.browser.test.tsx
-index 7dc87ff67cfc766237ee74a41c859e42ba13bb79..abdfb23acff06e209278a71e96c2051c191a19f0 100644
+index 222f498e7123a6980a619180841d6da63814bdf7..4bf0d5baa416d2187ca17756ab07913aa6455a4d 100644
 --- a/apps/web/src/components/chat/MessagesTimeline.browser.test.tsx
 +++ b/apps/web/src/components/chat/MessagesTimeline.browser.test.tsx
-@@ -56,6 +56,7 @@ import { toastManager } from "../ui/toast";
+@@ -53,6 +53,7 @@ import { toastManager } from "../ui/toast";
  import type { CitedHistory } from "./citationProcedure";
  import type { TimelineNavigation } from "./timelineViewport";
  import { rememberTimelinePosition } from "./timelineScrollAnchoring";
@@ -10,7 +10,7 @@ index 7dc87ff67cfc766237ee74a41c859e42ba13bb79..abdfb23acff06e209278a71e96c2051c
  import {
    COMPOSER_CONTEXT_CLIPBOARD_MIME,
    decodeComposerContextFragment,
-@@ -97,6 +98,14 @@ vi.mock(import("~/assets/assetUrls"), async (original) => {
+@@ -96,6 +97,14 @@ vi.mock(import("~/assets/assetUrls"), async (original) => {
  
  const ENVIRONMENT_ID = EnvironmentId.make("environment-local");
  const CREATED_AT = "2026-03-17T19:12:28.000Z";
@@ -25,7 +25,7 @@ index 7dc87ff67cfc766237ee74a41c859e42ba13bb79..abdfb23acff06e209278a71e96c2051c
  
  type TimelineProps = ComponentProps<typeof MessagesTimeline>;
  type Entry = TimelineProps["timelineEntries"][number];
-@@ -281,8 +290,16 @@ describe("MessagesTimeline work rows", () => {
+@@ -279,8 +288,17 @@ describe("MessagesTimeline work rows", () => {
      );
      const viewport = props.listRef.current!.getScrollableNode()!;
      const frame = screen.getByTitle("Tall preview").element() as HTMLIFrameElement;
@@ -36,13 +36,14 @@ index 7dc87ff67cfc766237ee74a41c859e42ba13bb79..abdfb23acff06e209278a71e96c2051c
 +      );
 +      return preview && reply ? Math.round(reply.top - preview.bottom) : null;
 +    };
++    await expect.element(frame).toHaveStyle({ pointerEvents: "auto" });
      await vi.waitFor(() => {
        expect(frame.clientHeight).toBe(1437);
 +      expect(gapAboveReply()).toBe(0);
        expect(viewport.scrollTop).toBeGreaterThan(0);
        expect(viewport.scrollHeight - viewport.clientHeight - viewport.scrollTop).toBeLessThan(2);
      });
-@@ -321,7 +338,7 @@ describe("MessagesTimeline work rows", () => {
+@@ -319,7 +337,7 @@ describe("MessagesTimeline work rows", () => {
        />,
        { container },
      );
@@ -51,7 +52,7 @@ index 7dc87ff67cfc766237ee74a41c859e42ba13bb79..abdfb23acff06e209278a71e96c2051c
      // LegendList keeps rows click-through until its initial scroll settles on animation
      // frames, which the fake clock below would freeze.
      await expect.element(heading).toHaveStyle({ pointerEvents: "auto" });
-@@ -362,7 +379,7 @@ describe("MessagesTimeline work rows", () => {
+@@ -360,7 +378,7 @@ describe("MessagesTimeline work rows", () => {
      await using screen = await render(<MessagesTimeline {...props} timelineEntries={entries} />, {
        container,
      });
@@ -60,8 +61,8 @@ index 7dc87ff67cfc766237ee74a41c859e42ba13bb79..abdfb23acff06e209278a71e96c2051c
      await expect.element(heading).toHaveStyle({ pointerEvents: "auto" });
      const viewport = props.listRef.current!.getScrollableNode()!;
      const distanceFromEnd = () =>
-@@ -458,6 +475,70 @@ describe("MessagesTimeline work rows", () => {
-   );
+@@ -479,6 +497,70 @@ describe("MessagesTimeline work rows", () => {
+   });
  });
  
 +describe("useWorkEndTimeFormat", () => {
@@ -131,19 +132,32 @@ index 7dc87ff67cfc766237ee74a41c859e42ba13bb79..abdfb23acff06e209278a71e96c2051c
  describe("MessagesTimeline messages", () => {
    it("settles when equally long messages have very different rendered heights", async () => {
      const props = baseProps();
+@@ -643,7 +725,10 @@ describe("MessagesTimeline messages", () => {
+     screen.container.style.width = "900px";
+     const viewport = props.listRef.current!.getScrollableNode()!;
+     const target = page.getByText(paragraphs[15]!.trim(), { exact: true }).element();
++    // LegendList keeps rows click-through until its initial scroll and ResizeObserver settle.
++    await expect.element(target).toHaveStyle({ pointerEvents: "auto" });
+     await vi.waitFor(() => {
++      expect(viewport.offsetWidth).toBe(900);
+       expect(viewport.scrollHeight).toBeGreaterThan(1000);
+       expect(viewport.scrollHeight - viewport.clientHeight - viewport.scrollTop).toBeLessThan(2);
+     });
 diff --git a/apps/web/src/components/chat/MessagesTimeline.logic.test.ts b/apps/web/src/components/chat/MessagesTimeline.logic.test.ts
-index 0a703a675f0ac515efdd3ca55a494cfcd04ee052..85240c1feb09a14bc8deace76beb5363797c3566 100644
+index 3257f9588eeae5732221bfc42282b760ff289884..4d7f7f1902b10d9c75335406783e6b68cbc5819f 100644
 --- a/apps/web/src/components/chat/MessagesTimeline.logic.test.ts
 +++ b/apps/web/src/components/chat/MessagesTimeline.logic.test.ts
-@@ -35,11 +35,33 @@ import {
-   isTimelineMinimapTurnVisible,
+@@ -36,6 +36,7 @@ import {
    resolveAssistantMessageCopyState,
+   resolveTimelineMinimapHitStrip,
    type MessagesTimelineRow,
 +  workEndTimeFormat,
    workEntryDisplayLabel,
    workEntryReadOutput,
  } from "./MessagesTimeline.logic";
- import { workEntryIconName } from "./TimelineWorkEntryRow.logic";
+@@ -57,6 +58,27 @@ describe("resolveTimelineMinimapHitStrip", () => {
+   );
+ });
  
 +// Shows the instant a fold label was given, so a test can tell which end it used.
 +const endInstant = (endIso: string) => endIso;
@@ -169,7 +183,7 @@ index 0a703a675f0ac515efdd3ca55a494cfcd04ee052..85240c1feb09a14bc8deace76beb5363
  describe("resolveAssistantMessageCopyState", () => {
    it("copies the rendered representation of Codex directives", () => {
      expect(
-@@ -1205,13 +1227,18 @@ describe("deriveMessagesTimelineRows", () => {
+@@ -1216,13 +1238,18 @@ describe("deriveMessagesTimelineRows", () => {
        },
      ];
  
@@ -195,7 +209,7 @@ index 0a703a675f0ac515efdd3ca55a494cfcd04ee052..85240c1feb09a14bc8deace76beb5363
  
      const foldRow = collapsedRows.find(
        (row): row is Extract<(typeof collapsedRows)[number], { kind: "turn-fold" }> =>
-@@ -1219,7 +1246,29 @@ describe("deriveMessagesTimelineRows", () => {
+@@ -1230,7 +1257,29 @@ describe("deriveMessagesTimelineRows", () => {
      );
      expect(foldRow?.runId).toBe("turn-1");
      expect(foldRow?.expanded).toBe(false);
@@ -226,7 +240,7 @@ index 0a703a675f0ac515efdd3ca55a494cfcd04ee052..85240c1feb09a14bc8deace76beb5363
      expect(collapsedRows.map((row) => row.id)).toEqual([
        "user-entry",
        "turn-fold:turn-1",
-@@ -1441,14 +1490,13 @@ describe("deriveMessagesTimelineRows", () => {
+@@ -1452,14 +1501,13 @@ describe("deriveMessagesTimelineRows", () => {
        activeTurnStartedAt: "2026-01-01T00:00:14Z",
        turnDiffSummaries: [],
        supportsConversationRollback: false,
@@ -246,7 +260,7 @@ index 0a703a675f0ac515efdd3ca55a494cfcd04ee052..85240c1feb09a14bc8deace76beb5363
    });
  
    it("uses latest-turn timings and the stopped label for an interrupted latest turn", () => {
-@@ -1477,15 +1525,45 @@ describe("deriveMessagesTimelineRows", () => {
+@@ -1488,15 +1536,45 @@ describe("deriveMessagesTimelineRows", () => {
        activeTurnStartedAt: null,
        turnDiffSummaries: [],
        supportsConversationRollback: false,
@@ -295,7 +309,7 @@ index 0a703a675f0ac515efdd3ca55a494cfcd04ee052..85240c1feb09a14bc8deace76beb5363
      ]);
    });
  
-@@ -1551,6 +1629,7 @@ describe("deriveMessagesTimelineRows", () => {
+@@ -1562,6 +1640,7 @@ describe("deriveMessagesTimelineRows", () => {
              expandedRunIds: expanded ? new Set([runId]) : new Set(),
              turnDiffSummaries: [],
              supportsConversationRollback: false,
@@ -303,7 +317,7 @@ index 0a703a675f0ac515efdd3ca55a494cfcd04ee052..85240c1feb09a14bc8deace76beb5363
            });
            expect(rows.slice(0, 3).map((row) => row.id)).toEqual([
              "initial-prompt",
-@@ -1558,7 +1637,12 @@ describe("deriveMessagesTimelineRows", () => {
+@@ -1569,7 +1648,12 @@ describe("deriveMessagesTimelineRows", () => {
              "steer",
            ]);
            expect(rows[1]?.createdAt).toBe(time(0));
@@ -317,7 +331,7 @@ index 0a703a675f0ac515efdd3ca55a494cfcd04ee052..85240c1feb09a14bc8deace76beb5363
            expect(rows.some((row) => row.id === "final")).toBe(true);
            expect(rows.some((row) => row.id === "work")).toBe(isWorking || expanded);
          }
-@@ -1621,6 +1705,7 @@ describe("deriveMessagesTimelineRows", () => {
+@@ -1632,6 +1716,7 @@ describe("deriveMessagesTimelineRows", () => {
          expandedRunIds,
          turnDiffSummaries: [],
          supportsConversationRollback: false,
@@ -325,7 +339,7 @@ index 0a703a675f0ac515efdd3ca55a494cfcd04ee052..85240c1feb09a14bc8deace76beb5363
        });
  
      const segmentKey = RunId.make(`${runId}:steer:steer`);
-@@ -1633,8 +1718,11 @@ describe("deriveMessagesTimelineRows", () => {
+@@ -1644,8 +1729,11 @@ describe("deriveMessagesTimelineRows", () => {
        "final",
        "late-subagent",
      ]);
@@ -340,10 +354,10 @@ index 0a703a675f0ac515efdd3ca55a494cfcd04ee052..85240c1feb09a14bc8deace76beb5363
      expect(rows(new Set([segmentKey])).map((row) => row.id)).toEqual([
        "prompt",
 diff --git a/apps/web/src/components/chat/MessagesTimeline.logic.ts b/apps/web/src/components/chat/MessagesTimeline.logic.ts
-index 2192c3b7e6ae0b0d13847a3f10440f8894fd91d2..3571a34a545fb2042e0f9c5ee69a0dd3fc18e24a 100644
+index a7bca7de9f9015859449b9944cd0602e1cb7a6b7..d4c43030ea8f0da64d926a5a8dcfd556e5783333 100644
 --- a/apps/web/src/components/chat/MessagesTimeline.logic.ts
 +++ b/apps/web/src/components/chat/MessagesTimeline.logic.ts
-@@ -509,6 +509,36 @@ function computeElapsedMs(startIso: string, endIso: string): number | null {
+@@ -510,6 +510,36 @@ function computeElapsedMs(startIso: string, endIso: string): number | null {
    return Math.max(0, end - start);
  }
  
@@ -380,7 +394,7 @@ index 2192c3b7e6ae0b0d13847a3f10440f8894fd91d2..3571a34a545fb2042e0f9c5ee69a0dd3
  function maxIsoTimestamp(a: string | null, b: string | null): string | null {
    if (a === null) return b;
    if (b === null) return a;
-@@ -1078,6 +1108,7 @@ function deriveTurnFolds(input: {
+@@ -1079,6 +1109,7 @@ function deriveTurnFolds(input: {
    liveSubagentEntryIds: ReadonlySet<string>;
    retainedAssistantReplyEntryIds: ReadonlySet<string>;
    resolve: MessageResolver;
@@ -388,7 +402,7 @@ index 2192c3b7e6ae0b0d13847a3f10440f8894fd91d2..3571a34a545fb2042e0f9c5ee69a0dd3
  }): ReadonlyMap<string, TurnFold> {
    const interruptedRunIds = new Set<RunId>();
    const promptIndexByRunId = new Map<RunId, number>();
-@@ -1250,22 +1281,29 @@ function deriveTurnFolds(input: {
+@@ -1251,22 +1282,29 @@ function deriveTurnFolds(input: {
      const lastTurnEntry =
        group.entries.findLast((entry) => !lateSubagentIds.has(entry.id)) ?? lastEntry;
      const lastEntryEnd = timelineEntryEnd(lastTurnEntry);
@@ -424,7 +438,7 @@ index 2192c3b7e6ae0b0d13847a3f10440f8894fd91d2..3571a34a545fb2042e0f9c5ee69a0dd3
          : resolve(msg("Worked"));
  
      // The top row keeps the whole turn's time, steers included. Work after a
-@@ -1286,13 +1324,13 @@ function deriveTurnFolds(input: {
+@@ -1287,13 +1325,13 @@ function deriveTurnFolds(input: {
        const entries = group.entries.slice(startIndex, group.steerSegments[index + 1]?.startIndex);
        const anchorEntry = entries[0];
        if (anchorEntry === undefined || !hidesNonCompactionWork(entries)) continue;
@@ -442,7 +456,7 @@ index 2192c3b7e6ae0b0d13847a3f10440f8894fd91d2..3571a34a545fb2042e0f9c5ee69a0dd3
        foldsByAnchorEntryId.set(anchorEntry.id, {
          runId: RunId.make(`${runId}:steer:${steer.id}`),
          anchorEntryId: anchorEntry.id,
-@@ -1300,11 +1338,18 @@ function deriveTurnFolds(input: {
+@@ -1301,11 +1339,18 @@ function deriveTurnFolds(input: {
          hiddenEntryIds: segmentHiddenIds(entries),
          entryIds: new Set(entries.map((entry) => entry.id)),
          label:
@@ -466,7 +480,7 @@ index 2192c3b7e6ae0b0d13847a3f10440f8894fd91d2..3571a34a545fb2042e0f9c5ee69a0dd3
        });
      }
    }
-@@ -1603,6 +1648,7 @@ function deriveTimelineTurnFolds(
+@@ -1613,6 +1658,7 @@ function deriveTimelineTurnFolds(
      liveSubagentEntryIds: liveSubagentCardEntryIds(timelineEntries),
      retainedAssistantReplyEntryIds: retainedAssistantReplyEntryIds(timelineEntries),
      resolve: m,
@@ -474,7 +488,7 @@ index 2192c3b7e6ae0b0d13847a3f10440f8894fd91d2..3571a34a545fb2042e0f9c5ee69a0dd3
    });
  }
  
-@@ -1626,6 +1672,8 @@ export function deriveMessagesTimelineRows(
+@@ -1638,6 +1684,8 @@ export function deriveMessagesTimelineRows(
      worktreeSetup?: WorktreeSetupSnapshot | null;
      toolCallVisibility?: ToolCallVisibility;
      revealedMessageId?: MessageId | null;
@@ -483,7 +497,7 @@ index 2192c3b7e6ae0b0d13847a3f10440f8894fd91d2..3571a34a545fb2042e0f9c5ee69a0dd3
    },
    resolve: MessageResolver = m,
  ): MessagesTimelineRow[] {
-@@ -1692,6 +1740,7 @@ export function deriveMessagesTimelineRows(
+@@ -1702,6 +1750,7 @@ export function deriveMessagesTimelineRows(
            liveSubagentEntryIds,
            retainedAssistantReplyEntryIds: retainedAssistantReplyIds,
            resolve,
@@ -492,10 +506,10 @@ index 2192c3b7e6ae0b0d13847a3f10440f8894fd91d2..3571a34a545fb2042e0f9c5ee69a0dd3
    const timelineEntryById = new Map(timelineEntries.map((entry) => [entry.id, entry]));
    const collapsedEntryIds = new Set<string>();
 diff --git a/apps/web/src/components/chat/MessagesTimeline.tsx b/apps/web/src/components/chat/MessagesTimeline.tsx
-index e94c052e40b37f7f06f20112d7c189d80da2fe2c..8fe9650de30558cf93c2617b21203940cf062fec 100644
+index 1bd08298ec505ebbb38ab6f7ba5dc719c13399a0..28e5106264b6f9d813d57e8b62ce4f6b4d42257c 100644
 --- a/apps/web/src/components/chat/MessagesTimeline.tsx
 +++ b/apps/web/src/components/chat/MessagesTimeline.tsx
-@@ -141,7 +141,12 @@ import {
+@@ -144,7 +144,12 @@ import {
  } from "./timelineViewport";
  import { useThreadFindPositionReader } from "./useThreadFindPositionReader";
  import { ThreadActivityAnnouncer } from "./ThreadActivityAnnouncer";
@@ -509,7 +523,7 @@ index e94c052e40b37f7f06f20112d7c189d80da2fe2c..8fe9650de30558cf93c2617b21203940
  import { useClientSettings } from "../../hooks/useSettings";
  
  function timelineListStateFor(identity: string): {
-@@ -741,6 +746,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
+@@ -761,6 +766,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
    const pendingApprovalRequestIds = new Set(
      pendingApprovals.filter(isVisiblePendingApproval).map((approval) => approval.requestId),
    );
@@ -517,7 +531,7 @@ index e94c052e40b37f7f06f20112d7c189d80da2fe2c..8fe9650de30558cf93c2617b21203940
    const rawRows = useIncrementalTimelineRows(`${listIdentityKey}\0${workspaceRoot ?? ""}`, {
      timelineEntries,
      pendingApprovalRequestIds,
-@@ -759,6 +765,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
+@@ -780,6 +786,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
      worktreeSetup,
      toolCallVisibility,
      revealedMessageId,
@@ -580,10 +594,10 @@ index 3ea5c9f55681daf1b57e5692f90ef67573f13757..8ae5c6f72c1f426f9a4e11d5ee241f1f
   * Rows derived from the previous projection of the same list, so a streamed
   * text update patches its message rows instead of deriving every row again.
 diff --git a/apps/web/src/i18n/translations/de.json b/apps/web/src/i18n/translations/de.json
-index 53f509e172b920f8472eb468d817ea32430db654..b05c188f7af874ab89a9c3ffecebcce6f4ad8560 100644
+index e10906fa662636519229c3a36125d687748da50f..ece38824853a13186b1f9de33fec727f7823b43a 100644
 --- a/apps/web/src/i18n/translations/de.json
 +++ b/apps/web/src/i18n/translations/de.json
-@@ -3714,10 +3714,13 @@
+@@ -3860,10 +3860,13 @@
    "f2661cb679537d7c": "{program} gestoppt",
    "a265d829e76c30fb": "{program} ausgeführt",
    "3b8635b46a63c2f0": "Von dir nach {duration} gestoppt",
@@ -598,10 +612,10 @@ index 53f509e172b920f8472eb468d817ea32430db654..b05c188f7af874ab89a9c3ffecebcce6
    "d956ea9d4e3f0ade": "Kontext nach {age} Inaktivität komprimiert",
    "9996f59c86ed715e": "Ersetzter Versuch",
 diff --git a/apps/web/src/i18n/translations/en.json b/apps/web/src/i18n/translations/en.json
-index 0f4d1952a76c8cfe763d7a2750921d03815bed90..c721b655eba3f48d1b8376b5dba9302cec5f1bf6 100644
+index 94ba1d1169b30545aad9a0486c87118149cad85c..c9d3f5db90d9ed1f3ea8defe99971ce83ffd7e98 100644
 --- a/apps/web/src/i18n/translations/en.json
 +++ b/apps/web/src/i18n/translations/en.json
-@@ -3713,10 +3713,13 @@
+@@ -3859,10 +3859,13 @@
    "f2661cb679537d7c": "Stopped {program}",
    "a265d829e76c30fb": "Ran {program}",
    "3b8635b46a63c2f0": "You stopped after {duration}",
@@ -616,10 +630,10 @@ index 0f4d1952a76c8cfe763d7a2750921d03815bed90..c721b655eba3f48d1b8376b5dba9302c
    "d956ea9d4e3f0ade": "Context compacted after {age} idle",
    "9996f59c86ed715e": "Superseded attempt",
 diff --git a/apps/web/src/i18n/translations/es.json b/apps/web/src/i18n/translations/es.json
-index daf462ecf8460b39a333f30c83d2f821502bcbb6..690aa6b25160cdfa865574257008e269ca12290c 100644
+index e9be0d4a716e878a525cf818378f768fa3f060fc..70141f81e935709478e3f9a0083515cd8dfeab55 100644
 --- a/apps/web/src/i18n/translations/es.json
 +++ b/apps/web/src/i18n/translations/es.json
-@@ -3711,10 +3711,13 @@
+@@ -3857,10 +3857,13 @@
    "f2661cb679537d7c": "Se detuvo {program}",
    "a265d829e76c30fb": "Se ejecutó {program}",
    "3b8635b46a63c2f0": "Lo detuviste tras {duration}",
@@ -634,10 +648,10 @@ index daf462ecf8460b39a333f30c83d2f821502bcbb6..690aa6b25160cdfa865574257008e269
    "d956ea9d4e3f0ade": "Contexto compactado tras {age} de inactividad",
    "9996f59c86ed715e": "Intento reemplazado",
 diff --git a/apps/web/src/i18n/translations/fr.json b/apps/web/src/i18n/translations/fr.json
-index 7aaf8e7b9dd489f7ac5802724b332e5f7fec0241..3e2d94f31c6816afd6c13279616ba7edb75b3cb0 100644
+index 27c1fa0ec7240c040dead08b287f577dd0cbdebf..73e6f8a546bd7c7d85dc0f35863e74e085955e48 100644
 --- a/apps/web/src/i18n/translations/fr.json
 +++ b/apps/web/src/i18n/translations/fr.json
-@@ -3712,10 +3712,13 @@
+@@ -3858,10 +3858,13 @@
    "f2661cb679537d7c": "{program} arrêté",
    "a265d829e76c30fb": "{program} exécuté",
    "3b8635b46a63c2f0": "Vous avez arrêté après {duration}",
@@ -652,10 +666,10 @@ index 7aaf8e7b9dd489f7ac5802724b332e5f7fec0241..3e2d94f31c6816afd6c13279616ba7ed
    "d956ea9d4e3f0ade": "Contexte compacté après {age} d’inactivité",
    "9996f59c86ed715e": "Tentative remplacée",
 diff --git a/apps/web/src/i18n/translations/ja.json b/apps/web/src/i18n/translations/ja.json
-index b89c19d94ee8729093bfd854d8c11600700f498e..95aec3aa9ffa44d970db2a0f5f209666e53d5903 100644
+index 841c9bcaf40255a9920015ffbd607446384643da..52adc80961b98893d2dbe37050a357eb9ae8d459 100644
 --- a/apps/web/src/i18n/translations/ja.json
 +++ b/apps/web/src/i18n/translations/ja.json
-@@ -3705,10 +3705,13 @@
+@@ -3850,10 +3850,13 @@
    "f2661cb679537d7c": "{program} を停止しました",
    "a265d829e76c30fb": "{program} を実行しました",
    "3b8635b46a63c2f0": "{duration} 後に停止しました",
@@ -670,10 +684,10 @@ index b89c19d94ee8729093bfd854d8c11600700f498e..95aec3aa9ffa44d970db2a0f5f209666
    "d956ea9d4e3f0ade": "{age} アイドル後にコンテキストを圧縮しました",
    "9996f59c86ed715e": "置き換えられた試行",
 diff --git a/apps/web/src/i18n/translations/ko.json b/apps/web/src/i18n/translations/ko.json
-index 96ff2e950d6549b03ce12e8e2ced4f471a59f70f..3b1619bd1d2d511b628b7982e728bfb901c69ea3 100644
+index d467b579fc433b181b90e451819f12c42eb7493f..e787473bb085ceb870164dddeb12a55e27df2018 100644
 --- a/apps/web/src/i18n/translations/ko.json
 +++ b/apps/web/src/i18n/translations/ko.json
-@@ -3705,10 +3705,13 @@
+@@ -3850,10 +3850,13 @@
    "f2661cb679537d7c": "{program} 중지됨",
    "a265d829e76c30fb": "{program} 실행함",
    "3b8635b46a63c2f0": "{duration} 후 중지함",
@@ -688,10 +702,10 @@ index 96ff2e950d6549b03ce12e8e2ced4f471a59f70f..3b1619bd1d2d511b628b7982e728bfb9
    "d956ea9d4e3f0ade": "{age} 유휴 후 컨텍스트 압축됨",
    "9996f59c86ed715e": "대체된 시도",
 diff --git a/apps/web/src/i18n/translations/pt-BR.json b/apps/web/src/i18n/translations/pt-BR.json
-index b65168e8d78ae3de83ceca814f5e03a0396068d7..140e7683dddabd46b439c26dc9bbbc58e00e7623 100644
+index 219fbcbf7c5a2cf28dc1b778cd3cddec201a8f15..c7a014abc34939743f9b4ce8818b660faf170250 100644
 --- a/apps/web/src/i18n/translations/pt-BR.json
 +++ b/apps/web/src/i18n/translations/pt-BR.json
-@@ -3712,10 +3712,13 @@
+@@ -3858,10 +3858,13 @@
    "f2661cb679537d7c": "{program} interrompido",
    "a265d829e76c30fb": "Executou {program}",
    "3b8635b46a63c2f0": "Você parou após {duration}",
@@ -706,10 +720,10 @@ index b65168e8d78ae3de83ceca814f5e03a0396068d7..140e7683dddabd46b439c26dc9bbbc58
    "d956ea9d4e3f0ade": "Contexto compactado após {age} ocioso",
    "9996f59c86ed715e": "Tentativa substituída",
 diff --git a/apps/web/src/i18n/translations/ru.json b/apps/web/src/i18n/translations/ru.json
-index 3748f7281dbc45cad607cff6e2128b1560b7cf70..ded173e87f10f962b6fe87c54b3ee5898c746f4a 100644
+index 5c92d59f94917f6de8e806be6878a763d34f40af..1a9328e09cb3e4f9f5b64b2d3021b9850ea663e2 100644
 --- a/apps/web/src/i18n/translations/ru.json
 +++ b/apps/web/src/i18n/translations/ru.json
-@@ -3712,10 +3712,13 @@
+@@ -3858,10 +3858,13 @@
    "f2661cb679537d7c": "Остановлено: {program}",
    "a265d829e76c30fb": "Выполнено: {program}",
    "3b8635b46a63c2f0": "Вы остановили через {duration}",
@@ -724,10 +738,10 @@ index 3748f7281dbc45cad607cff6e2128b1560b7cf70..ded173e87f10f962b6fe87c54b3ee589
    "d956ea9d4e3f0ade": "Контекст сжат после простоя {age}",
    "9996f59c86ed715e": "Заменённая попытка",
 diff --git a/apps/web/src/i18n/translations/sv.json b/apps/web/src/i18n/translations/sv.json
-index 72ec3b54e434e71a1b43eaffa0c0caa8bc8a8dd5..89c0db4e1599aab61f0ee7af1a1c7d3817d145a8 100644
+index bcd55102a27ae32fc20cf9d1bd47346340a39e73..690ab45dd20c733c7b0829daebc79011e27b3a3d 100644
 --- a/apps/web/src/i18n/translations/sv.json
 +++ b/apps/web/src/i18n/translations/sv.json
-@@ -3712,10 +3712,13 @@
+@@ -3858,10 +3858,13 @@
    "f2661cb679537d7c": "Stoppade {program}",
    "a265d829e76c30fb": "Körde {program}",
    "3b8635b46a63c2f0": "Du stoppade efter {duration}",
@@ -742,10 +756,10 @@ index 72ec3b54e434e71a1b43eaffa0c0caa8bc8a8dd5..89c0db4e1599aab61f0ee7af1a1c7d38
    "d956ea9d4e3f0ade": "Kontexten komprimerades efter {age} inaktivitet",
    "9996f59c86ed715e": "Ersatt försök",
 diff --git a/apps/web/src/i18n/translations/zh.json b/apps/web/src/i18n/translations/zh.json
-index 202385462e2659dad9f3674e41fdc72c7a0e22b3..78b200d06d88f72de4e08c8865f0e13c6ed22984 100644
+index 0e4b6605c0263b86d78d4c3b94007a620ab9c42a..dbc9423406b43c8f7557276c29c047e65aaab8fb 100644
 --- a/apps/web/src/i18n/translations/zh.json
 +++ b/apps/web/src/i18n/translations/zh.json
-@@ -3716,10 +3716,13 @@
+@@ -3861,10 +3861,13 @@
    "f2661cb679537d7c": "已停止 {program}",
    "a265d829e76c30fb": "已运行 {program}",
    "3b8635b46a63c2f0": "你在 {duration} 后停止了",

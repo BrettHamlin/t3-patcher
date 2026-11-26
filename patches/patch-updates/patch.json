@@ -1,11 +1,11 @@
 {
   "id": "patch-updates",
   "title": "Patch updates",
-  "summary": "On a build made by T3 Patcher (with <T3 home>/userdata/patcher/installed.json), the sidebar's update pill offers newer versions of the installed patches from the patcher's feed, and new T3 Code versions, and Update runs the patcher's update command (rebuild with every patch, check, install, relaunch) instead of electron-updater, showing its steps live. T3CODE_PATCH_UPDATE_FEED overrides the feed.",
-  "version": 1,
+  "summary": "On a build made by T3 Patcher (with <T3 home>/userdata/patcher/installed.json), the sidebar's update pill offers newer versions of installed patches, brand-new published patches (enabled by default unless turned off in stack.json), and new T3 Code versions; Update runs the patcher's update command (rebuild with every enabled patch, check, install, relaunch) instead of electron-updater, showing its steps live. T3CODE_PATCH_UPDATE_FEED overrides the feed.",
+  "version": 2,
   "base": {
-    "version": "0.1.11",
-    "commit": "59651c1761f6c63e9b6056839067066968e6a406"
+    "version": "0.1.12",
+    "commit": "ca81b7b97a1c4b91e5ac25768d0f6629f37732fd"
   },
   "checks": [
     {
@@ -24,7 +24,7 @@
   "journeys": [
     {
       "name": "patch_updates",
-      "proves": "On a patched build (an installed record in a throwaway T3 home) with update checks on against local feeds only, the sidebar's update pill offers a newer journey-kit and the next T3 Code version after the build's own, but no uninstalled patch; Update runs the record's command with --t3 <next>, --relaunch <the app's pid> and the record's PATH, and the popover then lists what the run itself updates (journey-kit 3, published after the offer) and its steps in words as they run and pass.",
+      "proves": "On a patched build (an installed record in a throwaway T3 home) with update checks on against local feeds only, the sidebar's update pill offers a newer journey-kit, a brand-new published patch (added, version 1), and the next T3 Code version after the build's own, while skipping a patch turned off in stack.json; Update runs the record's command with --t3 <next>, --relaunch <the app's pid> and the record's PATH, and the popover then lists what the run itself updates and its steps in words as they run and pass.",
       "run": ". \"$T3_PATCHER_ENV\" && node patcher/journeys/patch-updates.mjs"
     }
   ]
