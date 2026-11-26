@@ -1,3 +1,18 @@
+diff --git a/apps/desktop/src/compileCache.ts b/apps/desktop/src/compileCache.ts
+index 7bbd9adc7f407383679ce70abbfd717f9cce5598..9244e79aa343c54abccd6d990176ce395f456fa4 100644
+--- a/apps/desktop/src/compileCache.ts
++++ b/apps/desktop/src/compileCache.ts
+@@ -6,6 +6,10 @@ import { enablePreparedServerCache } from "../../../scripts/lib/server-compile-c
+ 
+ // Linux /tmp is shared; macOS and Windows temp dirs are per user.
+ // AppImage mounts change paths each launch, so Node's path-keyed cache would miss and accumulate copies.
++if (process.env.ELECTRON_RUN_AS_NODE === "1") {
++  // Four libuv workers let one unmounted or TCC-blocked external drive starve SQLite and /ws.
++  process.env.UV_THREADPOOL_SIZE ??= "16";
++}
+ try {
+   if (!process.env.APPIMAGE || process.env.ELECTRON_RUN_AS_NODE === "1") {
+     const cacheRoot =
 diff --git a/apps/mobile/src/i18n/translations/de.json b/apps/mobile/src/i18n/translations/de.json
 index 7ffb1718abe30f1b0441d81190501f8cd30e715a..07997be804b435e9fae37c06455427579784070b 100644
 --- a/apps/mobile/src/i18n/translations/de.json
@@ -158,6 +173,20 @@ index c768b933e5e6cb909c35a20e64034344af18d0cd..b132b984871bfda7aab9cac40455dfe4
    [WS_METHODS.pullRequestsListStats]: AuthOrchestrationReadScope,
    [WS_METHODS.pullRequestsFilterOptions]: AuthOrchestrationReadScope,
    [WS_METHODS.pullRequestsSummary]: AuthOrchestrationReadScope,
+diff --git a/apps/server/src/bin.ts b/apps/server/src/bin.ts
+index 4bbc5801d2c830c751785d00b68ff60f3052981d..994306354eb5db5ef37fb3dd3172996467c8be88 100644
+--- a/apps/server/src/bin.ts
++++ b/apps/server/src/bin.ts
+@@ -5,6 +5,9 @@ import * as NodeURL from "node:url";
+ 
+ import { isEntrypoint } from "./entrypoint.ts";
+ 
++// Set before any async fs or DNS work initializes libuv's pool (default 4 threads).
++process.env.UV_THREADPOOL_SIZE ??= "16";
++
+ // Loads the CLI outside the launcher's module graph. Packaged builds embed it as a raw asset.
+ async function loadCliMain(): Promise<typeof import("./binMain.ts")> {
+   if (!NodeSea.isSea()) return import("./binMain.ts");
 diff --git a/apps/server/src/mcp/McpHttpServer.ts b/apps/server/src/mcp/McpHttpServer.ts
 index 2b1deed86f03706e1525d3bcb0a3fbf1b0b9dfd3..a971a28a96c29164acec7c8a16adbdc790c515f2 100644
 --- a/apps/server/src/mcp/McpHttpServer.ts
@@ -276,7 +305,7 @@ index cab2bfec74988e0ce0158b8a8b66550a5e2277bd..7d77a582f3839f3ff334fefdcecd6342
    [WS_METHODS.serverUpdateSettings]: "server",
    [WS_METHODS.serverSearchAcpRegistry]: "server",
 diff --git a/apps/server/src/orchestration-v2/Orchestrator.ts b/apps/server/src/orchestration-v2/Orchestrator.ts
-index 6d8245c81a41aab53f79a32a04969306b2b644ce..fa712db9708073cbe10faa75fb80df8f2d6a8c34 100644
+index 6d8245c81a41aab53f79a32a04969306b2b644ce..efe1d5b800b976f33fd2110e2bcd638b4ecec7e3 100644
 --- a/apps/server/src/orchestration-v2/Orchestrator.ts
 +++ b/apps/server/src/orchestration-v2/Orchestrator.ts
 @@ -24,6 +24,7 @@ import {
@@ -588,7 +617,30 @@ index 6d8245c81a41aab53f79a32a04969306b2b644ce..fa712db9708073cbe10faa75fb80df8f
    });
  
    const dispatchInterruptUnresponsive = Effect.fn("Orchestrator.dispatchInterruptUnresponsive")(
-@@ -16471,6 +16738,15 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
+@@ -16071,6 +16338,22 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
+             cause: `Thread ${command.threadId} has a queued run that may still start.`,
+           });
+         }
++        const { turnItems: waitingPicks } = yield* projectionStore
++          .getThreadRecords(command.threadId, ["turnItems"], {
++            turnItemTypes: ["pick_request"],
++            turnItemStatuses: ["waiting"],
++            messageRoles: [],
++          })
++          .pipe(mapDispatchError(command));
++        if (
++          waitingPicks.some((item) => item.type === "pick_request" && item.pickStatus === "pending")
++        ) {
++          return yield* new OrchestratorDispatchError({
++            commandId: command.commandId,
++            commandType: command.type,
++            cause: `Thread ${command.threadId} is waiting on picks.`,
++          });
++        }
+         yield* dispatchThreadMutation(
+           {
+             type: "thread.settle",
+@@ -16471,6 +16754,15 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
        case "link_request.record":
          yield* dispatchLinkRequestRecord(command, events, effects);
          break;
@@ -739,10 +791,10 @@ index 19857405aaff9b5ef841558a0abc2456604e7098..dc0d3a20dc1514a6315f6c56f44fe25a
        return item;
 diff --git a/apps/server/src/picks/PickRequests.test.ts b/apps/server/src/picks/PickRequests.test.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..8c5d8bfa8294f8b0d705d1fa0bad592c9c47c4c3
+index 0000000000000000000000000000000000000000..b1fea2ce334a67cb48d33202c849ec053316f03f
 --- /dev/null
 +++ b/apps/server/src/picks/PickRequests.test.ts
-@@ -0,0 +1,914 @@
+@@ -0,0 +1,1342 @@
 +import * as NodeServices from "@effect/platform-node/NodeServices";
 +import {
 +  CommandId,
@@ -763,14 +815,18 @@ index 0000000000000000000000000000000000000000..8c5d8bfa8294f8b0d705d1fa0bad592c
 +import * as Context from "effect/Context";
 +import * as SecureRandom from "effect/crypto/SecureRandom";
 +import * as DateTime from "effect/DateTime";
++import * as Deferred from "effect/Deferred";
++import type * as Duration from "effect/Duration";
 +import * as Effect from "effect/Effect";
 +import * as Exit from "effect/Exit";
 +import * as Fiber from "effect/Fiber";
 +import * as FileSystem from "effect/FileSystem";
 +import * as Layer from "effect/Layer";
 +import * as Path from "effect/Path";
++import { ChildProcess, ChildProcessSpawner } from "effect/process";
 +import type * as Scope from "effect/Scope";
 +import * as SqlClient from "effect/sql/SqlClient";
++import * as Stream from "effect/Stream";
 +import * as TestClock from "effect/testing/TestClock";
 +import { McpSchema, McpServer } from "effect/ai";
 +
@@ -869,7 +925,13 @@ index 0000000000000000000000000000000000000000..8c5d8bfa8294f8b0d705d1fa0bad592c
 +  ),
 +);
 +
-+const makeHarnessWith = (options: { readonly slowAnswers?: boolean } = {}) =>
++const makeHarnessWith = (
++  options: {
++    readonly slowAnswers?: boolean;
++    readonly fileTimeout?: Duration.Input;
++    readonly wrapFs?: (fs: FileSystem.FileSystem) => FileSystem.FileSystem;
++  } = {},
++) =>
 +  Effect.gen(function* () {
 +    const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
 +    const layerDatabase = Layer.succeedContext(database);
@@ -896,13 +958,30 @@ index 0000000000000000000000000000000000000000..8c5d8bfa8294f8b0d705d1fa0bad592c
 +    const layerConfig = ServerConfig.layerTest(process.cwd(), { prefix: "t3-pick-requests-" }).pipe(
 +      Layer.provide(NodeServices.layer),
 +    );
++    const basePickLayer =
++      options.slowAnswers === true
++        ? PickRequests.layer.pipe(Layer.provide(slowAnswers))
++        : PickRequests.layer;
++    const wrappedPickLayer =
++      options.wrapFs === undefined
++        ? basePickLayer
++        : basePickLayer.pipe(
++            Layer.provide(
++              Layer.effect(
++                FileSystem.FileSystem,
++                Effect.map(FileSystem.FileSystem, options.wrapFs),
++              ),
++            ),
++          );
++    const pickLayer =
++      options.fileTimeout === undefined
++        ? wrappedPickLayer
++        : wrappedPickLayer.pipe(
++            Layer.provide(Layer.succeed(PickRequests.FileIoTimeout, options.fileTimeout)),
++          );
 +    const here = yield* McpHttpServer.layerPicksToolkit.pipe(
 +      Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
-+      Layer.provideMerge(
-+        options.slowAnswers === true
-+          ? PickRequests.layer.pipe(Layer.provide(slowAnswers))
-+          : PickRequests.layer,
-+      ),
++      Layer.provideMerge(pickLayer),
 +      Layer.provide(
 +        Layer.succeed(SecureRandom.SecureRandom, SecureRandom.make(seededBytes(20261124))),
 +      ),
@@ -937,13 +1016,19 @@ index 0000000000000000000000000000000000000000..8c5d8bfa8294f8b0d705d1fa0bad592c
 +        notes: yield* file("notes.txt", "text"),
 +        empty: yield* file("empty.png", ""),
 +      },
-+      call: (args: Record<string, unknown>) =>
-+        server
-+          .callTool({ name: "request_picks", arguments: args })
-+          .pipe(
-+            Effect.provideService(McpInvocationContext.McpInvocationContext, scope),
-+            Effect.provideService(McpSchema.McpServerClient, mcpClient),
++      call: (args: Record<string, unknown>, forThreadId: ThreadId = threadId) =>
++        server.callTool({ name: "request_picks", arguments: args }).pipe(
++          Effect.provideService(
++            McpInvocationContext.McpInvocationContext,
++            forThreadId === threadId
++              ? scope
++              : {
++                  ...scope,
++                  thread: { ...scope.thread!, threadId: forThreadId },
++                },
 +          ),
++          Effect.provideService(McpSchema.McpServerClient, mcpClient),
++        ),
 +    };
 +  });
 +const makeHarness = makeHarnessWith();
@@ -1657,12 +1742,407 @@ index 0000000000000000000000000000000000000000..8c5d8bfa8294f8b0d705d1fa0bad592c
 +    }),
 +  ),
 +);
++
++it.live("delegated child threads are refused before reading files", () =>
++  scoped((h) =>
++    Effect.gen(function* () {
++      yield* seedThread(h);
++      const remoteChildId = ThreadId.make("thread:picks:remote-child");
++      yield* h.orchestrator.dispatch({
++        type: "thread.create",
++        createdBy: "agent",
++        creationSource: "mcp",
++        commandId: CommandId.make("command:create:picks:remote-child"),
++        threadId: remoteChildId,
++        projectId: ProjectId.make("project:picks"),
++        title: "Remote child",
++        modelSelection,
++        runtimeMode: "full-access",
++        interactionMode: "default",
++        branch: null,
++        worktreePath: null,
++        linkOrigin: { sessionId: "session:caller", label: "Caller" },
++        delegatedFrom: {
++          environmentId: EnvironmentId.make("environment:caller"),
++          threadId: ThreadId.make("thread:caller"),
++          title: "Caller thread",
++        },
++      });
++      const localSubagentId = ThreadId.make("thread:picks:subagent");
++      const now = yield* DateTime.now;
++      const base = (yield* h.orchestrator.getThreadProjection(threadId)).thread;
++      const seedChildRun = (id: ThreadId) => {
++        const childProviderThreadId = ProviderThreadId.make(`provider-thread:${id}`);
++        const childNodeId = NodeId.make(`node:${id}:root`);
++        const childRunId = RunId.make(`run:${id}`);
++        return [
++          {
++            id: EventId.make(`event:seed-pt:${id}`),
++            type: "provider-thread.updated" as const,
++            threadId: id,
++            driver,
++            providerInstanceId: instanceId,
++            occurredAt: now,
++            payload: {
++              id: childProviderThreadId,
++              driver,
++              providerInstanceId: instanceId,
++              providerSessionId: null,
++              appThreadId: id,
++              ownerNodeId: childNodeId,
++              nativeThreadRef: { driver, nativeId: `native:${id}`, strength: "strong" as const },
++              nativeConversationHeadRef: null,
++              status: "active" as const,
++              firstRunOrdinal: 1,
++              lastRunOrdinal: 1,
++              handoffIds: [],
++              forkedFrom: null,
++              createdAt: now,
++              updatedAt: now,
++            },
++          },
++          {
++            id: EventId.make(`event:seed-node:${id}`),
++            type: "node.updated" as const,
++            threadId: id,
++            runId: childRunId,
++            nodeId: childNodeId,
++            driver,
++            providerInstanceId: instanceId,
++            occurredAt: now,
++            payload: {
++              id: childNodeId,
++              threadId: id,
++              runId: childRunId,
++              parentNodeId: null,
++              rootNodeId: childNodeId,
++              kind: "root_turn" as const,
++              status: "running" as const,
++              countsForRun: true,
++              providerThreadId: childProviderThreadId,
++              providerTurnId: null,
++              nativeItemRef: null,
++              runtimeRequestId: null,
++              checkpointScopeId: null,
++              startedAt: now,
++              completedAt: null,
++            },
++          },
++          {
++            id: EventId.make(`event:seed-run:${id}`),
++            type: "run.updated" as const,
++            threadId: id,
++            runId: childRunId,
++            nodeId: childNodeId,
++            providerInstanceId: instanceId,
++            occurredAt: now,
++            payload: {
++              id: childRunId,
++              threadId: id,
++              ordinal: 1,
++              providerInstanceId: instanceId,
++              modelSelection,
++              providerThreadId: childProviderThreadId,
++              userMessageId: MessageId.make(`message:${id}`),
++              rootNodeId: childNodeId,
++              activeAttemptId: null,
++              status: "running" as const,
++              requestedAt: now,
++              startedAt: now,
++              completedAt: null,
++              checkpointId: null,
++              contextHandoffId: null,
++            },
++          },
++        ];
++      };
++      yield* h.sink.write({
++        commandId: CommandId.make("command:seed:picks:children"),
++        events: [
++          ...seedChildRun(remoteChildId),
++          {
++            id: EventId.make("event:seed:picks:subagent"),
++            type: "thread.created",
++            threadId: localSubagentId,
++            occurredAt: now,
++            payload: {
++              ...base,
++              id: localSubagentId,
++              title: "Local subagent",
++              lineage: {
++                parentThreadId: threadId,
++                rootThreadId: threadId,
++                relationshipToParent: "subagent",
++              },
++            },
++          },
++          ...seedChildRun(localSubagentId),
++        ],
++      });
++      const unmounted = "/Volumes/Unmounted/never-touched.png";
++      const ask = {
++        title: "Child picks",
++        questions: [
++          {
++            id: "q1",
++            prompt: "Which?",
++            options: [
++              { id: "a", path: unmounted },
++              { id: "b", path: h.files.fake },
++            ],
++          },
++        ],
++      };
++      const expected = {
++        _tag: "OrchestratorMcpFailure",
++        code: "invalid_request",
++        message:
++          "Delegated child threads cannot call request_picks because they finish and settle before the user answers. Return the option paths to the parent thread so it can call request_picks.",
++      };
++      expect([
++        errorText(yield* h.call(ask, remoteChildId)),
++        errorText(yield* h.call(ask, localSubagentId)),
++      ]).toEqual([expected, expected]);
++      expect(yield* h.picks.list).toEqual({ batches: [] });
++    }),
++  ),
++);
++
++it.live("thread.auto-settle refuses while a pick batch is waiting, then settles once closed", () =>
++  scoped((h) =>
++    Effect.gen(function* () {
++      yield* seedThread(h);
++      yield* h.call(twoQuestions(h));
++      yield* endRun(h);
++      const whileWaiting = yield* h.orchestrator.getThreadProjection(threadId);
++      const refused = yield* h.orchestrator
++        .dispatch({
++          type: "thread.auto-settle",
++          commandId: CommandId.make("command:auto-settle:waiting"),
++          threadId,
++          snapshotAt: whileWaiting.thread.updatedAt,
++        })
++        .pipe(Effect.flip);
++      expect(String(refused.cause)).toBe(`Thread ${threadId} is waiting on picks.`);
++      expect((yield* h.picks.list).batches).toHaveLength(1);
++
++      yield* h.orchestrator.dispatch({
++        type: "thread.stop",
++        commandId: CommandId.make("command:stop:after-auto-settle"),
++        threadId,
++      });
++      const afterClosed = yield* h.orchestrator.getThreadProjection(threadId);
++      yield* h.orchestrator.dispatch({
++        type: "thread.auto-settle",
++        commandId: CommandId.make("command:auto-settle:closed"),
++        threadId,
++        snapshotAt: afterClosed.thread.updatedAt,
++      });
++      expect((yield* h.orchestrator.getThreadProjection(threadId)).thread.settledOverride).toBe(
++        "settled",
++      );
++    }),
++  ),
++);
++
++it.live("hung file reads and copies time out promptly and remove partial copies", () =>
++  Effect.gen(function* () {
++    let hangMode: "open" | "copy" | "rename" = "open";
++    let blockedOpenAttempts = 0;
++    let copyCount = 0;
++    let lateCopyReleased = false;
++    let blockRemove = false;
++    let lateRenameReleased = false;
++    let resumeBlockedCopy: (() => Effect.Effect<void>) | undefined;
++    let resumeBlockedRename: (() => Effect.Effect<void>) | undefined;
++    const blockedRemovers: Array<() => void> = [];
++    const releaseBlockedOpen = yield* Deferred.make<void>();
++    const blockedOpenClosed = yield* Deferred.make<void>();
++    const lateCopyCleanupDone = yield* Deferred.make<void>();
++    const lateRenameCleanupDone = yield* Deferred.make<void>();
++    yield* scoped(
++      (h) =>
++        Effect.gen(function* () {
++          yield* seedThread(h);
++          const openTimedOut = yield* h.call(twoQuestions(h));
++          expect(errorText(openTimedOut)).toEqual({
++            _tag: "OrchestratorMcpFailure",
++            code: "invalid_request",
++            message: `Question "face-01" option "gpt": timed out reading ${h.files.fake}.`,
++          });
++          // Validation stops on the first I/O timeout (skipping flux.webp) and returns
++          // while Effect.acquireRelease's uninterruptible open is still blocked.
++          expect(blockedOpenAttempts).toBe(1);
++          expect(yield* Deferred.isDone(releaseBlockedOpen)).toBe(false);
++          yield* Deferred.succeed(releaseBlockedOpen, undefined);
++          yield* Deferred.await(blockedOpenClosed);
++
++          hangMode = "copy";
++          const copyTimedOut = yield* h.call(twoQuestions(h));
++          expect(errorText(copyTimedOut)).toEqual({
++            _tag: "OrchestratorMcpFailure",
++            code: "orchestration_error",
++            message: `Could not store the picks: Timed out copying ${h.files.fake}.`,
++          });
++          expect(copyCount).toBe(2);
++          // Both the earlier completed attachment and the partial bytes written before
++          // the stall are already gone while the interruptible callback is still pending.
++          expect(resumeBlockedCopy).toBeDefined();
++          expect(
++            yield* h.fs.readDirectory(h.attachmentsDir).pipe(Effect.orElseSucceed(() => [])),
++          ).toEqual([]);
++          lateCopyReleased = true;
++          if (resumeBlockedCopy !== undefined) yield* resumeBlockedCopy();
++          yield* Deferred.await(lateCopyCleanupDone);
++          expect(
++            yield* h.fs.readDirectory(h.attachmentsDir).pipe(Effect.orElseSucceed(() => [])),
++          ).toEqual([]);
++
++          hangMode = "rename";
++          blockRemove = true;
++          const renameTimedOut = yield* h.call(twoQuestions(h));
++          expect(errorText(renameTimedOut)).toEqual({
++            _tag: "OrchestratorMcpFailure",
++            code: "orchestration_error",
++            message: `Could not store the picks: Timed out copying ${h.files.real}.`,
++          });
++          // Returned promptly even while both rename and onError remove were stalled.
++          expect(resumeBlockedRename).toBeDefined();
++          expect(blockedRemovers.length).toBeGreaterThan(0);
++          if (resumeBlockedRename !== undefined) yield* resumeBlockedRename();
++          yield* Deferred.await(lateRenameCleanupDone);
++          for (const resume of blockedRemovers.splice(0)) resume();
++          expect(
++            yield* h.fs.readDirectory(h.attachmentsDir).pipe(Effect.orElseSucceed(() => [])),
++          ).toEqual([]);
++          expect(yield* h.picks.list).toEqual({ batches: [] });
++        }),
++      makeHarnessWith({
++        fileTimeout: "50 millis",
++        wrapFs: (fs) => ({
++          ...fs,
++          open: (filePath, openOptions) => {
++            if (
++              hangMode !== "open" ||
++              (!filePath.endsWith("fake.png") && !filePath.endsWith("flux.webp"))
++            ) {
++              return fs.open(filePath, openOptions);
++            }
++            blockedOpenAttempts += 1;
++            return Effect.acquireRelease(Deferred.await(releaseBlockedOpen), () =>
++              Deferred.succeed(blockedOpenClosed, undefined).pipe(Effect.asVoid),
++            ).pipe(Effect.andThen(fs.open(filePath, openOptions)));
++          },
++          copyFile: (from, to) => {
++            if (hangMode !== "copy") return fs.copyFile(from, to);
++            copyCount += 1;
++            if (!from.endsWith("fake.png")) return fs.copyFile(from, to);
++            // Interruptible Effect.callback matching NodeFileSystem's effectify(fs.copyFile):
++            // writes partial bytes before stalling, then recreates `.part` before invoking its
++            // native completion callback after the request has already timed out.
++            return fs.writeFileString(to, "partial-before-stall").pipe(
++              Effect.andThen(
++                Effect.callback<void>((resume) => {
++                  resumeBlockedCopy = () =>
++                    fs
++                      .writeFileString(to, "written-after-timeout")
++                      .pipe(Effect.ignore, Effect.ensuring(Effect.sync(() => resume(Effect.void))));
++                }),
++              ),
++            );
++          },
++          rename: (oldPath, newPath) => {
++            if (hangMode !== "rename") return fs.rename(oldPath, newPath);
++            return Effect.callback<void>((resume) => {
++              resumeBlockedRename = () =>
++                fs.rename(oldPath, newPath).pipe(
++                  Effect.ignore,
++                  Effect.ensuring(
++                    Effect.sync(() => {
++                      blockRemove = false;
++                      lateRenameReleased = true;
++                      resume(Effect.void);
++                    }),
++                  ),
++                );
++            });
++          },
++          remove: (targetPath, removeOptions) =>
++            (blockRemove
++              ? Effect.callback<void>((resume) => {
++                  blockedRemovers.push(() => resume(Effect.void));
++                })
++              : Effect.void
++            ).pipe(
++              Effect.andThen(fs.remove(targetPath, removeOptions)),
++              Effect.tap(() => {
++                if (lateCopyReleased && targetPath.endsWith(".part")) {
++                  return Deferred.succeed(lateCopyCleanupDone, undefined).pipe(Effect.asVoid);
++                }
++                if (lateRenameReleased && !targetPath.endsWith(".part")) {
++                  return Deferred.succeed(lateRenameCleanupDone, undefined).pipe(Effect.asVoid);
++                }
++                return Effect.void;
++              }),
++            ),
++        }),
++      }),
++    );
++  }),
++);
++
++it.live(
++  "server entrypoints default UV_THREADPOOL_SIZE to 16 without overriding a caller value",
++  () =>
++    Effect.scoped(
++      Effect.gen(function* () {
++        const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
++        const path = yield* Path.Path;
++        const serverRoot = path.resolve(import.meta.dirname, "../..");
++        const compileCache = path.resolve(serverRoot, "../desktop/src/compileCache.ts");
++        const bin = path.resolve(serverRoot, "src/bin.ts");
++        const probe = (entry: string, extraEnv: Record<string, string | undefined>) =>
++          Effect.scoped(
++            Effect.gen(function* () {
++              const env: Record<string, string> = {};
++              for (const [key, value] of Object.entries({ ...process.env, ...extraEnv })) {
++                if (value !== undefined) env[key] = value;
++              }
++              const handle = yield* spawner.spawn(
++                ChildProcess.make(
++                  process.execPath,
++                  [
++                    "--input-type=module",
++                    "-e",
++                    `await import(${JSON.stringify(entry)}); process.stdout.write(process.env.UV_THREADPOOL_SIZE ?? "");`,
++                  ],
++                  { cwd: serverRoot, env, extendEnv: false, stdin: "ignore" },
++                ),
++              );
++              const [stdout, code] = yield* Effect.all([
++                Stream.mkString(Stream.decodeText(handle.stdout)),
++                handle.exitCode,
++              ]);
++              expect(code).toBe(0);
++              return stdout;
++            }),
++          );
++        expect(
++          yield* Effect.all([
++            probe(bin, { UV_THREADPOOL_SIZE: undefined }),
++            probe(compileCache, { ELECTRON_RUN_AS_NODE: "1", UV_THREADPOOL_SIZE: undefined }),
++            probe(bin, { UV_THREADPOOL_SIZE: "24" }),
++          ]),
++        ).toEqual(["16", "16", "24"]);
++      }),
++    ).pipe(Effect.provide(NodeServices.layer)),
++);
 diff --git a/apps/server/src/picks/PickRequests.ts b/apps/server/src/picks/PickRequests.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..618bc6ebfcec001f3f67bd12739773267aada73a
+index 0000000000000000000000000000000000000000..06290bfa82d988c1f393fe699dec94b94c9e68b2
 --- /dev/null
 +++ b/apps/server/src/picks/PickRequests.ts
-@@ -0,0 +1,588 @@
+@@ -0,0 +1,699 @@
 +/**
 + * Batches of picks an agent asks the user for: "which of these looks more like
 + * a real person?". Asking returns at once, the user answers in the Picks inbox,
@@ -1671,6 +2151,7 @@ index 0000000000000000000000000000000000000000..618bc6ebfcec001f3f67bd1273977326
 + */
 +import {
 +  CommandId,
++  isDelegatedAppThread,
 +  MessageId,
 +  type OrchestrationV2TurnItem,
 +  OrchestratorMcpFailure,
@@ -1692,9 +2173,13 @@ index 0000000000000000000000000000000000000000..618bc6ebfcec001f3f67bd1273977326
 +} from "@t3tools/contracts";
 +import * as Context from "effect/Context";
 +import * as SecureRandom from "effect/crypto/SecureRandom";
++import type * as Duration from "effect/Duration";
 +import * as Effect from "effect/Effect";
++import * as Exit from "effect/Exit";
++import * as Fiber from "effect/Fiber";
 +import * as FileSystem from "effect/FileSystem";
 +import * as Layer from "effect/Layer";
++import * as Option from "effect/Option";
 +import * as Path from "effect/Path";
 +import * as Schema from "effect/Schema";
 +import * as SqlClient from "effect/sql/SqlClient";
@@ -1835,6 +2320,13 @@ index 0000000000000000000000000000000000000000..618bc6ebfcec001f3f67bd1273977326
 +});
 +const decodeListRows = Schema.decodeUnknownEffect(Schema.Array(ListRow));
 +
++export const FileIoTimeout = Context.Reference<Duration.Input>(
++  "t3/picks/PickRequests/FileIoTimeout",
++  {
++    defaultValue: () => "10 seconds",
++  },
++);
++
 +export class PickRequests extends Context.Service<
 +  PickRequests,
 +  {
@@ -1898,6 +2390,7 @@ index 0000000000000000000000000000000000000000..618bc6ebfcec001f3f67bd1273977326
 +  const threadManagement = yield* ThreadManagementService.ThreadManagementService;
 +  const random = yield* SecureRandom.SecureRandom;
 +  const fileSystem = yield* FileSystem.FileSystem;
++  const fileTimeout = yield* FileIoTimeout;
 +  const path = yield* Path.Path;
 +  const config = yield* ServerConfig.ServerConfig;
 +  const sql = yield* SqlClient.SqlClient;
@@ -1936,17 +2429,76 @@ index 0000000000000000000000000000000000000000..618bc6ebfcec001f3f67bd1273977326
 +    return batch;
 +  });
 +
-+  /** A file's first bytes, enough for any signature; nothing when it can't be read. */
-+  const readHead = (file: string) =>
-+    Effect.scoped(
-+      fileSystem.open(file).pipe(Effect.flatMap((handle) => handle.readAlloc(16))),
++  const removeFiles = (files: ReadonlyArray<string>) =>
++    Effect.uninterruptible(
++      Effect.forEach(
++        files,
++        (file) => fileSystem.remove(file, { force: true }).pipe(Effect.ignore),
++        { concurrency: "unbounded", discard: true },
++      ),
++    );
++
++  /**
++   * Runs `effect` on a detached fiber so a deadline returns promptly even while
++   * native I/O or an uninterruptible `acquireRelease` (such as `FileSystem.open`)
++   * is blocked. When abandoned, `onLateFinish` runs once the operation settles.
++   */
++  const runBeforeDeadline = Effect.fn("PickRequests.runBeforeDeadline")(function* <A, E>(
++    effect: (abandoned: () => boolean) => Effect.Effect<A, E>,
++    timeout: Duration.Input,
++    onLateFinish?: Effect.Effect<void>,
++  ) {
++    let abandoned = false;
++    let settled = false;
++    const fiber = yield* effect(() => abandoned).pipe(
++      Effect.ensuring(
++        Effect.suspend(() => {
++          settled = true;
++          return abandoned && onLateFinish !== undefined ? onLateFinish : Effect.void;
++        }),
++      ),
++      Effect.forkDetach({ startImmediately: true }),
++    );
++    const abandon = Effect.sync(() => {
++      const missed = !abandoned && settled && onLateFinish !== undefined;
++      abandoned = true;
++      fiber.interruptUnsafe();
++      return missed;
++    }).pipe(
++      Effect.flatMap((missed) =>
++        missed && onLateFinish !== undefined
++          ? Effect.forkDetach(onLateFinish, { startImmediately: true }).pipe(Effect.asVoid)
++          : Effect.void,
++      ),
++    );
++    const outcome = yield* Fiber.await(fiber).pipe(
++      Effect.timeoutOption(timeout),
++      Effect.onInterrupt(() => abandon),
++    );
++    if (Option.isNone(outcome)) yield* abandon;
++    return outcome;
++  });
++
++  /** A file's first bytes, enough for any signature; nothing when it can't be read, or None if open/read hangs. */
++  const readHead = (file: string, timeout: Duration.Input) =>
++    runBeforeDeadline(
++      () =>
++        Effect.scoped(
++          fileSystem.open(file).pipe(Effect.flatMap((handle) => handle.readAlloc(16))),
++        ).pipe(
++          Effect.map((head) => (head._tag === "Some" ? head.value : new Uint8Array())),
++          Effect.orElseSucceed(() => new Uint8Array()),
++        ),
++      timeout,
 +    ).pipe(
-+      Effect.map((head) => (head._tag === "Some" ? head.value : new Uint8Array())),
-+      Effect.orElseSucceed(() => new Uint8Array()),
++      Effect.map(Option.map((exit) => (Exit.isSuccess(exit) ? exit.value : new Uint8Array()))),
 +    );
 +
 +  /** Checks every option's file before anything is copied, and says what is wrong with each. */
-+  const checkFiles = Effect.fn("PickRequests.checkFiles")(function* (input: PicksRequestInput) {
++  const checkFiles = Effect.fn("PickRequests.checkFiles")(function* (
++    input: PicksRequestInput,
++    timeout: Duration.Input,
++  ) {
 +    const problems: Array<string> = [];
 +    const media = new Map<string, (typeof PICK_MEDIA)[string]>();
 +    // Each file is checked once, however many options use it.
@@ -1969,17 +2521,28 @@ index 0000000000000000000000000000000000000000..618bc6ebfcec001f3f67bd1273977326
 +            `${where}: ${option.path} is not a supported file type (${PICK_EXTENSIONS}).`,
 +          );
 +        } else {
-+          const info = yield* fileSystem.stat(option.path).pipe(Effect.option);
-+          if (info._tag === "None") {
++          const statOutcome = yield* runBeforeDeadline(() => fileSystem.stat(option.path), timeout);
++          if (Option.isNone(statOutcome)) {
++            problems.push(`${where}: timed out reading ${option.path}.`);
++            return { problems, media };
++          }
++          if (Exit.isFailure(statOutcome.value)) {
 +            problems.push(`${where}: ${option.path} was not found.`);
-+          } else if (info.value.type !== "File") {
++          } else if (statOutcome.value.value.type !== "File") {
 +            problems.push(`${where}: ${option.path} is not a file.`);
-+          } else if (Number(info.value.size) === 0) {
++          } else if (Number(statOutcome.value.value.size) === 0) {
 +            problems.push(`${where}: ${option.path} is empty.`);
-+          } else if (!type.matches(yield* readHead(option.path))) {
-+            problems.push(`${where}: ${option.path} isn't a valid ${type.name} file.`);
 +          } else {
-+            media.set(option.path, type);
++            const head = yield* readHead(option.path, timeout);
++            if (Option.isNone(head)) {
++              problems.push(`${where}: timed out reading ${option.path}.`);
++              return { problems, media };
++            }
++            if (!type.matches(head.value)) {
++              problems.push(`${where}: ${option.path} isn't a valid ${type.name} file.`);
++            } else {
++              media.set(option.path, type);
++            }
 +          }
 +        }
 +      }
@@ -1992,6 +2555,7 @@ index 0000000000000000000000000000000000000000..618bc6ebfcec001f3f67bd1273977326
 +    threadId: ThreadId,
 +    media: ReadonlyMap<string, (typeof PICK_MEDIA)[string]>,
 +    copied: Array<string>,
++    timeout: Duration.Input,
 +  ) {
 +    const stored = new Map<string, PickStoredOption["attachmentId"]>();
 +    for (const [source, type] of media) {
@@ -2006,9 +2570,31 @@ index 0000000000000000000000000000000000000000..618bc6ebfcec001f3f67bd1273977326
 +      if (attachmentId === null || target === null) {
 +        return yield* failed("Could not store the picks")(new Error("Invalid thread id."));
 +      }
-+      yield* fileSystem.makeDirectory(path.dirname(target), { recursive: true });
-+      yield* fileSystem.copyFile(source, target);
-+      copied.push(target);
++      const staged = `${target}.part`;
++      copied.push(staged, target);
++      const copyOutcome = yield* runBeforeDeadline(
++        (abandoned) =>
++          Effect.uninterruptible(
++            fileSystem
++              .makeDirectory(path.dirname(target), { recursive: true })
++              .pipe(
++                Effect.andThen(fileSystem.copyFile(source, staged)),
++                Effect.andThen(
++                  Effect.suspend(() =>
++                    abandoned() ? Effect.void : fileSystem.rename(staged, target),
++                  ),
++                ),
++              ),
++          ),
++        timeout,
++        removeFiles([staged, target]),
++      );
++      if (Option.isNone(copyOutcome)) {
++        return yield* failed("Could not store the picks")(
++          new Error(`Timed out copying ${source}.`),
++        );
++      }
++      yield* copyOutcome.value;
 +      stored.set(source, attachmentId);
 +    }
 +    return stored;
@@ -2025,13 +2611,18 @@ index 0000000000000000000000000000000000000000..618bc6ebfcec001f3f67bd1273977326
 +        const existing = yield* readBatch(threadId, id).pipe(Effect.mapError(unreadable));
 +        if (existing !== undefined) return resultOf(existing.item);
 +      }
-+      const idProblems = pickIdProblems(input);
-+      const { problems: fileProblems, media } = yield* checkFiles(input);
-+      const problems = [...idProblems, ...fileProblems];
-+      if (problems.length > 0) return yield* invalid(problems.join("\n"));
 +      const parent = yield* threadManagement
 +        .getThreadRecords(threadId, ["runs"], { messageRoles: [] })
 +        .pipe(Effect.mapError(unreadable));
++      if (isDelegatedAppThread(parent.thread)) {
++        return yield* invalid(
++          "Delegated child threads cannot call request_picks because they finish and settle before the user answers. Return the option paths to the parent thread so it can call request_picks.",
++        );
++      }
++      const idProblems = pickIdProblems(input);
++      const { problems: fileProblems, media } = yield* checkFiles(input, fileTimeout);
++      const problems = [...idProblems, ...fileProblems];
++      if (problems.length > 0) return yield* invalid(problems.join("\n"));
 +      const run = ThreadManagementService.latestActiveRun(parent);
 +      if (
 +        run === undefined ||
@@ -2046,7 +2637,7 @@ index 0000000000000000000000000000000000000000..618bc6ebfcec001f3f67bd1273977326
 +      const rootNodeId = run.rootNodeId;
 +      const copied: Array<string> = [];
 +      return yield* Effect.gen(function* () {
-+        const stored = yield* copyFiles(threadId, media, copied);
++        const stored = yield* copyFiles(threadId, media, copied, fileTimeout);
 +        const questions: Array<PickStoredQuestion> = [];
 +        for (const question of input.questions) {
 +          const options = yield* random.shuffle(
@@ -2088,9 +2679,9 @@ index 0000000000000000000000000000000000000000..618bc6ebfcec001f3f67bd1273977326
 +        ),
 +        // A batch that was not recorded keeps none of its copies.
 +        Effect.onError(() =>
-+          Effect.forEach(copied, (file) => fileSystem.remove(file, { force: true }), {
-+            discard: true,
-+          }).pipe(Effect.ignore),
++          copied.length === 0
++            ? Effect.void
++            : runBeforeDeadline(() => removeFiles(copied), fileTimeout).pipe(Effect.asVoid),
 +        ),
 +      );
 +    },

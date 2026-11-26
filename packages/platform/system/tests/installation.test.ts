@@ -220,7 +220,91 @@ describe("macInstallation", () => {
         false,
       ]);
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)));
+
+  it.live("with relaunch on a headless serve process, restarts serve directly instead of opening the GUI app", () =>
+    Effect.gen(function* () {
+      const { root, installed, backups, built, join } = yield* setup;
+      const fs = yield* FileSystem.FileSystem;
+      const spawner = yield* ChildProcessSpawner;
+      const realRoot = yield* fs.realPath(root);
+      const workDir = join(realRoot, "work folder");
+      const baseDir = join(realRoot, "t3 home");
+      const events = join(realRoot, "events.txt");
+      const relaunched = join(realRoot, "relaunched.txt");
+      const ready = join(realRoot, "serve-ready");
+      yield* fs.makeDirectory(workDir, { recursive: true });
+      yield* serveApp(installed, "0.1.11", ready, relaunched);
+      yield* serveApp(built, "0.1.12", ready, relaunched);
+      const installation = yield* Installation.useSync((service) => service).pipe(
+        Effect.provide(
+          macInstallation({
+            installed,
+            backups,
+            quitTimeout: "10 seconds",
+            opener: ["/bin/sh", "-c", `echo "gui $1" >> '${events}'`, "sh"],
+          }).pipe(Layer.provide(NodeServices.layer)),
+        ),
+      );
+      const serverArgs = [
+        "--require",
+        join(installed, "Contents", "Resources", "app.asar", "compileCache.cjs"),
+        join(installed, "Contents", "Resources", "app.asar", "apps", "server", "dist", "bin.mjs"),
+        "serve",
+        "--host",
+        "0.0.0.0",
+        "--base-dir",
+        baseDir,
+      ];
+      const running = yield* spawner.spawn(
+        ChildProcess.make(join(installed, "Contents", "MacOS", "x"), serverArgs, {
+          cwd: workDir,
+          stdin: "ignore",
+          env: { ELECTRON_RUN_AS_NODE: "1", READY: ready },
+          extendEnv: true,
+        }),
+      );
+      yield* waitFor(ready);
+      const record = fs.writeFileString(events, "recorded\n", { flag: "a" }).pipe(Effect.orDie, Effect.provide(NodeServices.layer));
+      const note = yield* installation.install(built, "0.1.11", { relaunch: running.pid, installed: record });
+      const restarted = yield* waitFor(relaunched);
+      expect([note, yield* read(events), restarted]).toEqual([
+        `installed and reopened; the previous app is at ${join(backups, "T3 Code-0.1.11-1.app")}`,
+        "recorded\n",
+        [`0.1.12|1|${workDir}`, ...serverArgs].join("\n") + "\n",
+      ]);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)));
 });
+
+/**
+ * A stand-in app whose executable runs as a headless server on its first launch (creating `ready` and waiting for
+ * SIGTERM), and on relaunch writes its version, `ELECTRON_RUN_AS_NODE`, working directory and every argument to
+ * `relaunched` and exits.
+ */
+const serveApp = (app: string, version: string, ready: string, relaunched: string) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    yield* fakeApp(app, version);
+    const executable = path.join(app, "Contents", "MacOS", "x");
+    yield* fs.remove(executable, { force: true });
+    yield* write(
+      executable,
+      [
+        "#!/bin/sh",
+        `if [ ! -f '${ready}' ]; then`,
+        '  trap "exit 0" TERM',
+        `  : > '${ready}'`,
+        "  while :; do sleep 0.1; done",
+        "fi",
+        `tmp='${relaunched}.tmp'`,
+        `printf '%s|%s|%s\\n' '${version}' "$ELECTRON_RUN_AS_NODE" "$(pwd -P)" > "$tmp"`,
+        'for arg in "$@"; do printf "%s\\n" "$arg" >> "$tmp"; done',
+        `mv "$tmp" '${relaunched}'`,
+        "",
+      ].join("\n"),
+    );
+    yield* fs.chmod(executable, 0o755);
+  }).pipe(Effect.orDie);
 
 /**
  * A stand-in app that can be opened: a background-only bundle (no window or Dock icon) whose executable, opened with
