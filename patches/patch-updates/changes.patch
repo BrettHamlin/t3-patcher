@@ -1,5 +1,5 @@
 diff --git a/apps/desktop/src/app/DesktopApp.test.ts b/apps/desktop/src/app/DesktopApp.test.ts
-index cc5fca3f42ab43cbecca59413a0c0283670da5d5..ff0e5213951088a425bc3cd2665c1f68dccf15c7 100644
+index 360ed62ce306b42d7736f1f7e16b0a05ef8bcad1..3fe4d8436513658915f252d566b94a9a35ff2769 100644
 --- a/apps/desktop/src/app/DesktopApp.test.ts
 +++ b/apps/desktop/src/app/DesktopApp.test.ts
 @@ -47,6 +47,7 @@ import * as DesktopAppSettings from "../settings/DesktopAppSettings.ts";
@@ -10,7 +10,7 @@ index cc5fca3f42ab43cbecca59413a0c0283670da5d5..ff0e5213951088a425bc3cd2665c1f68
  import * as DesktopUpdates from "../updates/DesktopUpdates.ts";
  import * as DesktopApplicationMenu from "../window/DesktopApplicationMenu.ts";
  import * as DesktopWindow from "../window/DesktopWindow.ts";
-@@ -151,6 +152,9 @@ const runStubbedDesktop = (stub: StubbedDesktop) =>
+@@ -152,6 +153,9 @@ const runStubbedDesktop = (stub: StubbedDesktop) =>
          Effect.provideService(DesktopUpdates.DesktopUpdates, {
            configure: Effect.void,
          } as unknown as DesktopUpdates.DesktopUpdates["Service"]),
@@ -34,18 +34,18 @@ index ef2909045bb4f68019e1572d38f78ffc6e7de8e5..99843dcf575d5272dbb17105138026d5
      Config.withDefault(3000),
    ),
 diff --git a/apps/desktop/src/ipc/DesktopIpcHandlers.ts b/apps/desktop/src/ipc/DesktopIpcHandlers.ts
-index fe65edd0ee1e9b9bbff7bd8cc4bbdf7fdd9ccf3a..2fbe601c09bceae93bc6f32f616207b70f987622 100644
+index 9ffc466d5a825183191b2371022b02f97f301e00..d817c92fea2f8e2a9a65f3f8d420fb02985beba3 100644
 --- a/apps/desktop/src/ipc/DesktopIpcHandlers.ts
 +++ b/apps/desktop/src/ipc/DesktopIpcHandlers.ts
-@@ -34,6 +34,7 @@ import {
+@@ -39,6 +39,7 @@ import {
    installUpdate,
    setUpdateChannel,
  } from "./methods/updates.ts";
 +import { getPatchUpdateState, runPatchUpdate } from "./methods/patchUpdates.ts";
  import {
    getAppBranding,
-   getLocalEnvironmentBootstraps,
-@@ -170,6 +171,8 @@ export const installDesktopIpcHandlers = Effect.fn("desktop.ipc.installHandlers"
+   getDatabaseMigrationProgress,
+@@ -180,6 +181,8 @@ export const installDesktopIpcHandlers = Effect.fn("desktop.ipc.installHandlers"
    yield* ipc.handle(downloadUpdate);
    yield* ipc.handle(installUpdate);
    yield* ipc.handle(checkForUpdate);
@@ -55,7 +55,7 @@ index fe65edd0ee1e9b9bbff7bd8cc4bbdf7fdd9ccf3a..2fbe601c09bceae93bc6f32f616207b7
    yield* ipc.handle(installCliCommand);
    yield* ipc.handle(uninstallCliCommand);
 diff --git a/apps/desktop/src/ipc/channels.ts b/apps/desktop/src/ipc/channels.ts
-index 4a99d52b0e79dc62da23705379b5cd90c22511c5..5e5c3cd7c8e9fd35c833ab9bde291461b5593f0b 100644
+index d590591f595f515bd2f0a655afd4f4342d8f813c..65e1471f789e7b9a474718502baed0668fd3ed85 100644
 --- a/apps/desktop/src/ipc/channels.ts
 +++ b/apps/desktop/src/ipc/channels.ts
 @@ -30,6 +30,9 @@ export const UPDATE_SET_CHANNEL_CHANNEL = "desktop:update-set-channel";
@@ -135,7 +135,7 @@ index ca85ee8b0c417ba11a532becf9344c74c66132ef..ceb302c2ef06c0127194446ec0d0ae5f
    }),
  });
 diff --git a/apps/desktop/src/main.ts b/apps/desktop/src/main.ts
-index 9c79b66d06ad978c03cab38d163fbc2e0cd79abe..a1e6661f7db58f48d72ff95b9c47f5cfcd58179d 100644
+index 8c32805a94463363b84f93291ad14e4581f0b036..77f4c020d1a02ee49a86fc1da32273dce06e4249 100644
 --- a/apps/desktop/src/main.ts
 +++ b/apps/desktop/src/main.ts
 @@ -68,6 +68,7 @@ import * as DesktopLegacyLocalStorage from "./app/DesktopLegacyLocalStorage.ts";
@@ -146,7 +146,7 @@ index 9c79b66d06ad978c03cab38d163fbc2e0cd79abe..a1e6661f7db58f48d72ff95b9c47f5cf
  import * as DesktopUpdates from "./updates/DesktopUpdates.ts";
  import * as BrowserImport from "./preview/BrowserImport/BrowserImport.ts";
  import * as LinuxBrowserSecret from "./preview/BrowserImport/LinuxBrowserSecret.ts";
-@@ -222,6 +223,9 @@ const layerDesktopApplication = Layer.mergeAll(
+@@ -224,6 +225,9 @@ const layerDesktopApplication = Layer.mergeAll(
        Layer.provide(DesktopUpdatePolicy.layer),
        // The same layer as the foundation's, so the policy is still read once.
        Layer.provide(DesktopManagedPolicy.layer),
@@ -157,10 +157,10 @@ index 9c79b66d06ad978c03cab38d163fbc2e0cd79abe..a1e6661f7db58f48d72ff95b9c47f5cf
    ),
    // Updates closes the same tunnels the SSH IPC opens before quitAndInstall.
 diff --git a/apps/desktop/src/preload.ts b/apps/desktop/src/preload.ts
-index 280c5ad6c6716e082df03dcae7787ee17ef7d158..e966124dfcc53bedaffc2eb85760fedc2d63f6cf 100644
+index ab472baabe623f8da2eb9637e291092b4aceba32..a57c262da1262d89e74b36ad6fcfe7c09c63a5a1 100644
 --- a/apps/desktop/src/preload.ts
 +++ b/apps/desktop/src/preload.ts
-@@ -330,6 +330,19 @@ contextBridge.exposeInMainWorld("desktopBridge", {
+@@ -340,6 +340,19 @@ contextBridge.exposeInMainWorld("desktopBridge", {
    downloadUpdate: () => ipcRenderer.invoke(IpcChannels.UPDATE_DOWNLOAD_CHANNEL),
    installUpdate: (expectedVersion) =>
      ipcRenderer.invoke(IpcChannels.UPDATE_INSTALL_CHANNEL, expectedVersion),
@@ -182,10 +182,10 @@ index 280c5ad6c6716e082df03dcae7787ee17ef7d158..e966124dfcc53bedaffc2eb85760fedc
      install: () => ipcRenderer.invoke(IpcChannels.CLI_COMMAND_INSTALL_CHANNEL),
 diff --git a/apps/desktop/src/updates/DesktopPatchUpdates.test.ts b/apps/desktop/src/updates/DesktopPatchUpdates.test.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..94114298acea1344a29a8b4b4024443de12f56cf
+index 0000000000000000000000000000000000000000..d37c64ac39435bcdad44616dad9a75b4a416dba6
 --- /dev/null
 +++ b/apps/desktop/src/updates/DesktopPatchUpdates.test.ts
-@@ -0,0 +1,715 @@
+@@ -0,0 +1,739 @@
 +import * as NodeServices from "@effect/platform-node/NodeServices";
 +import { assert, describe, it } from "@effect/vitest";
 +import type { DesktopPatchUpdateState, DesktopPatchUpdateStep } from "@t3tools/contracts";
@@ -265,6 +265,9 @@ index 0000000000000000000000000000000000000000..94114298acea1344a29a8b4b4024443d
 +/** A T3 home in memory, with `installed` as the patcher's record, and fakes for the feed and the launch. */
 +const setup = Effect.fn("setup")(function* (options: {
 +  readonly installed?: DesktopPatchUpdates.InstalledRecord;
++  readonly stack?: {
++    readonly entries: ReadonlyArray<{ readonly id: string; readonly enabled: boolean }>;
++  };
 +  readonly feed?: () => Response;
 +  /** When given, reading the feed waits for it. */
 +  readonly feedGate?: Deferred.Deferred<void>;
@@ -277,6 +280,9 @@ index 0000000000000000000000000000000000000000..94114298acea1344a29a8b4b4024443d
 +  const files = new Map<string, string>();
 +  if (options.installed !== undefined) {
 +    files.set(`${USERDATA}/installed.json`, JSON.stringify(options.installed));
++  }
++  if (options.stack !== undefined) {
++    files.set(`${USERDATA}/stack.json`, JSON.stringify(options.stack));
 +  }
 +  const fetched: string[] = [];
 +  const launches: Launch[] = [];
@@ -410,34 +416,52 @@ index 0000000000000000000000000000000000000000..94114298acea1344a29a8b4b4024443d
 +    }),
 +  );
 +
-+  it.effect("offers the feed's newer versions of installed patches only", () =>
-+    Effect.gen(function* () {
-+      const { service, fetched, sent } = yield* setup({
-+        installed: installedRecord,
-+        feed: () => Response.json(feedOf({ "journey-kit": 1, picks: 2, "not-installed": 5 })),
-+      });
-+      const checked = yield* service.check("web-ui");
-+      const offered: DesktopPatchUpdateState = {
-+        ...idle,
-+        status: "available",
-+        updates: [{ id: "picks", title: "Title picks", installedVersion: 1, availableVersion: 2 }],
-+      };
-+      assert.deepStrictEqual(
-+        {
-+          installed: service.installed,
-+          checked: withoutTime(checked),
-+          sent: sent.map(withoutTime),
-+          fetched,
-+        },
-+        {
-+          installed: Option.some(installedRecord),
-+          checked: offered,
-+          sent: [{ ...idle, status: "checking" }, offered],
-+          fetched: [FEED],
-+        },
-+      );
-+      assert.isTrue(checked.checkedAt !== null && !Number.isNaN(Date.parse(checked.checkedAt)));
-+    }),
++  it.effect(
++    "offers newer versions of installed patches and brand-new published patches, skipping any disabled in stack.json",
++    () =>
++      Effect.gen(function* () {
++        const { service, fetched, sent } = yield* setup({
++          installed: installedRecord,
++          stack: {
++            entries: [
++              { id: "journey-kit", enabled: true },
++              { id: "picks", enabled: true },
++              { id: "turned-off", enabled: false },
++            ],
++          },
++          feed: () =>
++            Response.json(feedOf({ "journey-kit": 1, picks: 2, "brand-new": 1, "turned-off": 5 })),
++        });
++        const checked = yield* service.check("web-ui");
++        const offered: DesktopPatchUpdateState = {
++          ...idle,
++          status: "available",
++          updates: [
++            { id: "picks", title: "Title picks", installedVersion: 1, availableVersion: 2 },
++            {
++              id: "brand-new",
++              title: "Title brand-new",
++              installedVersion: null,
++              availableVersion: 1,
++            },
++          ],
++        };
++        assert.deepStrictEqual(
++          {
++            installed: service.installed,
++            checked: withoutTime(checked),
++            sent: sent.map(withoutTime),
++            fetched,
++          },
++          {
++            installed: Option.some(installedRecord),
++            checked: offered,
++            sent: [{ ...idle, status: "checking" }, offered],
++            fetched: [FEED],
++          },
++        );
++        assert.isTrue(checked.checkedAt !== null && !Number.isNaN(Date.parse(checked.checkedAt)));
++      }),
 +  );
 +
 +  it.effect(
@@ -903,10 +927,10 @@ index 0000000000000000000000000000000000000000..94114298acea1344a29a8b4b4024443d
 +});
 diff --git a/apps/desktop/src/updates/DesktopPatchUpdates.ts b/apps/desktop/src/updates/DesktopPatchUpdates.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..76a7330eac9a8eca507366fb004b5a5246541dc4
+index 0000000000000000000000000000000000000000..792c0e2686ae60593d470939eb6d6255aeb66dba
 --- /dev/null
 +++ b/apps/desktop/src/updates/DesktopPatchUpdates.ts
-@@ -0,0 +1,465 @@
+@@ -0,0 +1,494 @@
 +// Patch updates on a build made by T3 Patcher, which writes <T3 home>/userdata/patcher/installed.json. Only then
 +// are the feed's newer versions of the installed patches offered; the patcher's update rebuilds and installs the
 +// app, quitting it first and opening it again after.
@@ -972,6 +996,11 @@ index 0000000000000000000000000000000000000000..76a7330eac9a8eca507366fb004b5a52
 +});
 +export type PatchFeed = typeof PatchFeed.Type;
 +
++/** <userdata>/stack.json: which patches are explicitly turned on or off on this machine. */
++const SavedStack = Schema.Struct({
++  entries: Schema.Array(Schema.Struct({ id: Schema.String, enabled: Schema.Boolean })),
++});
++
 +/** <userdata>/last-run.json: the patcher's report of its run, rewritten as each step changes. */
 +const RunReport = Schema.Struct({
 +  version: Schema.String,
@@ -980,6 +1009,7 @@ index 0000000000000000000000000000000000000000..76a7330eac9a8eca507366fb004b5a52
 +  steps: Schema.Array(DesktopPatchUpdateStepSchema),
 +});
 +const decodeInstalledRecord = Schema.decodeUnknownEffect(Schema.fromJsonString(InstalledRecord));
++const decodeSavedStack = Schema.decodeUnknownEffect(Schema.fromJsonString(SavedStack));
 +const decodeRunReport = Schema.decodeUnknownEffect(Schema.fromJsonString(RunReport));
 +
 +export class PatcherLaunchError extends Schema.TaggedError<PatcherLaunchError>()(
@@ -1091,12 +1121,18 @@ index 0000000000000000000000000000000000000000..76a7330eac9a8eca507366fb004b5a52
 +  checkedAt: null,
 +};
 +
-+/** The feed's newer versions of the installed patches; patches that aren't installed are never offered. */
++/**
++ * Newer versions of installed patches, plus newly published patches not yet installed, except any patch explicitly
++ * turned off in `stack.json`.
++ */
 +function patchUpdatesFrom(
 +  installed: InstalledRecord,
 +  feed: PatchFeed,
++  disabled: ReadonlySet<string> = new Set(),
 +): ReadonlyArray<DesktopPatchUpdateItem> {
-+  return installed.patches.flatMap((patch) => {
++  const installedIds = new Set(installed.patches.map((patch) => patch.id));
++  const bumped = installed.patches.flatMap((patch) => {
++    if (disabled.has(patch.id)) return [];
 +    const published = feed.patches.find((entry) => entry.id === patch.id);
 +    return published !== undefined && published.version > patch.version
 +      ? [
@@ -1109,6 +1145,15 @@ index 0000000000000000000000000000000000000000..76a7330eac9a8eca507366fb004b5a52
 +        ]
 +      : [];
 +  });
++  const added = feed.patches
++    .filter((entry) => !installedIds.has(entry.id) && !disabled.has(entry.id))
++    .map((published) => ({
++      id: published.id,
++      title: published.title,
++      installedVersion: null,
++      availableVersion: published.version,
++    }));
++  return [...bumped, ...added];
 +}
 +
 +/** The arguments the update runs with: the record's command, the T3 Code version to build, and this app's pid. */
@@ -1207,6 +1252,14 @@ index 0000000000000000000000000000000000000000..76a7330eac9a8eca507366fb004b5a52
 +    const checkedAt = yield* now;
 +    if (fetched._tag === "Failure")
 +      yield* logWarning("could not read the patch update feed", { reason });
++    const disabled = yield* fileSystem.readFileString(path.join(userdata, "stack.json")).pipe(
++      Effect.flatMap(decodeSavedStack),
++      Effect.map(
++        (stack) =>
++          new Set(stack.entries.filter((entry) => !entry.enabled).map((entry) => entry.id)),
++      ),
++      Effect.orElseSucceed(() => new Set<string>()),
++    );
 +    const record = installed.value;
 +    const result = (current: DesktopPatchUpdateState): DesktopPatchUpdateState => {
 +      if (fetched._tag === "Failure") {
@@ -1218,7 +1271,7 @@ index 0000000000000000000000000000000000000000..76a7330eac9a8eca507366fb004b5a52
 +          checkedAt,
 +        };
 +      }
-+      const updates = patchUpdatesFrom(record, fetched.success);
++      const updates = patchUpdatesFrom(record, fetched.success, disabled);
 +      return {
 +        ...current,
 +        status: updates.length > 0 ? "available" : "up-to-date",
@@ -1605,7 +1658,7 @@ index 0000000000000000000000000000000000000000..f37ffdc8741cbb8a4a98ba4cea8d75b4
 +  });
 +});
 diff --git a/apps/desktop/src/updates/DesktopUpdates.ts b/apps/desktop/src/updates/DesktopUpdates.ts
-index 775a9ff6b04ffedb57c6a5c0f426e17cf32eb404..1946022e79900f53a6d0dd207a41dc589f6802dc 100644
+index 32e64502d93330d8eb0e14ae82c1f80fbd3e93ca..a4515d0975cfd22df815a7ef0a8fdb7f63604d2b 100644
 --- a/apps/desktop/src/updates/DesktopUpdates.ts
 +++ b/apps/desktop/src/updates/DesktopUpdates.ts
 @@ -38,6 +38,7 @@ import * as ElectronWindow from "../electron/ElectronWindow.ts";
@@ -1616,7 +1669,7 @@ index 775a9ff6b04ffedb57c6a5c0f426e17cf32eb404..1946022e79900f53a6d0dd207a41dc58
  import * as DesktopUpdatePolicy from "./DesktopUpdatePolicy.ts";
  import {
    normalizeDesktopUpdateReleaseNotes,
-@@ -64,6 +65,9 @@ const CHANNEL_CHANGE_RETRIES = 30;
+@@ -65,6 +66,9 @@ const CHANNEL_CHANGE_RETRIES = 30;
  const AUTO_UPDATE_STARTUP_DELAY = "15 seconds";
  const AUTO_UPDATE_POLL_INTERVAL = "4 hours";
  const UPDATE_CHECK_WAIT = Duration.seconds(90);
@@ -1626,7 +1679,7 @@ index 775a9ff6b04ffedb57c6a5c0f426e17cf32eb404..1946022e79900f53a6d0dd207a41dc58
  
  type UpdateAction = "check" | "download" | "install" | "install-recovery" | "channel";
  
-@@ -193,6 +197,8 @@ export class DesktopUpdates extends Context.Service<
+@@ -195,6 +199,8 @@ export class DesktopUpdates extends Context.Service<
    DesktopUpdates,
    {
      readonly getState: Effect.Effect<DesktopUpdateState>;
@@ -1635,7 +1688,7 @@ index 775a9ff6b04ffedb57c6a5c0f426e17cf32eb404..1946022e79900f53a6d0dd207a41dc58
      readonly isActionActive: Effect.Effect<boolean>;
      readonly isInstallActive: Effect.Effect<boolean>;
      readonly subscribe: Effect.Effect<
-@@ -386,6 +392,10 @@ export const make = Effect.gen(function* () {
+@@ -395,6 +401,10 @@ export const make = Effect.gen(function* () {
    const policy = yield* DesktopUpdatePolicy.DesktopUpdatePolicy;
    // Any user can set the mock flag, so it never replaces an administrator's update source.
    const mockUpdates = config.mockUpdates && policy.message === null;
@@ -1646,7 +1699,7 @@ index 775a9ff6b04ffedb57c6a5c0f426e17cf32eb404..1946022e79900f53a6d0dd207a41dc58
  
    const appUpdateYmlConfigRef = yield* Ref.make<Option.Option<AppUpdateYmlConfig>>(Option.none());
    const activeUpdateActionRef = yield* Ref.make<Option.Option<UpdateAction>>(Option.none());
-@@ -467,7 +477,7 @@ export const make = Effect.gen(function* () {
+@@ -477,7 +487,7 @@ export const make = Effect.gen(function* () {
    const hasUpdateFeedConfig = Ref.get(appUpdateYmlConfigRef).pipe(
      Effect.map(
        (appUpdateYmlConfig) =>
@@ -1655,7 +1708,7 @@ index 775a9ff6b04ffedb57c6a5c0f426e17cf32eb404..1946022e79900f53a6d0dd207a41dc58
      ),
    );
  
-@@ -1235,8 +1245,17 @@ export const make = Effect.gen(function* () {
+@@ -1300,8 +1310,17 @@ export const make = Effect.gen(function* () {
      );
    });
  
@@ -1673,7 +1726,7 @@ index 775a9ff6b04ffedb57c6a5c0f426e17cf32eb404..1946022e79900f53a6d0dd207a41dc58
      isActionActive: activeUpdateAction.pipe(Effect.map(Option.isSome)),
      isInstallActive: activeUpdateAction.pipe(
        Effect.map((action) => Option.isSome(action) && action.value === "install"),
-@@ -1260,6 +1279,7 @@ export const make = Effect.gen(function* () {
+@@ -1325,6 +1344,7 @@ export const make = Effect.gen(function* () {
          void Effect.runPromiseWith(context)(effect);
        };
  
@@ -1681,7 +1734,7 @@ index 775a9ff6b04ffedb57c6a5c0f426e17cf32eb404..1946022e79900f53a6d0dd207a41dc58
        const appUpdateYmlConfig = yield* readAppUpdateYml;
        yield* Ref.set(appUpdateYmlConfigRef, appUpdateYmlConfig);
  
-@@ -1283,6 +1303,13 @@ export const make = Effect.gen(function* () {
+@@ -1348,6 +1368,13 @@ export const make = Effect.gen(function* () {
            provider: "generic",
            url: policy.feedUrl,
          } as ElectronUpdater.ElectronUpdaterFeedUrl);
@@ -1695,7 +1748,7 @@ index 775a9ff6b04ffedb57c6a5c0f426e17cf32eb404..1946022e79900f53a6d0dd207a41dc58
        }
  
        const settings = yield* desktopSettings.get;
-@@ -1423,6 +1450,15 @@ export const make = Effect.gen(function* () {
+@@ -1488,6 +1515,15 @@ export const make = Effect.gen(function* () {
        };
      }),
      download: Effect.gen(function* () {
@@ -1711,7 +1764,7 @@ index 775a9ff6b04ffedb57c6a5c0f426e17cf32eb404..1946022e79900f53a6d0dd207a41dc58
        const result = yield* downloadAvailableUpdate(true);
        return {
          accepted: result.accepted,
-@@ -1430,11 +1466,15 @@ export const make = Effect.gen(function* () {
+@@ -1495,11 +1531,15 @@ export const make = Effect.gen(function* () {
          state: yield* Ref.get(updateStateRef),
        };
      }).pipe(Effect.withSpan("desktop.updates.download")),
@@ -1732,7 +1785,7 @@ index 775a9ff6b04ffedb57c6a5c0f426e17cf32eb404..1946022e79900f53a6d0dd207a41dc58
    });
  });
 diff --git a/apps/desktop/src/updates/updatesTestHarness.ts b/apps/desktop/src/updates/updatesTestHarness.ts
-index b118d15ced674981744cdfade5d62f97bd784e3c..c5060c40dbfa29e009aecd09a9ef545e8a8271d2 100644
+index 9b8f78e19000c03aa8c566fb154f712c2e1008d1..f4ed08f7b220ddd01b3e75463348bf462dd72827 100644
 --- a/apps/desktop/src/updates/updatesTestHarness.ts
 +++ b/apps/desktop/src/updates/updatesTestHarness.ts
 @@ -15,6 +15,7 @@ import * as ElectronWindow from "../electron/ElectronWindow.ts";
@@ -1760,7 +1813,7 @@ index b118d15ced674981744cdfade5d62f97bd784e3c..c5060c40dbfa29e009aecd09a9ef545e
  
    const addListener = (eventName: string, listener: (...args: readonly unknown[]) => void) => {
      const eventListeners = listeners.get(eventName) ?? new Set();
-@@ -290,8 +294,34 @@ export function makeHarness(options: UpdatesHarnessOptions = {}) {
+@@ -292,8 +296,34 @@ export function makeHarness(options: UpdatesHarnessOptions = {}) {
        }),
    });
  
@@ -1795,7 +1848,7 @@ index b118d15ced674981744cdfade5d62f97bd784e3c..c5060c40dbfa29e009aecd09a9ef545e
      Layer.provide(DesktopUpdatePolicy.layerTest(options.policy)),
      Layer.provideMerge(layerUpdater),
      Layer.provideMerge(layerWindow),
-@@ -316,6 +346,8 @@ export function makeHarness(options: UpdatesHarnessOptions = {}) {
+@@ -318,6 +348,8 @@ export function makeHarness(options: UpdatesHarnessOptions = {}) {
      checkCount: () => checkCount,
      quitAndInstalls: () => quitAndInstallCount,
      installSteps,
@@ -1805,10 +1858,10 @@ index b118d15ced674981744cdfade5d62f97bd784e3c..c5060c40dbfa29e009aecd09a9ef545e
      updateInProgressMarker: () =>
        [...updateMarkerContents].find(([path]) => path.endsWith("/desktop-update-in-progress"))?.[1],
 diff --git a/apps/desktop/src/window/DesktopApplicationMenu.test.ts b/apps/desktop/src/window/DesktopApplicationMenu.test.ts
-index 8b2c4317bd20f3e18499d4be4f45ced198ca17c2..9bcc29a882bf5a702c80e4c786dca17b0b111057 100644
+index 5b55b3638ed5a8fcc78c71e18fa282a17e7d2a81..a39a94deaceab2211eee2b096fc29a421bdb80a2 100644
 --- a/apps/desktop/src/window/DesktopApplicationMenu.test.ts
 +++ b/apps/desktop/src/window/DesktopApplicationMenu.test.ts
-@@ -77,6 +77,7 @@ const layerElectronDialog = ({ shownMessageBox }: MenuServices) =>
+@@ -78,6 +78,7 @@ const layerElectronDialog = ({ shownMessageBox }: MenuServices) =>
  
  const layerDesktopUpdates = ({ checkResult }: MenuServices) =>
    Layer.succeed(DesktopUpdates.DesktopUpdates, {
@@ -1818,10 +1871,10 @@ index 8b2c4317bd20f3e18499d4be4f45ced198ca17c2..9bcc29a882bf5a702c80e4c786dca17b
      isInstallActive: Effect.succeed(false),
 diff --git a/apps/web/src/components/sidebar/SidebarPatchUpdatePill.browser.test.tsx b/apps/web/src/components/sidebar/SidebarPatchUpdatePill.browser.test.tsx
 new file mode 100644
-index 0000000000000000000000000000000000000000..db6c74ed4977f81b2e2d60c72a14407425d22632
+index 0000000000000000000000000000000000000000..eda0e71cfcb02b766ed9ddf984b3eada1e450347
 --- /dev/null
 +++ b/apps/web/src/components/sidebar/SidebarPatchUpdatePill.browser.test.tsx
-@@ -0,0 +1,185 @@
+@@ -0,0 +1,197 @@
 +import type {
 +  DesktopPatchUpdateActionResult,
 +  DesktopPatchUpdateState,
@@ -1903,7 +1956,15 @@ index 0000000000000000000000000000000000000000..db6c74ed4977f81b2e2d60c72a144074
 +    mocks.patch = {
 +      ...idle,
 +      status: "available",
-+      updates: [{ id: "picks", title: "Picks", installedVersion: 1, availableVersion: 2 }],
++      updates: [
++        { id: "picks", title: "Picks", installedVersion: 1, availableVersion: 2 },
++        {
++          id: "work-timestamps",
++          title: "Work timestamps",
++          installedVersion: null,
++          availableVersion: 1,
++        },
++      ],
 +    };
 +    const runPatchUpdate = vi.fn<() => Promise<DesktopPatchUpdateActionResult>>(() =>
 +      Promise.resolve({ accepted: true, state: { ...idle, status: "updating" } }),
@@ -1913,7 +1974,11 @@ index 0000000000000000000000000000000000000000..db6c74ed4977f81b2e2d60c72a144074
 +
 +    await userEvent.click(screen.getByRole("button", { name: "Updates available" }));
 +    await expect.element(page.getByTestId("patch-update-popover")).toBeVisible();
-+    expect(texts("patch-update-row")).toEqual(["T3 Code0.1.11 → 0.1.12", "Picks1 → 2"]);
++    expect(texts("patch-update-row")).toEqual([
++      "T3 Code0.1.11 → 0.1.12",
++      "Picks1 → 2",
++      "Work timestampsadded, version 1",
++    ]);
 +
 +    await userEvent.click(page.getByRole("button", { name: "Update", exact: true }));
 +    await vi.waitFor(() => expect(runPatchUpdate.mock.calls).toEqual([[]]));
@@ -2214,7 +2279,7 @@ index 0000000000000000000000000000000000000000..9b4352833cb050ce81873699063149a8
 +  );
 +}
 diff --git a/apps/web/src/components/sidebar/SidebarUpdatePill.tsx b/apps/web/src/components/sidebar/SidebarUpdatePill.tsx
-index 71fce36f3ed4305e49f3252bbac18eca94a25308..0573a112f721f491cef47fef5c510de8848d7be3 100644
+index 396db469d308f37ebe03d81d99175fae4b5509a2..c3976dc801d8dbb5f0a79d8403c8140e87e0741a 100644
 --- a/apps/web/src/components/sidebar/SidebarUpdatePill.tsx
 +++ b/apps/web/src/components/sidebar/SidebarUpdatePill.tsx
 @@ -11,6 +11,7 @@ import { m } from "../../i18n/messages";
@@ -2225,7 +2290,7 @@ index 71fce36f3ed4305e49f3252bbac18eca94a25308..0573a112f721f491cef47fef5c510de8
  import { useDesktopUpdateState } from "../../state/desktopUpdate";
  import { usePrimaryManagedPolicy } from "../../state/managedPolicy";
  import { stackedThreadToast, toastManager } from "../ui/toast";
-@@ -41,6 +42,8 @@ import {
+@@ -42,6 +43,8 @@ import {
  } from "./DesktopUpdateStatusIcon";
  import { SidebarUpdateReleaseNotes } from "./SidebarUpdateReleaseNotes";
  import { SidebarUpdateCapsule } from "./SidebarUpdateCapsule";
@@ -2234,7 +2299,7 @@ index 71fce36f3ed4305e49f3252bbac18eca94a25308..0573a112f721f491cef47fef5c510de8
  import { UpdateEverythingDialog } from "./UpdateEverythingDialog";
  import type { UpdateEverythingRun, UpdateRunLocalState } from "./updateEverything.logic";
  import {
-@@ -197,6 +200,12 @@ export async function installLocalUpdate(
+@@ -198,6 +201,12 @@ export async function installLocalUpdate(
  }
  
  export function SidebarUpdatePill() {
@@ -2249,10 +2314,10 @@ index 71fce36f3ed4305e49f3252bbac18eca94a25308..0573a112f721f491cef47fef5c510de8
  
 diff --git a/apps/web/src/components/sidebar/patchUpdate.logic.test.ts b/apps/web/src/components/sidebar/patchUpdate.logic.test.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..84fb33963dc2da3b0e2d7ab5b97d13f1d2f149c4
+index 0000000000000000000000000000000000000000..c9bfd7c750158edea14aa9d9602da6f5dc857b82
 --- /dev/null
 +++ b/apps/web/src/components/sidebar/patchUpdate.logic.test.ts
-@@ -0,0 +1,159 @@
+@@ -0,0 +1,173 @@
 +import type { DesktopPatchUpdateState, DesktopUpdateState } from "@t3tools/contracts";
 +import { describe, expect, it } from "vite-plus/test";
 +
@@ -2277,6 +2342,12 @@ index 0000000000000000000000000000000000000000..84fb33963dc2da3b0e2d7ab5b97d13f1
 +};
 +
 +const picks = { id: "picks", title: "Picks", installedVersion: 1, availableVersion: 2 };
++const brandNew = {
++  id: "work-timestamps",
++  title: "Work timestamps",
++  installedVersion: null,
++  availableVersion: 1,
++};
 +
 +const app = (status: DesktopUpdateState["status"], availableVersion: string | null) =>
 +  ({
@@ -2312,10 +2383,10 @@ index 0000000000000000000000000000000000000000..84fb33963dc2da3b0e2d7ab5b97d13f1
 +    ]).toEqual([false, false, false, false, true, true, true, true]);
 +  });
 +
-+  it("lists T3 Code first, then each patch, from its version to the new one", () => {
++  it("lists T3 Code first, then each patch, from its version to the new one or as added when new", () => {
 +    expect([
 +      patchUpdateRows(
-+        { ...idle, status: "available", updates: [picks] },
++        { ...idle, status: "available", updates: [picks, brandNew] },
 +        app("available", "0.1.12"),
 +      ),
 +      patchUpdateRows(
@@ -2334,6 +2405,14 @@ index 0000000000000000000000000000000000000000..84fb33963dc2da3b0e2d7ab5b97d13f1
 +          removed: false,
 +        },
 +        { key: "patch:picks", name: "Picks", from: "1", to: "2", added: false, removed: false },
++        {
++          key: "patch:work-timestamps",
++          name: "Work timestamps",
++          from: "",
++          to: "1",
++          added: true,
++          removed: false,
++        },
 +      ],
 +      [{ key: "patch:picks", name: "Picks", from: "1", to: "2", added: false, removed: false }],
 +      null,
@@ -2414,7 +2493,7 @@ index 0000000000000000000000000000000000000000..84fb33963dc2da3b0e2d7ab5b97d13f1
 +});
 diff --git a/apps/web/src/components/sidebar/patchUpdate.logic.ts b/apps/web/src/components/sidebar/patchUpdate.logic.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..54a20de7a0bf736a213dbc9bc5162fb91439faa0
+index 0000000000000000000000000000000000000000..b96dbccac489b96c43fd3737a85ce157472f6a19
 --- /dev/null
 +++ b/apps/web/src/components/sidebar/patchUpdate.logic.ts
 @@ -0,0 +1,99 @@
@@ -2497,9 +2576,9 @@ index 0000000000000000000000000000000000000000..54a20de7a0bf736a213dbc9bc5162fb9
 +    ...patch.updates.map((update) => ({
 +      key: `patch:${update.id}`,
 +      name: update.title,
-+      from: String(update.installedVersion),
++      from: update.installedVersion === null ? "" : String(update.installedVersion),
 +      to: String(update.availableVersion),
-+      added: false,
++      added: update.installedVersion === null,
 +      removed: false,
 +    })),
 +  ];
@@ -2518,15 +2597,15 @@ index 0000000000000000000000000000000000000000..54a20de7a0bf736a213dbc9bc5162fb9
 +  };
 +}
 diff --git a/apps/web/src/i18n/translations/de.json b/apps/web/src/i18n/translations/de.json
-index 5439ee39688eade31897af144b50a5f5383f290e..f6d163cac02f6e5ddb358e41aef770980a48f73c 100644
+index 5fd6ff3ede89a7a81d36e15752bc754a650fb624..59c33b4daa4b64faa7d5992ec4699dcbd01641e5 100644
 --- a/apps/web/src/i18n/translations/de.json
 +++ b/apps/web/src/i18n/translations/de.json
-@@ -12196,5 +12196,49 @@
-   "27d76249d09eb69f": "Review-Leitfaden bereit",
-   "faa3bb26abb39c93": "Review-Leitfaden fehlgeschlagen",
-   "b7df38b7d8792d78": "Leitfaden öffnen",
--  "9e91e9a77b664e4e": "Review-Leitfaden konnte nicht gestartet werden"
-+  "9e91e9a77b664e4e": "Review-Leitfaden konnte nicht gestartet werden",
+@@ -12975,5 +12975,49 @@
+   "201490988858b511": "zurückgezogen von {by}",
+   "99451a5d2d40440f": "Zurückgezogen von {by}.",
+   "3ee30a50b70fffab": "Zurückgezogen von {by}: {reason}",
+-  "92e129bf413a1220": "zurückgezogen"
++  "92e129bf413a1220": "zurückgezogen",
 +  "6be71663e706d0f6": "Der anfängliche Status der Patch-Updates konnte nach {count} Versuchen nicht gelesen werden.",
 +  "b03aa2bf52a10a9d": "Wird mit T3 Patcher aktualisiert…",
 +  "7b3a5c5948fc9952": "Updates verfügbar",
@@ -2573,15 +2652,15 @@ index 5439ee39688eade31897af144b50a5f5383f290e..f6d163cac02f6e5ddb358e41aef77098
 +  "9beaa3885c505fd1": "hinzugefügt, Version {version}"
  }
 diff --git a/apps/web/src/i18n/translations/en.json b/apps/web/src/i18n/translations/en.json
-index c378e66342505d9a5fa15fb0767a74aad29325d5..504b699b0bb997aa41827b27ba3414b9afdb4310 100644
+index fa018a7c51464a86d51b73fcc252d2587a19221b..c2978d20e6bfb10f990893bbbef74be4d861a1e4 100644
 --- a/apps/web/src/i18n/translations/en.json
 +++ b/apps/web/src/i18n/translations/en.json
-@@ -12205,5 +12205,49 @@
-   "27d76249d09eb69f": "Review guide ready",
-   "faa3bb26abb39c93": "Review guide failed",
-   "b7df38b7d8792d78": "Open guide",
--  "9e91e9a77b664e4e": "Could not start a review guide"
-+  "9e91e9a77b664e4e": "Could not start a review guide",
+@@ -12984,5 +12984,49 @@
+   "201490988858b511": "withdrawn by {by}",
+   "99451a5d2d40440f": "Withdrawn by {by}.",
+   "3ee30a50b70fffab": "Withdrawn by {by}: {reason}",
+-  "92e129bf413a1220": "withdrawn"
++  "92e129bf413a1220": "withdrawn",
 +  "6be71663e706d0f6": "Failed to read the initial patch update state after {count} attempts.",
 +  "b03aa2bf52a10a9d": "Updating with T3 Patcher…",
 +  "7b3a5c5948fc9952": "Updates available",
@@ -2628,15 +2707,15 @@ index c378e66342505d9a5fa15fb0767a74aad29325d5..504b699b0bb997aa41827b27ba3414b9
 +  "9beaa3885c505fd1": "added, version {version}"
  }
 diff --git a/apps/web/src/i18n/translations/es.json b/apps/web/src/i18n/translations/es.json
-index 1538850527718730a5137e340ce7f8f44d40e643..84bfa2d71d81e48e525f0ae68a986a871a4d1445 100644
+index 50309bfa62b158db0c0c20e158e2b1c529157129..9f8efe7afe776164b12f8330d65fd541cc69ae32 100644
 --- a/apps/web/src/i18n/translations/es.json
 +++ b/apps/web/src/i18n/translations/es.json
-@@ -12191,5 +12191,49 @@
-   "27d76249d09eb69f": "Guía de revisión lista",
-   "faa3bb26abb39c93": "Falló la guía de revisión",
-   "b7df38b7d8792d78": "Abrir guía",
--  "9e91e9a77b664e4e": "No se pudo iniciar una guía de revisión"
-+  "9e91e9a77b664e4e": "No se pudo iniciar una guía de revisión",
+@@ -12970,5 +12970,49 @@
+   "201490988858b511": "retirada por {by}",
+   "99451a5d2d40440f": "Retirada por {by}.",
+   "3ee30a50b70fffab": "Retirada por {by}: {reason}",
+-  "92e129bf413a1220": "retirada"
++  "92e129bf413a1220": "retirada",
 +  "6be71663e706d0f6": "No se pudo leer el estado inicial de las actualizaciones de parches tras {count} intentos.",
 +  "b03aa2bf52a10a9d": "Actualizando con T3 Patcher…",
 +  "7b3a5c5948fc9952": "Actualizaciones disponibles",
@@ -2683,15 +2762,15 @@ index 1538850527718730a5137e340ce7f8f44d40e643..84bfa2d71d81e48e525f0ae68a986a87
 +  "9beaa3885c505fd1": "añadido, versión {version}"
  }
 diff --git a/apps/web/src/i18n/translations/fr.json b/apps/web/src/i18n/translations/fr.json
-index b9166940ccf6600d3a91ab869aa0279f7c05258a..d287cfa26d9ed22e7feae528246aadc49504879a 100644
+index ef718bab748889edb8d1901a522913b6b5276b8e..5c687a6274865657938bc4b3ea3e38c8fe8bb2f5 100644
 --- a/apps/web/src/i18n/translations/fr.json
 +++ b/apps/web/src/i18n/translations/fr.json
-@@ -12196,5 +12196,49 @@
-   "27d76249d09eb69f": "Guide de revue prêt",
-   "faa3bb26abb39c93": "Échec du guide de revue",
-   "b7df38b7d8792d78": "Ouvrir le guide",
--  "9e91e9a77b664e4e": "Impossible de démarrer un guide de revue"
-+  "9e91e9a77b664e4e": "Impossible de démarrer un guide de revue",
+@@ -12975,5 +12975,49 @@
+   "201490988858b511": "retirée par {by}",
+   "99451a5d2d40440f": "Retirée par {by}.",
+   "3ee30a50b70fffab": "Retirée par {by} : {reason}",
+-  "92e129bf413a1220": "retirée"
++  "92e129bf413a1220": "retirée",
 +  "6be71663e706d0f6": "Impossible de lire l’état initial des mises à jour de correctifs après {count} tentatives.",
 +  "b03aa2bf52a10a9d": "Mise à jour avec T3 Patcher…",
 +  "7b3a5c5948fc9952": "Mises à jour disponibles",
@@ -2738,15 +2817,15 @@ index b9166940ccf6600d3a91ab869aa0279f7c05258a..d287cfa26d9ed22e7feae528246aadc4
 +  "9beaa3885c505fd1": "ajouté, version {version}"
  }
 diff --git a/apps/web/src/i18n/translations/ja.json b/apps/web/src/i18n/translations/ja.json
-index da6a34749df883d48fa5ec7db9008751c412cd09..f34cf813f7b9b8970a840861707455a1e765deae 100644
+index 206f1bbddfd7c4b96a1c5274fa25d9c66f7954de..496b8dcfbe32c0d902ecee0eaabd2c37a6f87ddd 100644
 --- a/apps/web/src/i18n/translations/ja.json
 +++ b/apps/web/src/i18n/translations/ja.json
-@@ -12144,5 +12144,49 @@
-   "27d76249d09eb69f": "レビューガイドの準備ができました",
-   "faa3bb26abb39c93": "レビューガイドの作成に失敗しました",
-   "b7df38b7d8792d78": "ガイドを開く",
--  "9e91e9a77b664e4e": "レビューガイドを開始できませんでした"
-+  "9e91e9a77b664e4e": "レビューガイドを開始できませんでした",
+@@ -12911,5 +12911,49 @@
+   "201490988858b511": "{by} が取り下げ",
+   "99451a5d2d40440f": "{by} が取り下げました。",
+   "3ee30a50b70fffab": "{by} が取り下げました: {reason}",
+-  "92e129bf413a1220": "取り下げ済み"
++  "92e129bf413a1220": "取り下げ済み",
 +  "6be71663e706d0f6": "{count} 回試行しましたが、パッチ更新の初期状態を読み込めませんでした。",
 +  "b03aa2bf52a10a9d": "T3 Patcher で更新中…",
 +  "7b3a5c5948fc9952": "アップデートがあります",
@@ -2793,15 +2872,15 @@ index da6a34749df883d48fa5ec7db9008751c412cd09..f34cf813f7b9b8970a840861707455a1
 +  "9beaa3885c505fd1": "追加、バージョン {version}"
  }
 diff --git a/apps/web/src/i18n/translations/ko.json b/apps/web/src/i18n/translations/ko.json
-index f38e81a9b93989d17c0eda0dedd40d6c3a7ef3d3..31f32f568d5d8aeb36e163ef80ed81e133a92b1f 100644
+index 18acb6158025985d14f55401cacd9937cfaca11f..853a05d0dc2cd167e4c102d720e068bd0ccc2646 100644
 --- a/apps/web/src/i18n/translations/ko.json
 +++ b/apps/web/src/i18n/translations/ko.json
-@@ -12140,5 +12140,49 @@
-   "27d76249d09eb69f": "검토 가이드 준비됨",
-   "faa3bb26abb39c93": "검토 가이드 실패",
-   "b7df38b7d8792d78": "가이드 열기",
--  "9e91e9a77b664e4e": "검토 가이드를 시작할 수 없습니다"
-+  "9e91e9a77b664e4e": "검토 가이드를 시작할 수 없습니다",
+@@ -12908,5 +12908,49 @@
+   "201490988858b511": "{by}에서 철회함",
+   "99451a5d2d40440f": "{by}에서 철회했습니다.",
+   "3ee30a50b70fffab": "{by}에서 철회했습니다: {reason}",
+-  "92e129bf413a1220": "철회됨"
++  "92e129bf413a1220": "철회됨",
 +  "6be71663e706d0f6": "{count}번 시도했지만 패치 업데이트의 초기 상태를 읽지 못했습니다.",
 +  "b03aa2bf52a10a9d": "T3 Patcher로 업데이트하는 중…",
 +  "7b3a5c5948fc9952": "업데이트 가능",
@@ -2848,15 +2927,15 @@ index f38e81a9b93989d17c0eda0dedd40d6c3a7ef3d3..31f32f568d5d8aeb36e163ef80ed81e1
 +  "9beaa3885c505fd1": "추가됨, 버전 {version}"
  }
 diff --git a/apps/web/src/i18n/translations/pt-BR.json b/apps/web/src/i18n/translations/pt-BR.json
-index 24ce6764ab312c0d95c39c915b54103a0fd9ab21..e9049c2fbe37c5dab6ad7d9e138c74b59322ab41 100644
+index 05b2204a445ae3025d7f0691ca48dc0d17f1a71b..eb2ac04c0e488b8af9e25d37253d351bcb0e2f90 100644
 --- a/apps/web/src/i18n/translations/pt-BR.json
 +++ b/apps/web/src/i18n/translations/pt-BR.json
-@@ -12195,5 +12195,49 @@
-   "27d76249d09eb69f": "Guia de revisão pronto",
-   "faa3bb26abb39c93": "O guia de revisão falhou",
-   "b7df38b7d8792d78": "Abrir guia",
--  "9e91e9a77b664e4e": "Não foi possível iniciar um guia de revisão"
-+  "9e91e9a77b664e4e": "Não foi possível iniciar um guia de revisão",
+@@ -12975,5 +12975,49 @@
+   "201490988858b511": "retirada por {by}",
+   "99451a5d2d40440f": "Retirada por {by}.",
+   "3ee30a50b70fffab": "Retirada por {by}: {reason}",
+-  "92e129bf413a1220": "retirada"
++  "92e129bf413a1220": "retirada",
 +  "6be71663e706d0f6": "Não foi possível ler o estado inicial das atualizações de patches após {count} tentativas.",
 +  "b03aa2bf52a10a9d": "Atualizando com o T3 Patcher…",
 +  "7b3a5c5948fc9952": "Atualizações disponíveis",
@@ -2903,15 +2982,15 @@ index 24ce6764ab312c0d95c39c915b54103a0fd9ab21..e9049c2fbe37c5dab6ad7d9e138c74b5
 +  "9beaa3885c505fd1": "adicionado, versão {version}"
  }
 diff --git a/apps/web/src/i18n/translations/ru.json b/apps/web/src/i18n/translations/ru.json
-index a5f0c249e2ffc2be56462b457778a176924b8c9b..8564890b28ca102015bd514005dc163220fe3429 100644
+index 3556dd9455160491b154c25d06230bbb4d5b35ab..82afd383873df991ec9e81b7168bc61f4303000b 100644
 --- a/apps/web/src/i18n/translations/ru.json
 +++ b/apps/web/src/i18n/translations/ru.json
-@@ -12195,5 +12195,49 @@
-   "27d76249d09eb69f": "Гид по ревью готов",
-   "faa3bb26abb39c93": "Не удалось создать гид по ревью",
-   "b7df38b7d8792d78": "Открыть гид",
--  "9e91e9a77b664e4e": "Не удалось запустить гид по ревью"
-+  "9e91e9a77b664e4e": "Не удалось запустить гид по ревью",
+@@ -12975,5 +12975,49 @@
+   "201490988858b511": "отозван: {by}",
+   "99451a5d2d40440f": "Отозван: {by}.",
+   "3ee30a50b70fffab": "Отозван ({by}): {reason}",
+-  "92e129bf413a1220": "отозван"
++  "92e129bf413a1220": "отозван",
 +  "6be71663e706d0f6": "Не удалось прочитать начальное состояние обновлений патчей после {count} попыток.",
 +  "b03aa2bf52a10a9d": "Обновление через T3 Patcher…",
 +  "7b3a5c5948fc9952": "Доступны обновления",
@@ -2958,15 +3037,15 @@ index a5f0c249e2ffc2be56462b457778a176924b8c9b..8564890b28ca102015bd514005dc1632
 +  "9beaa3885c505fd1": "добавлен, версия {version}"
  }
 diff --git a/apps/web/src/i18n/translations/sv.json b/apps/web/src/i18n/translations/sv.json
-index 353df28a8a9aa036f0fc25eb10340f3a03156f99..f66afa7404b88be175caa17f981f8b6b42994855 100644
+index 6b559d46a1f99db089f533cbb04a45cfd0c0dd17..7b521b96fcc88ca024db13e41e6f42935567e3ed 100644
 --- a/apps/web/src/i18n/translations/sv.json
 +++ b/apps/web/src/i18n/translations/sv.json
-@@ -12203,5 +12203,49 @@
-   "27d76249d09eb69f": "Granskningsguiden är klar",
-   "faa3bb26abb39c93": "Granskningsguiden misslyckades",
-   "b7df38b7d8792d78": "Öppna guiden",
--  "9e91e9a77b664e4e": "Kunde inte starta en granskningsguide"
-+  "9e91e9a77b664e4e": "Kunde inte starta en granskningsguide",
+@@ -12982,5 +12982,49 @@
+   "201490988858b511": "återkallad av {by}",
+   "99451a5d2d40440f": "Återkallad av {by}.",
+   "3ee30a50b70fffab": "Återkallad av {by}: {reason}",
+-  "92e129bf413a1220": "återkallad"
++  "92e129bf413a1220": "återkallad",
 +  "6be71663e706d0f6": "Det gick inte att läsa det ursprungliga läget för patchuppdateringar efter {count} försök.",
 +  "b03aa2bf52a10a9d": "Uppdaterar med T3 Patcher…",
 +  "7b3a5c5948fc9952": "Uppdateringar finns",
@@ -3013,15 +3092,15 @@ index 353df28a8a9aa036f0fc25eb10340f3a03156f99..f66afa7404b88be175caa17f981f8b6b
 +  "9beaa3885c505fd1": "tillagd, version {version}"
  }
 diff --git a/apps/web/src/i18n/translations/zh.json b/apps/web/src/i18n/translations/zh.json
-index 4acdfc14e2cb43a8480093dcafb4de404d8cfc85..b5f04569397eca7275c2cd42f96fb1331a38d9a2 100644
+index 4d6210cc5e6d04990157c1c154adbe20fd976806..8a4aeb77a531c3b0d7f180cbda950b7d794bb374 100644
 --- a/apps/web/src/i18n/translations/zh.json
 +++ b/apps/web/src/i18n/translations/zh.json
-@@ -12221,5 +12221,50 @@
-   "27d76249d09eb69f": "审查导览已就绪",
-   "faa3bb26abb39c93": "审查导览生成失败",
-   "b7df38b7d8792d78": "打开导览",
--  "9e91e9a77b664e4e": "无法开始生成审查导览"
-+  "9e91e9a77b664e4e": "无法开始生成审查导览",
+@@ -12989,5 +12989,50 @@
+   "201490988858b511": "已由 {by} 撤回",
+   "99451a5d2d40440f": "已由 {by} 撤回。",
+   "3ee30a50b70fffab": "已由 {by} 撤回：{reason}",
+-  "92e129bf413a1220": "已撤回"
++  "92e129bf413a1220": "已撤回",
 +  "6be71663e706d0f6": "尝试 {count} 次后仍无法读取补丁更新的初始状态。",
 +  "b03aa2bf52a10a9d": "正在通过 T3 Patcher 更新…",
 +  "7b3a5c5948fc9952": "有可用更新",
@@ -3232,10 +3311,10 @@ index 0000000000000000000000000000000000000000..95b07c57cf156aa40dfb5287412735d8
 +  return AsyncResult.getOrElse(useAtomValue(desktopPatchUpdateStateAtom), () => null);
 +}
 diff --git a/packages/contracts/src/ipc.ts b/packages/contracts/src/ipc.ts
-index 77a523c03608f6de2b0b87afbcb5230e53eec38e..5eb49f24b00b15c15b6231c44db9ff5b3d53c251 100644
+index adbb28bbf1202a85f950536b90e3a99f5fcb9846..b19a7558ee4bd619a4c828c3aeab7282ca24b1ba 100644
 --- a/packages/contracts/src/ipc.ts
 +++ b/packages/contracts/src/ipc.ts
-@@ -362,6 +362,75 @@ export const DesktopUpdateActionResultSchema = Schema.Struct({
+@@ -370,6 +370,76 @@ export const DesktopUpdateActionResultSchema = Schema.Struct({
    state: DesktopUpdateStateSchema,
  });
  
@@ -3243,7 +3322,8 @@ index 77a523c03608f6de2b0b87afbcb5230e53eec38e..5eb49f24b00b15c15b6231c44db9ff5b
 +export const DesktopPatchUpdateItemSchema = Schema.Struct({
 +  id: Schema.String,
 +  title: Schema.String,
-+  installedVersion: Schema.Number,
++  /** Null for a newly published patch that isn't installed yet. */
++  installedVersion: Schema.NullOr(Schema.Number),
 +  availableVersion: Schema.Number,
 +});
 +export type DesktopPatchUpdateItem = typeof DesktopPatchUpdateItemSchema.Type;
@@ -3311,7 +3391,7 @@ index 77a523c03608f6de2b0b87afbcb5230e53eec38e..5eb49f24b00b15c15b6231c44db9ff5b
  export interface DesktopUpdateCheckResult {
    checked: boolean;
    state: DesktopUpdateState;
-@@ -1206,6 +1275,10 @@ export interface DesktopBridge {
+@@ -1231,6 +1301,10 @@ export interface DesktopBridge {
    /** With a version, installs only that downloaded build. */
    installUpdate: (expectedVersion?: string) => Promise<DesktopUpdateActionResult>;
    onUpdateState: (listener: (state: DesktopUpdateState) => void) => () => void;
@@ -3324,10 +3404,10 @@ index 77a523c03608f6de2b0b87afbcb5230e53eec38e..5eb49f24b00b15c15b6231c44db9ff5b
      install: () => Promise<DesktopCliCommandState>;
 diff --git a/patcher/journeys/patch-updates.mjs b/patcher/journeys/patch-updates.mjs
 new file mode 100644
-index 0000000000000000000000000000000000000000..7be045cc1b9b2cea7166ec49f082b32a1cd7120b
+index 0000000000000000000000000000000000000000..f953b3135bed8e7540bfab68f0e3871953ffa5cd
 --- /dev/null
 +++ b/patcher/journeys/patch-updates.mjs
-@@ -0,0 +1,229 @@
+@@ -0,0 +1,244 @@
 +// Journey: a patched build's update pill offers a newer patch and T3 Code version; Update runs the patcher's command
 +// with both and shows its steps. Both feeds are served here and the command is a stub, so nothing is installed.
 +//   T3_PATCHER_APP=<built .app> T3_PATCHER_EVIDENCE=<dir> node patcher/journeys/patch-updates.mjs
@@ -3394,7 +3474,8 @@ index 0000000000000000000000000000000000000000..7be045cc1b9b2cea7166ec49f082b32a
 +        patches: [
 +          { id: "journey-kit", title: "Journey kit", summary: "Launches built apps.", version: 2 },
 +          { id: "patch-updates", title: "Patch updates", summary: "This.", version: 1 },
-+          { id: "not-installed", title: "Not installed", summary: "Never offered.", version: 9 },
++          { id: "new-patch", title: "New patch", summary: "Enabled by default.", version: 1 },
++          { id: "turned-off", title: "Turned off", summary: "Disabled in stack.json.", version: 9 },
 +        ],
 +      }),
 +    );
@@ -3454,6 +3535,16 @@ index 0000000000000000000000000000000000000000..7be045cc1b9b2cea7166ec49f082b32a
 +);
 +NodeFS.chmodSync(stub, 0o755);
 +NodeFS.writeFileSync(
++  NodePath.join(userdata, "stack.json"),
++  JSON.stringify({
++    entries: [
++      { id: "journey-kit", enabled: true },
++      { id: "patch-updates", enabled: true },
++      { id: "turned-off", enabled: false },
++    ],
++  }),
++);
++NodeFS.writeFileSync(
 +  NodePath.join(userdata, "installed.json"),
 +  JSON.stringify({
 +    t3Version: CURRENT,
@@ -3483,10 +3574,14 @@ index 0000000000000000000000000000000000000000..7be045cc1b9b2cea7166ec49f082b32a
 +      await pill.click();
 +      const popover = page.getByTestId("patch-update-popover");
 +      await popover.waitFor({ timeout: STEP_TIMEOUT_MS });
-+      // The patch feed and T3 Code's feed are checked side by side; wait for both rows.
-+      await page.getByTestId("patch-update-row").nth(1).waitFor({ timeout: STEP_TIMEOUT_MS });
++      // The patch feed and T3 Code's feed are checked side by side; wait for all three rows.
++      await page.getByTestId("patch-update-row").nth(2).waitFor({ timeout: STEP_TIMEOUT_MS });
 +      const rows = await page.getByTestId("patch-update-row").allTextContents();
-+      const listed = [`T3 Code${CURRENT} → ${NEXT}`, "Journey kit1 → 2"];
++      const listed = [
++        `T3 Code${CURRENT} → ${NEXT}`,
++        "Journey kit1 → 2",
++        "New patchadded, version 1",
++      ];
 +      assertEqual(rows, listed, "the listed updates");
 +      await settled(page);
 +      console.log(await screenshot("patch-updates-available"));

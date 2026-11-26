@@ -69,21 +69,6 @@ export const appended = (stack: Stack, id: PatchId): Stack => ({
   entries: [...stack.entries.filter((entry) => entry.id !== id), { id, enabled: true }],
 });
 
-/**
- * The stack after the patches folder changed under `before` (a stack naming every patch there was): the patches that
- * are still there keep their order and whether they're on, and patches that are new join at the end, off, sorted by
- * name. An update never turns on a patch the user didn't choose.
- */
-export const joinedOff = (patches: ReadonlyArray<Patch>, before: Stack): Stack => {
-  const known = new Set(before.entries.map((entry) => entry.id));
-  const added: ReadonlyArray<StackEntry> = patches
-    .map((patch) => patch.manifest.id)
-    .filter((id) => !known.has(id))
-    .toSorted(byId)
-    .map((id) => ({ id, enabled: false }));
-  return arranged(patches, { entries: [...before.entries, ...added] });
-};
-
 /** The feed (patches/index.json) for `patches`: each one's id, title, summary and version, sorted by id. */
 export const feedIndex = (patches: ReadonlyArray<Patch>): Feed => ({
   patches: patches

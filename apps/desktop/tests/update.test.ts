@@ -123,7 +123,7 @@ const writeIn = (file: string, text: string): Promise<void> =>
   Effect.runPromise(FileSystem.FileSystem.use((fs) => fs.writeFileString(file, text)).pipe(Effect.provide(NodeServices.layer)));
 
 describe("update", () => {
-  it("clones the published patches, adds new ones off, installs the stack and records it, leaving the author's checkout alone", async () => {
+  it("clones the published patches, adds new ones on by default, installs the stack and records it, leaving the author's checkout alone", async () => {
     await inWorld(notesOnly(), async (data) => {
       const dev = await headOf(`${data}/repo`);
       await publish(data, [
@@ -136,10 +136,13 @@ describe("update", () => {
         `passed pull patches — cloned ${data}/published.git at ${short(published)}`,
         "passed source Fixture source — 1.0.0 (v1.0.0)",
         "passed patch notes-one — applied",
+        "passed patch red-color — applied",
         "passed check plist — ",
         "passed check notes-one: check — ",
+        "passed check red-color: check — ",
         "passed build copy — ",
         "passed journey notes-one: built — ",
+        "passed journey red-color: built — ",
         `passed install install — installed; the previous app is at ${data}/work/backups/Installed-1.0.0-1.app`,
       ]);
       expect(seen.report.updating).toEqual([{ name: "notes-one", from: "1", to: "2" }]);
@@ -148,11 +151,14 @@ describe("update", () => {
         seen.report,
         { version: "", install: true, steps: [{ kind: "pull", name: "patches", status: "running", note: "" }] },
       ]);
-      expect(seen.stack).toEqual(["notes-one on", "red-color off"]);
+      expect(seen.stack).toEqual(["notes-one on", "red-color on"]);
       expect(timeless(seen.installed)).toEqual(
         Option.some({
           t3Version: "1.0.0",
-          patches: [{ id: "notes-one", version: 2 }],
+          patches: [
+            { id: "notes-one", version: 2 },
+            { id: "red-color", version: 1 },
+          ],
           feed: "https://feed.example/patches/index.json",
           update: sourceFor(data).update,
           timed: true,
@@ -162,7 +168,8 @@ describe("update", () => {
         await headOf(`${data}/repo`),
         await headOf(cloneOf(data)),
         await installedFile(data, "Contents/Resources/notes.txt"),
-      ]).toEqual([dev, published, "one\n"]);
+        await installedFile(data, "Contents/Resources/app.txt"),
+      ]).toEqual([dev, published, "one\n", "title: Hello\ncolor: red\n"]);
 
       const again = await runIn(data, "update");
       expect(again.report.steps[0]).toEqual({
@@ -316,14 +323,15 @@ describe("update's list of what it changes", () => {
 });
 
 describe("update's list of what it adds", () => {
-  it("names a patch turned on since the last install as added, with its version", async () => {
-    await inWorld({ installed: "1.0.0", patches: ["notes-one", "red-color"], resolver: "fixing" }, async (data) => {
-      await setOn(data, "red-color", false);
+  it("names a newly published patch or a patch turned on since the last install as added, while keeping disabled ones off", async () => {
+    await inWorld({ installed: "1.0.0", patches: ["notes-one", "notes-two"], resolver: "fixing" }, async (data) => {
+      await setOn(data, "notes-two", false);
       await runIn(data, "apply");
-      await setOn(data, "red-color", true);
+      await publish(data, [{ kind: "add", id: "red-color" }]);
       const seen = await runIn(data, "update");
-      expect([seen.report.updating, Option.map(seen.installed, (record) => record.patches)]).toEqual([
+      expect([seen.report.updating, seen.stack, Option.map(seen.installed, (record) => record.patches)]).toEqual([
         [{ name: "red-color", from: "", to: "1" }],
+        ["notes-one on", "notes-two off", "red-color on"],
         Option.some([
           { id: "notes-one", version: 1 },
           { id: "red-color", version: 1 },

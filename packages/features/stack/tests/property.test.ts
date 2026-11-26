@@ -1,7 +1,7 @@
 // Random sequences of toggles, moves, and patches added and removed, checked step by step against a model of the
 // spec. Seeded, so a failure prints a seed and steps that reproduce it; no library.
 import type { Patch, PatchId, StackEntry } from "@app/contracts";
-import { joinedOff, library, moved, saveStack, toggled } from "@app/stack";
+import { library, moved, saveStack, toggled } from "@app/stack";
 import { expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Ref from "effect/Ref";
@@ -22,8 +22,8 @@ const generator = (seed: number): (() => number) => {
 type Operation = "toggle" | "up" | "down" | "add" | "remove" | "update";
 
 /**
- * The spec, when the app saves the stack it shows after every change: new patches at the end and on, removed ones
- * gone; a patch an update brings joins at the end, off.
+ * The spec, when the app saves the stack it shows after every change: new patches (including ones an update brings)
+ * join at the end and on, removed ones gone, and existing entries keep their on/off state.
  */
 const model = (entries: ReadonlyArray<StackEntry>, operation: Operation, id: PatchId, exists: boolean) => {
   const at = entries.findIndex((entry) => entry.id === id);
@@ -44,11 +44,10 @@ const model = (entries: ReadonlyArray<StackEntry>, operation: Operation, id: Pat
     case "down":
       return at === -1 ? entries : swap(at + 1);
     case "add":
+    case "update":
       return exists ? entries : [...entries, { id, enabled: true }];
     case "remove":
       return entries.filter((entry) => entry.id !== id);
-    case "update":
-      return exists ? entries : [...entries, { id, enabled: false }];
   }
 };
 
@@ -79,6 +78,7 @@ it.effect("matches the model over 200 random sequences", () =>
             yield* saveStack(moved(stack, id, operation === "up" ? -1 : 1)).pipe(Effect.provide(store.layer));
             break;
           case "add":
+          case "update":
             if (!exists) yield* Ref.set(store.library, [...patches, chosen]);
             yield* saveStack(stack).pipe(Effect.provide(store.layer));
             break;
@@ -86,12 +86,6 @@ it.effect("matches the model over 200 random sequences", () =>
             yield* Ref.set(store.library, patches.filter((each) => each.manifest.id !== id));
             yield* saveStack(stack).pipe(Effect.provide(store.layer));
             break;
-          case "update": {
-            const pulled = exists ? patches : [...patches, chosen];
-            yield* Ref.set(store.library, pulled);
-            yield* saveStack(joinedOff(pulled, stack)).pipe(Effect.provide(store.layer));
-            break;
-          }
         }
         expected = model(expected, operation, id, exists);
         const view = yield* library.pipe(Effect.provide(store.layer));

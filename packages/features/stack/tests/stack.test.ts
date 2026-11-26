@@ -1,5 +1,5 @@
 import type { Stack } from "@app/contracts";
-import { appended, arranged, before, feedIndex, joinedOff, library, moved, saveStack, selected, toggled } from "@app/stack";
+import { appended, arranged, before, feedIndex, library, moved, saveStack, selected, toggled } from "@app/stack";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Ref from "effect/Ref";
@@ -34,36 +34,6 @@ describe("arranged", () => {
     Effect.gen(function* () {
       const [a] = yield* three;
       expect(arranged([], { entries: [{ id: a.manifest.id, enabled: true }] })).toEqual({ entries: [] });
-    }));
-});
-
-describe("joinedOff", () => {
-  it.effect("keeps the patches there were as they were, drops removed ones, and adds new ones at the end, off, by name", () =>
-    Effect.gen(function* () {
-      const [a, b, c] = yield* three;
-      const [gone, d] = yield* Effect.all([patch("gone"), patch("d")]);
-      const was = {
-        entries: [
-          { id: b.manifest.id, enabled: true },
-          { id: gone.manifest.id, enabled: true },
-          { id: a.manifest.id, enabled: false },
-        ],
-      };
-      expect(joinedOff([d, c, a, b], was)).toEqual({
-        entries: [
-          { id: "b", enabled: true },
-          { id: "a", enabled: false },
-          { id: "c", enabled: false },
-          { id: "d", enabled: false },
-        ],
-      });
-    }));
-
-  it.effect("changes nothing when no patch is new", () =>
-    Effect.gen(function* () {
-      const [a, b] = yield* three;
-      const was = { entries: [{ id: b.manifest.id, enabled: false }, { id: a.manifest.id, enabled: true }] };
-      expect(joinedOff([a, b], was)).toEqual(was);
     }));
 });
 

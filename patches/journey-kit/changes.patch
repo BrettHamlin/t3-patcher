@@ -1,8 +1,8 @@
 diff --git a/apps/web/vite.config.ts b/apps/web/vite.config.ts
-index 073fca7943d3e0008739612e97f90647d039b3ed..4b6c479c257a9eacb72ae0d22061c933d3490348 100644
+index 2a68257cbfa635f5a2e8c33e6e9988f5cc78bb11..f3dfd6e7a4ff92799553b54988461b1ddbb8ae63 100644
 --- a/apps/web/vite.config.ts
 +++ b/apps/web/vite.config.ts
-@@ -141,7 +141,9 @@ const browserTestProject = {
+@@ -140,7 +140,9 @@ const browserTestProject = {
      browser: {
        enabled: true,
        headless: true,

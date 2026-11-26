@@ -2,10 +2,10 @@
   "id": "work-timestamps",
   "title": "Work timestamps",
   "summary": "Each finished turn's fold row in the thread timeline names when the work ended, next to how long it took: \"Worked for 3m 30s · 9:42 PM EST\", \"You stopped after 12s · 9:42 PM EST\", and \"Continued for …\" on the rows below a steer. The time is the instant the duration is measured to, in the system's locale (12- or 24-hour) and time zone, without seconds, with the month and day added when the turn ended before today; the label gains its date at local midnight. Rows still working, and rows without a duration, show no time. The label strings take the time as a placeholder, translated in every web catalog.",
-  "version": 1,
+  "version": 2,
   "base": {
-    "version": "0.1.11",
-    "commit": "59651c1761f6c63e9b6056839067066968e6a406"
+    "version": "0.1.12",
+    "commit": "ca81b7b97a1c4b91e5ac25768d0f6629f37732fd"
   },
   "checks": [
     {
