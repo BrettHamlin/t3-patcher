@@ -19,6 +19,16 @@ const resolverWith = (command: string, logs: string) =>
 const numbers = (from: number, to: number): string =>
   Array.from({ length: to - from + 1 }, (_, i) => String(from + i)).join("\n");
 
+const setElectronRunAsNode = (value: string | undefined): string | undefined => {
+  const previous = process.env["ELECTRON_RUN_AS_NODE"];
+  if (value === undefined) {
+    delete process.env["ELECTRON_RUN_AS_NODE"];
+  } else {
+    process.env["ELECTRON_RUN_AS_NODE"] = value;
+  }
+  return previous;
+};
+
 describe("commandShell", () => {
   it.live("runs the command in the folder with the extra environment, logging stdout and stderr", () =>
     Effect.gen(function* () {
@@ -41,6 +51,37 @@ describe("commandShell", () => {
         new StepFailed({ reason: `count failed (exit 3; log ${path.join(logs, "count.log")}): ${numbers(6, 25)}` }),
       );
       expect(yield* read(path.join(logs, "count.log"))).toBe(`${numbers(1, 25)}\n`);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)));
+
+  it.live("clears inherited ELECTRON_RUN_AS_NODE so GUI journeys launch Electron rather than Node", () =>
+    Effect.gen(function* () {
+      const path = yield* Path.Path;
+      const root = yield* temporary;
+      const logs = path.join(root, "logs");
+      const shell = yield* shellIn(logs);
+      const previous = setElectronRunAsNode("1");
+      yield* Effect.gen(function* () {
+        yield* shell.run(
+          root,
+          { name: "default env", run: 'printf "%s|%s" "${ELECTRON_RUN_AS_NODE:-unset}" "$EXTRA"' },
+          { EXTRA: "ok" },
+        );
+        yield* shell.run(
+          root,
+          { name: "explicit env", run: 'printf "%s" "${ELECTRON_RUN_AS_NODE:-unset}"' },
+          { ELECTRON_RUN_AS_NODE: "1" },
+        );
+      }).pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            setElectronRunAsNode(previous);
+          }),
+        ),
+      );
+      expect([
+        yield* read(path.join(logs, "default-env.log")),
+        yield* read(path.join(logs, "explicit-env.log")),
+      ]).toEqual(["unset|ok", "1"]);
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)));
 });
 

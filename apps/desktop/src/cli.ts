@@ -27,15 +27,19 @@ import {
   applyStack,
   capturePatch,
   changeStack,
+  consumePrePulledEnv,
+  decodePrePulled,
   defaultUserdata,
   installedVersion,
   linkElectronCache,
+  PREPULLED_ENV,
+  runPublishedUpdate,
   servicesFor,
   settingsFile,
   settingsIn,
   stackServices,
   updateSource,
-  updateStack,
+  type PrePulled,
   type UpdateRequest,
   userdataFolder,
   workspaceFor,
@@ -151,8 +155,15 @@ const repository = Effect.gen(function* () {
 
 /** What an install records besides what it installed: the feed, and how the app runs `update` with `userdata`. */
 const recordSource = Effect.fn("recordSource")(function* (settings: Settings, userdata: string) {
+  const repo = yield* repository;
   const update = yield* updateSource(settings, userdata, yield* Config.String("PATH"));
-  return { feed: FEED_URL, update };
+  if (update === undefined || update.cwd === repo) return { feed: FEED_URL, update };
+  const localBin = `${repo}/node_modules/.bin`;
+  const keptPath = update.path
+    .split(":")
+    .filter((entry) => entry !== localBin)
+    .join(":");
+  return { feed: FEED_URL, update: { ...update, path: keptPath } };
 });
 
 /** Write patches/index.json (the feed) from the patches folder: this repository's, or --patches. */
@@ -165,7 +176,7 @@ const index = Effect.fn("index")(function* (line: Line) {
   yield* Console.log(`wrote ${file}: ${patches.map(({ manifest }) => `${manifest.id} ${manifest.version}`).join(", ") || "no patches"}`);
 });
 
-const updateRequest = (line: Line): Effect.Effect<UpdateRequest, Usage> => {
+const updateRequest = (line: Line, prePulled?: PrePulled): Effect.Effect<UpdateRequest, Usage> => {
   const t3 = line.options.get("t3");
   const relaunch = line.options.get("relaunch");
   if (t3 !== undefined && !/^\d+\.\d+\.\d+([-+][0-9A-Za-z.-]+)?$/.test(t3)) {
@@ -175,7 +186,11 @@ const updateRequest = (line: Line): Effect.Effect<UpdateRequest, Usage> => {
   if (pid !== undefined && !(Number.isInteger(pid) && pid > 0)) {
     return Effect.fail(new Usage({ what: `--relaunch needs a process id, not ${relaunch ?? ""}` }));
   }
-  return Effect.succeed({ ...(t3 === undefined ? {} : { t3 }), ...(pid === undefined ? {} : { relaunch: pid }) });
+  return Effect.succeed({
+    ...(t3 === undefined ? {} : { t3 }),
+    ...(pid === undefined ? {} : { relaunch: pid }),
+    ...(prePulled === undefined ? {} : { prePulled }),
+  });
 };
 
 /** Change the stack with `change`, save it and print it. */
@@ -224,12 +239,27 @@ const command = Effect.fn("command")(function* (argv: ReadonlyArray<string>) {
       return report.steps.some((step) => step.status === "failed") ? 1 : 0;
     }
     case "update": {
-      const request = yield* updateRequest(line);
-      const report = yield* updateStack(userdata, settings, request, yield* recordSource(settings, userdata)).pipe(
-        Effect.provide(Layer.merge(services, printer)),
-      );
-      yield* Console.log(outcome(report));
-      return report.steps.some((step) => step.status === "failed") ? 1 : 0;
+      const rawPrePulled = yield* Effect.sync(consumePrePulledEnv);
+      const prePulled =
+        rawPrePulled !== undefined
+          ? yield* decodePrePulled(rawPrePulled).pipe(
+              Effect.mapError(() => new Usage({ what: `invalid ${PREPULLED_ENV}` })),
+            )
+          : undefined;
+      const request = yield* updateRequest(line, prePulled);
+      const result = yield* runPublishedUpdate({
+        userdata,
+        settings,
+        request,
+        source: yield* recordSource(settings, userdata),
+        runningRepository: yield* repository,
+        searchPath: yield* Config.String("PATH"),
+      }).pipe(Effect.provide(Layer.merge(services, printer)));
+      if (result.kind === "handed-off") return result.code;
+      yield* Console.log(outcome(result.report));
+      return result.kind === "failed-before-cli" || result.report.steps.some((step) => step.status === "failed")
+        ? 1
+        : 0;
     }
     case "workspace":
       yield* Console.log(yield* workspaceFor(settings, yield* needId()).pipe(Effect.provide(services)));
