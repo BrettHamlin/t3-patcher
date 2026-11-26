@@ -232,9 +232,11 @@ describe("macInstallation", () => {
       const events = join(realRoot, "events.txt");
       const relaunched = join(realRoot, "relaunched.txt");
       const ready = join(realRoot, "serve-ready");
+      const nodeBin = join(realRoot, "node");
+      yield* fs.symlink(nodeExecutable(), nodeBin);
       yield* fs.makeDirectory(workDir, { recursive: true });
-      yield* serveApp(installed, "0.1.11", ready, relaunched);
-      yield* serveApp(built, "0.1.12", ready, relaunched);
+      yield* serveApp(installed, "0.1.11", nodeBin, ready, relaunched);
+      yield* serveApp(built, "0.1.12", nodeBin, ready, relaunched);
       const installation = yield* Installation.useSync((service) => service).pipe(
         Effect.provide(
           macInstallation({
@@ -259,50 +261,82 @@ describe("macInstallation", () => {
         ChildProcess.make(join(installed, "Contents", "MacOS", "x"), serverArgs, {
           cwd: workDir,
           stdin: "ignore",
-          env: { ELECTRON_RUN_AS_NODE: "1", READY: ready },
+          env: {
+            ELECTRON_RUN_AS_NODE: "1",
+            READY: ready,
+            SECRET_TOKEN: "s3cr3t",
+            T3_PATCHER_PREPULLED: '{"stale-server":true}',
+          },
           extendEnv: true,
         }),
       );
       yield* waitFor(ready);
       const record = fs.writeFileString(events, "recorded\n", { flag: "a" }).pipe(Effect.orDie, Effect.provide(NodeServices.layer));
-      const note = yield* installation.install(built, "0.1.11", { relaunch: running.pid, installed: record });
+      const previousPrePulled = setInternalEnv("T3_PATCHER_PREPULLED", '{"stale":true}');
+      const note = yield* installation.install(built, "0.1.11", { relaunch: running.pid, installed: record }).pipe(
+        Effect.ensuring(Effect.sync(() => setInternalEnv("T3_PATCHER_PREPULLED", previousPrePulled))),
+      );
       const restarted = yield* waitFor(relaunched);
       expect([note, yield* read(events), restarted]).toEqual([
         `installed and reopened; the previous app is at ${join(backups, "T3 Code-0.1.11-1.app")}`,
         "recorded\n",
-        [`0.1.12|1|${workDir}`, ...serverArgs].join("\n") + "\n",
+        [`0.1.12|1|unset|s3cr3t|${workDir}`, ...serverArgs].join("\n") + "\n",
       ]);
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)));
 });
 
+const setInternalEnv = (key: string, value: string | undefined): string | undefined => {
+  const previous = process.env[key];
+  if (value === undefined) {
+    delete process.env[key];
+  } else {
+    process.env[key] = value;
+  }
+  return previous;
+};
+
+const nodeExecutable = (): string => process.execPath;
+
+const serveAppScript = (nodeBin: string, version: string, ready: string, relaunched: string): string =>
+  [
+    `#!${nodeBin}`,
+    'import("node:fs").then((fs) => {',
+    `  if (!fs.existsSync('${ready}')) {`,
+    '    process.on("SIGTERM", () => process.exit(0));',
+    `    fs.writeFileSync('${ready}', "");`,
+    "    setInterval(() => {}, 1000);",
+    "    return;",
+    "  }",
+    "  const lines = [",
+    "    [",
+    `      '${version}',`,
+    '      process.env.ELECTRON_RUN_AS_NODE ?? "",',
+    '      process.env.T3_PATCHER_PREPULLED ?? "unset",',
+    '      process.env.SECRET_TOKEN ?? "missing",',
+    "      fs.realpathSync(process.cwd()),",
+    '    ].join("|"),',
+    "    ...process.argv.slice(2),",
+    "  ];",
+    `  const tmp = '${relaunched}.tmp';`,
+    '  fs.writeFileSync(tmp, lines.join("\\n") + "\\n");',
+    `  fs.renameSync(tmp, '${relaunched}');`,
+    "});",
+    "",
+  ].join("\n");
+
 /**
- * A stand-in app whose executable runs as a headless server on its first launch (creating `ready` and waiting for
- * SIGTERM), and on relaunch writes its version, `ELECTRON_RUN_AS_NODE`, working directory and every argument to
- * `relaunched` and exits.
+ * A stand-in app whose executable runs under Node (non-SIP, so `KERN_PROCARGS2` exposes its environment just as it
+ * does for Electron) as a headless server on its first launch, and on relaunch writes its version,
+ * `ELECTRON_RUN_AS_NODE`, `T3_PATCHER_PREPULLED`, `SECRET_TOKEN`, working directory and every argument to `relaunched`.
  */
-const serveApp = (app: string, version: string, ready: string, relaunched: string) =>
+const serveApp = (app: string, version: string, nodeBin: string, ready: string, relaunched: string) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     yield* fakeApp(app, version);
     const executable = path.join(app, "Contents", "MacOS", "x");
     yield* fs.remove(executable, { force: true });
-    yield* write(
-      executable,
-      [
-        "#!/bin/sh",
-        `if [ ! -f '${ready}' ]; then`,
-        '  trap "exit 0" TERM',
-        `  : > '${ready}'`,
-        "  while :; do sleep 0.1; done",
-        "fi",
-        `tmp='${relaunched}.tmp'`,
-        `printf '%s|%s|%s\\n' '${version}' "$ELECTRON_RUN_AS_NODE" "$(pwd -P)" > "$tmp"`,
-        'for arg in "$@"; do printf "%s\\n" "$arg" >> "$tmp"; done',
-        `mv "$tmp" '${relaunched}'`,
-        "",
-      ].join("\n"),
-    );
+    yield* write(executable, serveAppScript(nodeBin, version, ready, relaunched));
     yield* fs.chmod(executable, 0o755);
   }).pipe(Effect.orDie);
 

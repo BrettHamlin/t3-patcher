@@ -14,11 +14,13 @@ import { couldnt, lastLines, run, stepFailed } from "./process.ts";
 
 const regex = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
+const ProcessEnv = Schema.Record(Schema.String, Schema.String);
 const ProcessArgs = Schema.Struct({
   argv: Schema.Array(Schema.String),
-  env: Schema.Record(Schema.String, Schema.String),
+  env: ProcessEnv,
 });
 const decodeProcessArgs = Schema.decodeUnknownOption(Schema.fromJsonString(ProcessArgs));
+const encodeProcessEnv = Schema.encodeOption(Schema.fromJsonString(ProcessEnv));
 
 /** Reads a macOS process's NUL-delimited argv and environment from KERN_PROCARGS2, preserving spaces in paths. */
 const READ_PROCARGS = [
@@ -47,10 +49,10 @@ const READ_PROCARGS = [
   'print(json.dumps({"argv": argv, "env": env}))',
 ].join("\n");
 
-/** Spawns a detached session so the relaunched headless server outlives the patcher without keeping its loop open. */
+/** Spawns a detached session with an exact environment read from stdin so secrets stay out of process arguments. */
 const SPAWN_DETACHED = [
-  "import subprocess, sys",
-  "subprocess.Popen(sys.argv[1:], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)",
+  "import json, subprocess, sys",
+  "subprocess.Popen(sys.argv[1:], env=json.load(sys.stdin), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)",
 ].join("\n");
 
 const isHeadlessServerArgs = (args: ReadonlyArray<string>): boolean =>
@@ -186,10 +188,17 @@ export const macInstallation = (input: {
                 .find((line) => line.startsWith("n"))
                 ?.slice(1)
             : undefined;
+        const targetEnv: Record<string, string> = {};
+        for (const [key, value] of Object.entries(parsed.value.env)) {
+          if (key !== "T3_PATCHER_PREPULLED") targetEnv[key] = value;
+        }
+        targetEnv["ELECTRON_RUN_AS_NODE"] = "1";
+        const encodedEnv = encodeProcessEnv(targetEnv);
+        if (Option.isNone(encodedEnv)) return Option.none<Effect.Effect<void, StepFailed>>();
         return Option.some(
           run(spawner, "python3", ["-c", SPAWN_DETACHED, executable, ...args], {
             ...(cwd === undefined || cwd === "" ? {} : { cwd }),
-            env: { ...parsed.value.env, ELECTRON_RUN_AS_NODE: "1" },
+            stdin: encodedEnv.value,
           }).pipe(
             Effect.flatMap((output) =>
               output.code === 0

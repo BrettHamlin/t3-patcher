@@ -8,11 +8,17 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Path from "effect/Path";
 import * as Ref from "effect/Ref";
+import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
   applyStack,
+  consumePrePulledEnv,
+  decodePrePulled,
+  PREPULLED_ENV,
+  runPublishedUpdate,
   type RecordSource,
   servicesFor,
   stackServices,
@@ -415,15 +421,276 @@ describe("apply --install", () => {
   it("records what it installed, and how to update it", async () => {
     await inWorld(notesOnly(), async (data) => {
       const seen = await runIn(data, "apply");
-      expect([seen.report.steps.at(-1)?.status, timeless(seen.installed)]).toEqual([
-        "passed",
-        Option.some({
-          t3Version: "1.0.0",
-          patches: [{ id: "notes-one", title: "Add notes", summary: "Adds a notes file.", version: 1 }],
-          feed: "https://feed.example/patches/index.json",
-          update: sourceFor(data).update,
-          timed: true,
-        }),
+    expect([seen.report.steps.at(-1)?.status, timeless(seen.installed)]).toEqual([
+      "passed",
+      Option.some({
+        t3Version: "1.0.0",
+        patches: [{ id: "notes-one", title: "Add notes", summary: "Adds a notes file.", version: 1 }],
+        feed: "https://feed.example/patches/index.json",
+        update: sourceFor(data).update,
+        timed: true,
+      }),
+    ]);
+    });
+  });
+});
+
+const HandoffCapture = Schema.Struct({
+  cwd: Schema.String,
+  argv: Schema.Array(Schema.String),
+  path: Schema.String,
+  lockHolder: Schema.String,
+  cliBundleExists: Schema.Boolean,
+  prePulled: Schema.String,
+});
+const decodeHandoff = Schema.decodeUnknownEffect(Schema.fromJsonString(HandoffCapture));
+
+const commitPublishedScript = async (data: string, scriptBody: string): Promise<string> => {
+  const scratch = await Effect.runPromise(
+    FileSystem.FileSystem.use((fs) => fs.makeTempDirectory({ directory: data, prefix: "publish-script-" })).pipe(
+      Effect.provide(NodeServices.layer),
+    ),
+  );
+  await gitIn(data, "clone", "--quiet", `${data}/published.git`, `${scratch}/clone`);
+  await Effect.runPromise(
+    FileSystem.FileSystem.use((fs) =>
+      fs
+        .makeDirectory(`${scratch}/clone/scripts`, { recursive: true })
+        .pipe(Effect.andThen(fs.writeFileString(`${scratch}/clone/scripts/patcher.py`, scriptBody))),
+    ).pipe(Effect.provide(NodeServices.layer)),
+  );
+  await gitIn(`${scratch}/clone`, "add", "--all");
+  await gitIn(`${scratch}/clone`, "commit", "--quiet", "-m", "Add published patcher script");
+  await gitIn(`${scratch}/clone`, "push", "--quiet", "origin", "main");
+  return headOf(`${data}/published.git`);
+};
+
+describe("runPublishedUpdate self-handoff", () => {
+  it("holds patcher.lock through handoff, resolves relative userdata, invalidates stale cli.cjs on commit changes, relaunches from published too, and preserves disabled published-only patches", async () => {
+    await inWorld(notesOnly(), async (data) => {
+      const devHead = await headOf(`${data}/repo`);
+      await publish(data, [
+        { kind: "bump", id: "notes-one", version: 2 },
+        { kind: "add", id: "red-color" },
+      ]);
+      // Disable the published-only patch (`red-color`, which `${data}/repo` lacks) in stack.json before updating.
+      await Effect.runPromise(
+        FileSystem.FileSystem.use((fs) =>
+          fs.writeFileString(
+            `${data}/stack.json`,
+            `${JSON.stringify({ entries: [{ id: "notes-one", enabled: true }, { id: "red-color", enabled: false }] })}\n`,
+          ),
+        ).pipe(Effect.provide(NodeServices.layer)),
+      );
+
+      const capturePath = `${data}/handoff.json`;
+      const scriptBody = [
+        "import json, os, pathlib, sys",
+        `lock = pathlib.Path(${JSON.stringify(`${data}/work/patcher.lock`)})`,
+        'cli_bundle = pathlib.Path("apps/desktop/dist/cli.cjs")',
+        `pathlib.Path(${JSON.stringify(capturePath)}).write_text(json.dumps({`,
+        '  "cwd": os.getcwd(),',
+        '  "argv": sys.argv[1:],',
+        '  "path": os.environ.get("PATH", ""),',
+        '  "lockHolder": lock.read_text().strip() if lock.exists() else "",',
+        '  "cliBundleExists": cli_bundle.exists(),',
+        `  "prePulled": os.environ.get(${JSON.stringify(PREPULLED_ENV)}, ""),`,
+        "}))",
+        'print("handed-off stdout")',
+      ].join("\n");
+      const firstHead = await commitPublishedScript(data, scriptBody);
+
+      const settings = await Effect.runPromise(loadSettings(data).pipe(Effect.provide(NodeServices.layer)));
+      const stdout: Array<string> = [];
+      const stderr: Array<string> = [];
+      const reports: Array<RunReport> = [];
+      const progress = Layer.succeed(Progress)({
+        report: (report) => Effect.sync(() => void reports.push(report)),
+      });
+      const services = Layer.mergeAll(servicesFor(data, settings), progress, NodeServices.layer);
+      const relativeUserdata = await Effect.runPromise(
+        Path.Path.use((path) => Effect.succeed(path.relative(process.cwd(), data))).pipe(
+          Effect.provide(NodeServices.layer),
+        ),
+      );
+
+      const parentOutcome = await Effect.runPromise(
+        runPublishedUpdate({
+          userdata: relativeUserdata,
+          settings,
+          request: { t3: "1.0.0", relaunch: 4242 },
+          source: sourceFor(data),
+          runningRepository: `${data}/repo`,
+          searchPath: `${data}/repo/node_modules/.bin:/opt/homebrew/bin:/usr/bin:/bin`,
+          onOutput: {
+            stdout: (chunk) => Effect.sync(() => void stdout.push(chunk)),
+            stderr: (chunk) => Effect.sync(() => void stderr.push(chunk)),
+          },
+        }).pipe(Effect.provide(services)),
+      );
+
+      const captured = await Effect.runPromise(
+        FileSystem.FileSystem.use((fs) => fs.readFileString(capturePath)).pipe(
+          Effect.flatMap(decodeHandoff),
+          Effect.provide(NodeServices.layer),
+        ),
+      );
+      process.env[PREPULLED_ENV] = captured.prePulled;
+      const consumedOnce = consumePrePulledEnv();
+      const consumedTwice = consumePrePulledEnv();
+      expect([consumedOnce, consumedTwice]).toEqual([captured.prePulled, undefined]);
+      const prePulled = await Effect.runPromise(decodePrePulled(consumedOnce ?? ""));
+
+      expect([
+        parentOutcome,
+        stdout.join(""),
+        stderr.join(""),
+        captured.cwd,
+        captured.argv,
+        captured.path,
+        captured.lockHolder,
+        prePulled.lockPid,
+        await headOf(`${data}/repo`),
+      ]).toEqual([
+        { kind: "handed-off", code: 0 },
+        "handed-off stdout\n",
+        "",
+        cloneOf(data),
+        ["update", "--userdata", data, "--t3", "1.0.0", "--relaunch", "4242"],
+        "/opt/homebrew/bin:/usr/bin:/bin",
+        String(process.pid),
+        process.pid,
+        devHead,
+      ]);
+
+      // Simulate the child running while the parent still holds `<work>/patcher.lock`, and keep `red-color` disabled.
+      const lockPath = `${data}/work/patcher.lock`;
+      await writeIn(lockPath, `${process.pid}\n`);
+      const childOutcome = await Effect.runPromise(
+        runPublishedUpdate({
+          userdata: data,
+          settings,
+          request: { prePulled },
+          source: sourceFor(data),
+          runningRepository: cloneOf(data),
+          searchPath: "/opt/homebrew/bin:/usr/bin:/bin",
+        }).pipe(
+          Effect.ensuring(
+            FileSystem.FileSystem.use((fs) => fs.remove(lockPath, { force: true }).pipe(Effect.ignore)),
+          ),
+          Effect.provide(Layer.mergeAll(servicesFor(data, settings), progress, NodeServices.layer)),
+        ),
+      );
+      const savedStack = await Effect.runPromise(
+        StackStore.use((store) => store.load).pipe(Effect.provide(stackServices(data, settings))),
+      );
+
+      expect([
+        childOutcome.kind === "in-process" ? childOutcome.report.steps.map(line) : [],
+        savedStack.entries.map((entry) => `${entry.id} ${entry.enabled ? "on" : "off"}`),
+      ]).toEqual([
+        [
+          `passed pull patches — cloned ${data}/published.git at ${short(firstHead)}`,
+          "passed source Fixture source — 1.0.0 (v1.0.0)",
+          "passed patch notes-one — applied",
+          "passed check plist — ",
+          "passed check notes-one: check — ",
+          "passed build copy — ",
+          "passed journey notes-one: built — ",
+          `passed install install — installed; the previous app is at ${data}/work/backups/Installed-1.0.0-1.app`,
+        ],
+        ["notes-one on", "red-color off"],
+      ]);
+
+      // Seed a built `cli.cjs` in `<work>/published`, publish a new commit, and invoke from `<work>/published` itself:
+      // it still relaunches AND deletes the stale `cli.cjs` before `scripts/patcher.py` starts.
+      await Effect.runPromise(
+        FileSystem.FileSystem.use((fs) =>
+          fs
+            .makeDirectory(`${cloneOf(data)}/apps/desktop/dist`, { recursive: true })
+            .pipe(Effect.andThen(fs.writeFileString(`${cloneOf(data)}/apps/desktop/dist/cli.cjs`, "// stale"))),
+        ).pipe(Effect.provide(NodeServices.layer)),
+      );
+      await publish(data, [{ kind: "bump", id: "notes-one", version: 3 }]);
+      const fromPublishedOutcome = await Effect.runPromise(
+        runPublishedUpdate({
+          userdata: data,
+          settings,
+          request: {},
+          source: sourceFor(data),
+          runningRepository: cloneOf(data),
+          searchPath: "/opt/homebrew/bin:/usr/bin:/bin",
+          onOutput: { stdout: () => Effect.void, stderr: () => Effect.void },
+        }).pipe(Effect.provide(services)),
+      );
+      const secondCaptured = await Effect.runPromise(
+        FileSystem.FileSystem.use((fs) => fs.readFileString(capturePath)).pipe(
+          Effect.flatMap(decodeHandoff),
+          Effect.provide(NodeServices.layer),
+        ),
+      );
+      expect([fromPublishedOutcome, secondCaptured.cliBundleExists]).toEqual([
+        { kind: "handed-off", code: 0 },
+        false,
+      ]);
+    });
+  });
+
+  it("records a failed pull report when python cannot start or the published patcher exits before reaching the CLI", async () => {
+    await inWorld(notesOnly(), async (data) => {
+      await commitPublishedScript(
+        data,
+        ['import sys', 'sys.stderr.write("Cache folder is not available\\n")', "sys.exit(1)"].join("\n"),
+      );
+      const settings = await Effect.runPromise(loadSettings(data).pipe(Effect.provide(NodeServices.layer)));
+      const progress = Layer.succeed(Progress)({ report: () => Effect.void });
+      const layer = Layer.mergeAll(servicesFor(data, settings), progress, NodeServices.layer);
+
+      const missingPython = `${data}/no-such-python3`;
+      const spawnFailed = await Effect.runPromise(
+        runPublishedUpdate({
+          userdata: data,
+          settings,
+          request: {},
+          source: sourceFor(data),
+          runningRepository: `${data}/repo`,
+          searchPath: "/opt/homebrew/bin:/usr/bin:/bin",
+          pythonCommand: missingPython,
+          onOutput: { stdout: () => Effect.void, stderr: () => Effect.void },
+        }).pipe(Effect.provide(layer)),
+      );
+      const afterSpawnFail = await Effect.runPromise(loadReport(data).pipe(Effect.provide(NodeServices.layer)));
+      expect([
+        spawnFailed.kind,
+        Option.map(afterSpawnFail, (report) => report.steps[0]?.status),
+        Option.map(afterSpawnFail, (report) => report.steps[0]?.note.startsWith(`couldn't run ${missingPython}:`)),
+      ]).toEqual(["failed-before-cli", Option.some("failed"), Option.some(true)]);
+
+      const stderr: Array<string> = [];
+      const scriptFailed = await Effect.runPromise(
+        runPublishedUpdate({
+          userdata: data,
+          settings,
+          request: {},
+          source: sourceFor(data),
+          runningRepository: `${data}/repo`,
+          searchPath: "/opt/homebrew/bin:/usr/bin:/bin",
+          onOutput: {
+            stdout: () => Effect.void,
+            stderr: (chunk) => Effect.sync(() => void stderr.push(chunk)),
+          },
+        }).pipe(Effect.provide(layer)),
+      );
+      const expectedReport: RunReport = {
+        version: "",
+        install: true,
+        steps: [{ kind: "pull", name: "patches", status: "failed", note: "Cache folder is not available" }],
+      };
+      const saved = await Effect.runPromise(loadReport(data).pipe(Effect.provide(NodeServices.layer)));
+      expect([scriptFailed, stderr.join(""), saved]).toEqual([
+        { kind: "failed-before-cli", report: expectedReport, code: 1 },
+        "Cache folder is not available\n",
+        Option.some(expectedReport),
       ]);
     });
   });

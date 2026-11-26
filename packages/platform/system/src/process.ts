@@ -27,7 +27,7 @@ export const run = (
   spawner: Spawner,
   command: string,
   args: ReadonlyArray<string>,
-  options: { readonly cwd?: string; readonly env?: Readonly<Record<string, string>> } = {},
+  options: { readonly cwd?: string; readonly env?: Readonly<Record<string, string>>; readonly stdin?: string } = {},
 ): Effect.Effect<Output, StepFailed> =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -36,7 +36,7 @@ export const run = (
           cwd: options.cwd,
           env: { ...options.env },
           extendEnv: true,
-          stdin: "ignore",
+          stdin: options.stdin === undefined ? "ignore" : Stream.encodeText(Stream.make(options.stdin)),
         }),
       );
       const [stdout, stderr, code] = yield* Effect.all([text(handle.stdout), text(handle.stderr), handle.exitCode], {
@@ -45,6 +45,16 @@ export const run = (
       return { code, stdout, stderr };
     }),
   ).pipe(Effect.mapError((error) => stepFailed(`couldn't run ${command}: ${error.message}`)));
+
+const shellEnv = (extra: Readonly<Record<string, string>>): Record<string, string> => {
+  const env: Record<string, string> = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (key !== "ELECTRON_RUN_AS_NODE" && key !== "T3_PATCHER_PREPULLED" && value !== undefined) {
+      env[key] = value;
+    }
+  }
+  return { ...env, ...extra };
+};
 
 /**
  * Runs `script` with /bin/sh in `folder`. Its output (stdout and stderr together) goes to `log` as it comes and is
@@ -66,8 +76,8 @@ export const runLogged = (
       const handle = yield* spawner.spawn(
         ChildProcess.make("/bin/sh", ["-c", input.script], {
           cwd: input.folder,
-          env: { ...input.env },
-          extendEnv: true,
+          env: shellEnv(input.env),
+          extendEnv: false,
           stdin: "ignore",
         }),
       );
