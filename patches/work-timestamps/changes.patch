@@ -1,0 +1,992 @@
+diff --git a/apps/web/src/components/chat/MessagesTimeline.browser.test.tsx b/apps/web/src/components/chat/MessagesTimeline.browser.test.tsx
+index 7dc87ff67cfc766237ee74a41c859e42ba13bb79..abdfb23acff06e209278a71e96c2051c191a19f0 100644
+--- a/apps/web/src/components/chat/MessagesTimeline.browser.test.tsx
++++ b/apps/web/src/components/chat/MessagesTimeline.browser.test.tsx
+@@ -56,6 +56,7 @@ import { toastManager } from "../ui/toast";
+ import type { CitedHistory } from "./citationProcedure";
+ import type { TimelineNavigation } from "./timelineViewport";
+ import { rememberTimelinePosition } from "./timelineScrollAnchoring";
++import { useWorkEndTimeFormat } from "./useTimelineRows";
+ import {
+   COMPOSER_CONTEXT_CLIPBOARD_MIME,
+   decodeComposerContextFragment,
+@@ -97,6 +98,14 @@ vi.mock(import("~/assets/assetUrls"), async (original) => {
+ 
+ const ENVIRONMENT_ID = EnvironmentId.make("environment-local");
+ const CREATED_AT = "2026-03-17T19:12:28.000Z";
++// The fold row names when the turn ended in this browser's own zone; CREATED_AT is an earlier day.
++const WORKED_AT_CREATED_AT = `Worked for 1ms · ${new Intl.DateTimeFormat(undefined, {
++  month: "short",
++  day: "numeric",
++  hour: "numeric",
++  minute: "2-digit",
++  timeZoneName: "short",
++}).format(new Date(CREATED_AT))}`;
+ 
+ type TimelineProps = ComponentProps<typeof MessagesTimeline>;
+ type Entry = TimelineProps["timelineEntries"][number];
+@@ -281,8 +290,16 @@ describe("MessagesTimeline work rows", () => {
+     );
+     const viewport = props.listRef.current!.getScrollableNode()!;
+     const frame = screen.getByTitle("Tall preview").element() as HTMLIFrameElement;
++    // The list places rows by their last measured size; the reply sits flush once it catches up.
++    const gapAboveReply = () => {
++      const [preview, reply] = ["preview", "entry-preview-done"].map((id) =>
++        viewport.querySelector(`[data-timeline-row-id="${id}"]`)?.getBoundingClientRect(),
++      );
++      return preview && reply ? Math.round(reply.top - preview.bottom) : null;
++    };
+     await vi.waitFor(() => {
+       expect(frame.clientHeight).toBe(1437);
++      expect(gapAboveReply()).toBe(0);
+       expect(viewport.scrollTop).toBeGreaterThan(0);
+       expect(viewport.scrollHeight - viewport.clientHeight - viewport.scrollTop).toBeLessThan(2);
+     });
+@@ -321,7 +338,7 @@ describe("MessagesTimeline work rows", () => {
+       />,
+       { container },
+     );
+-    const heading = screen.getByRole("button", { name: /^Worked for/ });
++    const heading = screen.getByRole("button", { name: WORKED_AT_CREATED_AT, exact: true });
+     // LegendList keeps rows click-through until its initial scroll settles on animation
+     // frames, which the fake clock below would freeze.
+     await expect.element(heading).toHaveStyle({ pointerEvents: "auto" });
+@@ -362,7 +379,7 @@ describe("MessagesTimeline work rows", () => {
+     await using screen = await render(<MessagesTimeline {...props} timelineEntries={entries} />, {
+       container,
+     });
+-    const heading = screen.getByRole("button", { name: /^Worked for/ });
++    const heading = screen.getByRole("button", { name: WORKED_AT_CREATED_AT, exact: true });
+     await expect.element(heading).toHaveStyle({ pointerEvents: "auto" });
+     const viewport = props.listRef.current!.getScrollableNode()!;
+     const distanceFromEnd = () =>
+@@ -458,6 +475,70 @@ describe("MessagesTimeline work rows", () => {
+   );
+ });
+ 
++describe("useWorkEndTimeFormat", () => {
++  function WorkEndTime(props: { readonly endIso: string }) {
++    return <output>{useWorkEndTimeFormat()(props.endIso)}</output>;
++  }
++
++  it("adds the date to a turn that ended yesterday once local midnight passes", async () => {
++    const endedAt = new Date(2026, 2, 17, 23, 58);
++    const time: Intl.DateTimeFormatOptions = {
++      hour: "numeric",
++      minute: "2-digit",
++      timeZoneName: "short",
++    };
++    using _timers = fakeTimers({ now: new Date(2026, 2, 17, 23, 59) });
++    await using screen = await render(<WorkEndTime endIso={endedAt.toISOString()} />);
++    const shown = () => screen.getByRole("status").element().textContent;
++    await vi.waitFor(() =>
++      expect(shown()).toBe(new Intl.DateTimeFormat(undefined, time).format(endedAt)),
++    );
++
++    await act(() => vi.advanceTimersByTime(2 * 60_000));
++
++    const withDate: Intl.DateTimeFormatOptions = { ...time, month: "short", day: "numeric" };
++    await vi.waitFor(() =>
++      expect(shown()).toBe(new Intl.DateTimeFormat(undefined, withDate).format(endedAt)),
++    );
++  });
++
++  it("uses the OS locale from desktopBridge.getSystemLocale when available", async () => {
++    const endedAt = new Date(2026, 2, 17, 23, 58);
++    const time: Intl.DateTimeFormatOptions = {
++      hour: "numeric",
++      minute: "2-digit",
++      timeZoneName: "short",
++    };
++    using _timers = fakeTimers({ now: new Date(2026, 2, 17, 23, 59) });
++    using _bridge = stubGlobal("desktopBridge", {
++      getSystemLocale: () => "en-US-u-hc-h23",
++    });
++    await using screen = await render(<WorkEndTime endIso={endedAt.toISOString()} />);
++    const shown = () => screen.getByRole("status").element().textContent;
++    await vi.waitFor(() =>
++      expect(shown()).toBe(new Intl.DateTimeFormat("en-US-u-hc-h23", time).format(endedAt)),
++    );
++  });
++
++  it("falls back to the runtime locale when desktopBridge.getSystemLocale is invalid", async () => {
++    const endedAt = new Date(2026, 2, 17, 23, 58);
++    const time: Intl.DateTimeFormatOptions = {
++      hour: "numeric",
++      minute: "2-digit",
++      timeZoneName: "short",
++    };
++    using _timers = fakeTimers({ now: new Date(2026, 2, 17, 23, 59) });
++    using _bridge = stubGlobal("desktopBridge", {
++      getSystemLocale: () => "not_a_valid_locale!!!",
++    });
++    await using screen = await render(<WorkEndTime endIso={endedAt.toISOString()} />);
++    const shown = () => screen.getByRole("status").element().textContent;
++    await vi.waitFor(() =>
++      expect(shown()).toBe(new Intl.DateTimeFormat(undefined, time).format(endedAt)),
++    );
++  });
++});
++
+ describe("MessagesTimeline messages", () => {
+   it("settles when equally long messages have very different rendered heights", async () => {
+     const props = baseProps();
+diff --git a/apps/web/src/components/chat/MessagesTimeline.logic.test.ts b/apps/web/src/components/chat/MessagesTimeline.logic.test.ts
+index 0a703a675f0ac515efdd3ca55a494cfcd04ee052..85240c1feb09a14bc8deace76beb5363797c3566 100644
+--- a/apps/web/src/components/chat/MessagesTimeline.logic.test.ts
++++ b/apps/web/src/components/chat/MessagesTimeline.logic.test.ts
+@@ -35,11 +35,33 @@ import {
+   isTimelineMinimapTurnVisible,
+   resolveAssistantMessageCopyState,
+   type MessagesTimelineRow,
++  workEndTimeFormat,
+   workEntryDisplayLabel,
+   workEntryReadOutput,
+ } from "./MessagesTimeline.logic";
+ import { workEntryIconName } from "./TimelineWorkEntryRow.logic";
+ 
++// Shows the instant a fold label was given, so a test can tell which end it used.
++const endInstant = (endIso: string) => endIso;
++
++describe("workEndTimeFormat", () => {
++  it.each([
++    ["en-US", "America/New_York", "2026-11-25T15:00:00Z", "2026-11-26T02:42:59Z", "9:42 PM EST"],
++    [
++      "en-US",
++      "America/New_York",
++      "2026-11-25T15:00:00Z",
++      "2026-11-24T02:42:00Z",
++      "Nov 23, 9:42 PM EST",
++    ],
++    ["en-GB", "Europe/London", "2026-11-25T08:00:00Z", "2026-11-25T21:42:10Z", "21:42 GMT"],
++    ["en-GB", "Europe/London", "2026-11-25T08:00:00Z", "2026-11-24T23:59:00Z", "24 Nov, 23:59 GMT"],
++    ["en-US", "America/New_York", "2026-11-25T15:00:00Z", "unknown", null],
++  ] as const)("in %s at %s on %s formats %s as %j", (locale, timeZone, now, endIso, expected) => {
++    expect(workEndTimeFormat({ now: new Date(now), locale, timeZone })(endIso)).toEqual(expected);
++  });
++});
++
+ describe("resolveAssistantMessageCopyState", () => {
+   it("copies the rendered representation of Codex directives", () => {
+     expect(
+@@ -1205,13 +1227,18 @@ describe("deriveMessagesTimelineRows", () => {
+       },
+     ];
+ 
+-    const collapsedRows = deriveMessagesTimelineRows({
+-      timelineEntries,
+-      isWorking: false,
+-      activeTurnStartedAt: null,
+-      turnDiffSummaries: [],
+-      supportsConversationRollback: false,
+-    });
++    const rowsWith = (formatWorkEndTime: (endIso: string) => string | null) =>
++      deriveMessagesTimelineRows({
++        timelineEntries,
++        isWorking: false,
++        activeTurnStartedAt: null,
++        turnDiffSummaries: [],
++        supportsConversationRollback: false,
++        formatWorkEndTime,
++      });
++    const foldLabel = (rows: ReadonlyArray<MessagesTimelineRow>) =>
++      rows.find((row) => row.kind === "turn-fold")?.label;
++    const collapsedRows = rowsWith(endInstant);
+ 
+     const foldRow = collapsedRows.find(
+       (row): row is Extract<(typeof collapsedRows)[number], { kind: "turn-fold" }> =>
+@@ -1219,7 +1246,29 @@ describe("deriveMessagesTimelineRows", () => {
+     );
+     expect(foldRow?.runId).toBe("turn-1");
+     expect(foldRow?.expanded).toBe(false);
+-    expect(foldRow?.label).toBe("Worked for 22s");
++    expect(foldRow?.label).toBe("Worked for 22s · 2026-01-01T00:00:22Z");
++    expect(
++      foldLabel(
++        rowsWith(
++          workEndTimeFormat({
++            now: new Date("2026-01-01T12:00:00Z"),
++            locale: "en-US",
++            timeZone: "America/New_York",
++          }),
++        ),
++      ),
++    ).toBe("Worked for 22s · Dec 31, 7:00 PM EST");
++    expect(
++      foldLabel(
++        rowsWith(
++          workEndTimeFormat({
++            now: new Date("2026-01-01T12:00:00Z"),
++            locale: "en-GB",
++            timeZone: "UTC",
++          }),
++        ),
++      ),
++    ).toBe("Worked for 22s · 00:00 UTC");
+     expect(collapsedRows.map((row) => row.id)).toEqual([
+       "user-entry",
+       "turn-fold:turn-1",
+@@ -1441,14 +1490,13 @@ describe("deriveMessagesTimelineRows", () => {
+       activeTurnStartedAt: "2026-01-01T00:00:14Z",
+       turnDiffSummaries: [],
+       supportsConversationRollback: false,
++      formatWorkEndTime: endInstant,
+     });
+ 
+-    const foldRow = rows.find(
+-      (row): row is Extract<(typeof rows)[number], { kind: "turn-fold" }> =>
+-        row.kind === "turn-fold",
+-    );
+-    expect(foldRow?.runId).toBe("turn-1");
+-    expect(foldRow?.label).toBe("Worked for 12s");
++    const foldRows = rows.filter((row) => row.kind === "turn-fold");
++    expect(foldRows.map((row) => [row.runId, row.label])).toEqual([
++      ["turn-1", "Worked for 12s · 2026-01-01T00:00:12Z"],
++    ]);
+   });
+ 
+   it("uses latest-turn timings and the stopped label for an interrupted latest turn", () => {
+@@ -1477,15 +1525,45 @@ describe("deriveMessagesTimelineRows", () => {
+       activeTurnStartedAt: null,
+       turnDiffSummaries: [],
+       supportsConversationRollback: false,
++      formatWorkEndTime: endInstant,
+     });
+ 
+     expect(rows).toEqual([
+-      expect.objectContaining({
++      {
+         kind: "turn-fold",
++        id: "turn-fold:turn-1",
++        createdAt: "2026-01-01T00:00:05Z",
+         runId: "turn-1",
+-        label: "You stopped after 47s",
++        label: "You stopped after 47s · 2026-01-01T00:00:47Z",
+         expanded: false,
+-      }),
++      },
++    ]);
++  });
++
++  it("shows no end time on a fold whose duration is unknown", () => {
++    const rows = deriveMessagesTimelineRows({
++      timelineEntries: [
++        {
++          id: "work-entry-1",
++          kind: "work",
++          createdAt: "unknown",
++          entry: {
++            id: "work-1",
++            createdAt: "unknown",
++            runId: RunId.make("turn-1"),
++            label: "Ran command",
++            tone: "tool",
++          },
++        },
++      ],
++      isWorking: false,
++      turnDiffSummaries: [],
++      supportsConversationRollback: false,
++      formatWorkEndTime: endInstant,
++    });
++
++    expect(rows.map((row) => (row.kind === "turn-fold" ? row.label : row.kind))).toEqual([
++      "Worked",
+     ]);
+   });
+ 
+@@ -1551,6 +1629,7 @@ describe("deriveMessagesTimelineRows", () => {
+             expandedRunIds: expanded ? new Set([runId]) : new Set(),
+             turnDiffSummaries: [],
+             supportsConversationRollback: false,
++            formatWorkEndTime: endInstant,
+           });
+           expect(rows.slice(0, 3).map((row) => row.id)).toEqual([
+             "initial-prompt",
+@@ -1558,7 +1637,12 @@ describe("deriveMessagesTimelineRows", () => {
+             "steer",
+           ]);
+           expect(rows[1]?.createdAt).toBe(time(0));
+-          if (!isWorking) expect(rows[1]).toMatchObject({ label: "Worked for 20s", expanded });
++          if (!isWorking) {
++            expect(rows[1]).toMatchObject({
++              label: `Worked for 20s · ${time(20)}`,
++              expanded,
++            });
++          }
+           expect(rows.some((row) => row.id === "final")).toBe(true);
+           expect(rows.some((row) => row.id === "work")).toBe(isWorking || expanded);
+         }
+@@ -1621,6 +1705,7 @@ describe("deriveMessagesTimelineRows", () => {
+         expandedRunIds,
+         turnDiffSummaries: [],
+         supportsConversationRollback: false,
++        formatWorkEndTime: endInstant,
+       });
+ 
+     const segmentKey = RunId.make(`${runId}:steer:steer`);
+@@ -1633,8 +1718,11 @@ describe("deriveMessagesTimelineRows", () => {
+       "final",
+       "late-subagent",
+     ]);
+-    expect(collapsed[1]).toMatchObject({ label: "Worked for 30s" });
+-    expect(collapsed[3]).toMatchObject({ label: "Continued for 20s", createdAt: time(10) });
++    expect(collapsed[1]).toMatchObject({ label: `Worked for 30s · ${time(30)}` });
++    expect(collapsed[3]).toMatchObject({
++      label: `Continued for 20s · ${time(30)}`,
++      createdAt: time(10),
++    });
+ 
+     expect(rows(new Set([segmentKey])).map((row) => row.id)).toEqual([
+       "prompt",
+diff --git a/apps/web/src/components/chat/MessagesTimeline.logic.ts b/apps/web/src/components/chat/MessagesTimeline.logic.ts
+index 2192c3b7e6ae0b0d13847a3f10440f8894fd91d2..3571a34a545fb2042e0f9c5ee69a0dd3fc18e24a 100644
+--- a/apps/web/src/components/chat/MessagesTimeline.logic.ts
++++ b/apps/web/src/components/chat/MessagesTimeline.logic.ts
+@@ -509,6 +509,36 @@ function computeElapsedMs(startIso: string, endIso: string): number | null {
+   return Math.max(0, end - start);
+ }
+ 
++/** Formats when a turn's work ended, or returns null for an unreadable instant. */
++export type WorkEndTimeFormat = (endIso: string) => string | null;
++
++export function workEndTimeFormat(clock: {
++  readonly now: Date;
++  readonly locale?: string;
++  readonly timeZone?: string;
++}): WorkEndTimeFormat {
++  const time: Intl.DateTimeFormatOptions = {
++    hour: "numeric",
++    minute: "2-digit",
++    timeZoneName: "short",
++  };
++  const { locale, timeZone } = clock;
++  const today = new Intl.DateTimeFormat(locale, { ...time, timeZone });
++  const otherDay = new Intl.DateTimeFormat(locale, {
++    ...time,
++    month: "short",
++    day: "numeric",
++    timeZone,
++  });
++  const localDate = new Intl.DateTimeFormat("en-US", { dateStyle: "short", timeZone });
++  const todayDate = localDate.format(clock.now);
++  return (endIso) => {
++    const end = Date.parse(endIso);
++    if (!Number.isFinite(end)) return null;
++    return (localDate.format(end) === todayDate ? today : otherDay).format(end);
++  };
++}
++
+ function maxIsoTimestamp(a: string | null, b: string | null): string | null {
+   if (a === null) return b;
+   if (b === null) return a;
+@@ -1078,6 +1108,7 @@ function deriveTurnFolds(input: {
+   liveSubagentEntryIds: ReadonlySet<string>;
+   retainedAssistantReplyEntryIds: ReadonlySet<string>;
+   resolve: MessageResolver;
++  formatWorkEndTime: WorkEndTimeFormat | null;
+ }): ReadonlyMap<string, TurnFold> {
+   const interruptedRunIds = new Set<RunId>();
+   const promptIndexByRunId = new Map<RunId, number>();
+@@ -1250,22 +1281,29 @@ function deriveTurnFolds(input: {
+     const lastTurnEntry =
+       group.entries.findLast((entry) => !lateSubagentIds.has(entry.id)) ?? lastEntry;
+     const lastEntryEnd = timelineEntryEnd(lastTurnEntry);
+-    const elapsedMs =
++    const [startedAt, endedAt] =
+       input.latestRun?.runId === runId && input.latestRun.startedAt && input.latestRun.completedAt
+-        ? computeElapsedMs(input.latestRun.startedAt, input.latestRun.completedAt)
+-        : computeElapsedMs(
++        ? [input.latestRun.startedAt, input.latestRun.completedAt]
++        : [
+             group.startBoundary ?? firstEntry.createdAt,
+             maxIsoTimestamp(group.terminalEntry?.message.updatedAt ?? null, lastEntryEnd) ??
+               lastEntryEnd,
+-          );
++          ];
++    const elapsedMs = computeElapsedMs(startedAt, endedAt);
+     const { resolve } = input;
++    const endTime = (endIso: string) => input.formatWorkEndTime?.(endIso) ?? null;
+     const duration = elapsedMs !== null ? formatDuration(elapsedMs, resolve) : null;
++    const time = duration === null ? null : endTime(endedAt);
+     const label = isLatestInterruptedTurn
+       ? duration
+-        ? resolve(msg("You stopped after {duration}", { duration }))
++        ? time
++          ? resolve(msg("You stopped after {duration} · {time}", { duration, time }))
++          : resolve(msg("You stopped after {duration}", { duration }))
+         : resolve(msg("You stopped this response"))
+       : duration
+-        ? resolve(msg("Worked for {duration}", { duration }))
++        ? time
++          ? resolve(msg("Worked for {duration} · {time}", { duration, time }))
++          : resolve(msg("Worked for {duration}", { duration }))
+         : resolve(msg("Worked"));
+ 
+     // The top row keeps the whole turn's time, steers included. Work after a
+@@ -1286,13 +1324,13 @@ function deriveTurnFolds(input: {
+       const entries = group.entries.slice(startIndex, group.steerSegments[index + 1]?.startIndex);
+       const anchorEntry = entries[0];
+       if (anchorEntry === undefined || !hidesNonCompactionWork(entries)) continue;
+-      const segmentMs = computeElapsedMs(
+-        steer.createdAt,
++      const segmentEnd =
+         entries
+           .filter((entry) => !lateSubagentIds.has(entry.id))
+           .map(timelineEntryEnd)
+-          .reduce<string | null>(maxIsoTimestamp, null) ?? steer.createdAt,
+-      );
++          .reduce<string | null>(maxIsoTimestamp, null) ?? steer.createdAt;
++      const segmentMs = computeElapsedMs(steer.createdAt, segmentEnd);
++      const segmentTime = segmentMs === null ? null : endTime(segmentEnd);
+       foldsByAnchorEntryId.set(anchorEntry.id, {
+         runId: RunId.make(`${runId}:steer:${steer.id}`),
+         anchorEntryId: anchorEntry.id,
+@@ -1300,11 +1338,18 @@ function deriveTurnFolds(input: {
+         hiddenEntryIds: segmentHiddenIds(entries),
+         entryIds: new Set(entries.map((entry) => entry.id)),
+         label:
+-          segmentMs !== null
+-            ? resolve(
+-                msg("Continued for {duration}", { duration: formatDuration(segmentMs, resolve) }),
+-              )
+-            : resolve(msg("Continued")),
++          segmentMs === null
++            ? resolve(msg("Continued"))
++            : segmentTime
++              ? resolve(
++                  msg("Continued for {duration} · {time}", {
++                    duration: formatDuration(segmentMs, resolve),
++                    time: segmentTime,
++                  }),
++                )
++              : resolve(
++                  msg("Continued for {duration}", { duration: formatDuration(segmentMs, resolve) }),
++                ),
+       });
+     }
+   }
+@@ -1603,6 +1648,7 @@ function deriveTimelineTurnFolds(
+     liveSubagentEntryIds: liveSubagentCardEntryIds(timelineEntries),
+     retainedAssistantReplyEntryIds: retainedAssistantReplyEntryIds(timelineEntries),
+     resolve: m,
++    formatWorkEndTime: null,
+   });
+ }
+ 
+@@ -1626,6 +1672,8 @@ export function deriveMessagesTimelineRows(
+     worktreeSetup?: WorktreeSetupSnapshot | null;
+     toolCallVisibility?: ToolCallVisibility;
+     revealedMessageId?: MessageId | null;
++    /** The fold rows' end time; keep it referentially stable so rows memoize. */
++    formatWorkEndTime?: WorkEndTimeFormat;
+   },
+   resolve: MessageResolver = m,
+ ): MessagesTimelineRow[] {
+@@ -1692,6 +1740,7 @@ export function deriveMessagesTimelineRows(
+           liveSubagentEntryIds,
+           retainedAssistantReplyEntryIds: retainedAssistantReplyIds,
+           resolve,
++          formatWorkEndTime: input.formatWorkEndTime ?? null,
+         });
+   const timelineEntryById = new Map(timelineEntries.map((entry) => [entry.id, entry]));
+   const collapsedEntryIds = new Set<string>();
+diff --git a/apps/web/src/components/chat/MessagesTimeline.tsx b/apps/web/src/components/chat/MessagesTimeline.tsx
+index e94c052e40b37f7f06f20112d7c189d80da2fe2c..8fe9650de30558cf93c2617b21203940cf062fec 100644
+--- a/apps/web/src/components/chat/MessagesTimeline.tsx
++++ b/apps/web/src/components/chat/MessagesTimeline.tsx
+@@ -141,7 +141,12 @@ import {
+ } from "./timelineViewport";
+ import { useThreadFindPositionReader } from "./useThreadFindPositionReader";
+ import { ThreadActivityAnnouncer } from "./ThreadActivityAnnouncer";
+-import { useStableHandoffRuns, useIncrementalTimelineRows, useStableRows } from "./useTimelineRows";
++import {
++  useStableHandoffRuns,
++  useIncrementalTimelineRows,
++  useStableRows,
++  useWorkEndTimeFormat,
++} from "./useTimelineRows";
+ import { useClientSettings } from "../../hooks/useSettings";
+ 
+ function timelineListStateFor(identity: string): {
+@@ -741,6 +746,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
+   const pendingApprovalRequestIds = new Set(
+     pendingApprovals.filter(isVisiblePendingApproval).map((approval) => approval.requestId),
+   );
++  const formatWorkEndTime = useWorkEndTimeFormat();
+   const rawRows = useIncrementalTimelineRows(`${listIdentityKey}\0${workspaceRoot ?? ""}`, {
+     timelineEntries,
+     pendingApprovalRequestIds,
+@@ -759,6 +765,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
+     worktreeSetup,
+     toolCallVisibility,
+     revealedMessageId,
++    formatWorkEndTime,
+   });
+   const rows = useStableRows(rawRows, listIdentityKey);
+   const matchedApprovalRequestIds = new Set<string>();
+diff --git a/apps/web/src/components/chat/useTimelineRows.ts b/apps/web/src/components/chat/useTimelineRows.ts
+index 3ea5c9f55681daf1b57e5692f90ef67573f13757..8ae5c6f72c1f426f9a4e11d5ee241f1f10aeb10b 100644
+--- a/apps/web/src/components/chat/useTimelineRows.ts
++++ b/apps/web/src/components/chat/useTimelineRows.ts
+@@ -8,8 +8,11 @@ import {
+   deriveMessagesTimelineRowsWithState,
+   type StableMessagesTimelineRowsState,
+   type MessagesTimelineRow,
++  type WorkEndTimeFormat,
++  workEndTimeFormat,
+ } from "./MessagesTimeline.logic";
+ import { type HandoffTimelineRun } from "./V2LifecycleRow";
++import { useDeadlinePassed } from "../../hooks/useDeadline";
+ 
+ const EMPTY_TIMELINE_RUNS: ReadonlyArray<HandoffTimelineRun> = [];
+ 
+@@ -36,6 +39,37 @@ export function useStableHandoffRuns(
+   return value;
+ }
+ 
++function readSystemLocale(): string | undefined {
++  if (typeof window === "undefined") return undefined;
++  const tag = window.desktopBridge?.getSystemLocale()?.trim();
++  if (!tag) return undefined;
++  try {
++    Intl.DateTimeFormat.supportedLocalesOf([tag]);
++    return tag;
++  } catch {
++    return undefined;
++  }
++}
++
++function readWorkEndTimeFormat() {
++  const now = new Date();
++  const nextDay = new Date(now);
++  nextDay.setHours(24, 0, 0, 0);
++  const locale = readSystemLocale();
++  return {
++    nextDayMs: nextDay.getTime(),
++    format: workEndTimeFormat(locale === undefined ? { now } : { now, locale }),
++  };
++}
++
++/** Rebuilt at local midnight, so a turn that ended yesterday gains its date. */
++export function useWorkEndTimeFormat(): WorkEndTimeFormat {
++  const [state, setState] = useState(readWorkEndTimeFormat);
++  const nextDayPassed = useDeadlinePassed(state.nextDayMs);
++  if (nextDayPassed) setState(readWorkEndTimeFormat);
++  return state.format;
++}
++
+ /**
+  * Rows derived from the previous projection of the same list, so a streamed
+  * text update patches its message rows instead of deriving every row again.
+diff --git a/apps/web/src/i18n/translations/de.json b/apps/web/src/i18n/translations/de.json
+index 53f509e172b920f8472eb468d817ea32430db654..b05c188f7af874ab89a9c3ffecebcce6f4ad8560 100644
+--- a/apps/web/src/i18n/translations/de.json
++++ b/apps/web/src/i18n/translations/de.json
+@@ -3714,10 +3714,13 @@
+   "f2661cb679537d7c": "{program} gestoppt",
+   "a265d829e76c30fb": "{program} ausgeführt",
+   "3b8635b46a63c2f0": "Von dir nach {duration} gestoppt",
++  "4739b1330b51514c": "Von dir nach {duration} gestoppt · {time}",
+   "abebe26bc3e613e8": "Du hast diese Antwort gestoppt",
+   "cf180966ebd1c307": "{duration} gearbeitet",
++  "ac8f261e7425b349": "{duration} gearbeitet · {time}",
+   "ea45064fb0582c38": "Gearbeitet",
+   "cbf71f6bf85f65e4": "{duration} weitergearbeitet",
++  "9947b919f75fa805": "{duration} weitergearbeitet · {time}",
+   "8571e67ea1596019": "Weitergearbeitet",
+   "d956ea9d4e3f0ade": "Kontext nach {age} Inaktivität komprimiert",
+   "9996f59c86ed715e": "Ersetzter Versuch",
+diff --git a/apps/web/src/i18n/translations/en.json b/apps/web/src/i18n/translations/en.json
+index 0f4d1952a76c8cfe763d7a2750921d03815bed90..c721b655eba3f48d1b8376b5dba9302cec5f1bf6 100644
+--- a/apps/web/src/i18n/translations/en.json
++++ b/apps/web/src/i18n/translations/en.json
+@@ -3713,10 +3713,13 @@
+   "f2661cb679537d7c": "Stopped {program}",
+   "a265d829e76c30fb": "Ran {program}",
+   "3b8635b46a63c2f0": "You stopped after {duration}",
++  "4739b1330b51514c": "You stopped after {duration} · {time}",
+   "abebe26bc3e613e8": "You stopped this response",
+   "cf180966ebd1c307": "Worked for {duration}",
++  "ac8f261e7425b349": "Worked for {duration} · {time}",
+   "ea45064fb0582c38": "Worked",
+   "cbf71f6bf85f65e4": "Continued for {duration}",
++  "9947b919f75fa805": "Continued for {duration} · {time}",
+   "8571e67ea1596019": "Continued",
+   "d956ea9d4e3f0ade": "Context compacted after {age} idle",
+   "9996f59c86ed715e": "Superseded attempt",
+diff --git a/apps/web/src/i18n/translations/es.json b/apps/web/src/i18n/translations/es.json
+index daf462ecf8460b39a333f30c83d2f821502bcbb6..690aa6b25160cdfa865574257008e269ca12290c 100644
+--- a/apps/web/src/i18n/translations/es.json
++++ b/apps/web/src/i18n/translations/es.json
+@@ -3711,10 +3711,13 @@
+   "f2661cb679537d7c": "Se detuvo {program}",
+   "a265d829e76c30fb": "Se ejecutó {program}",
+   "3b8635b46a63c2f0": "Lo detuviste tras {duration}",
++  "4739b1330b51514c": "Lo detuviste tras {duration} · {time}",
+   "abebe26bc3e613e8": "Detuviste esta respuesta",
+   "cf180966ebd1c307": "Trabajó durante {duration}",
++  "ac8f261e7425b349": "Trabajó durante {duration} · {time}",
+   "ea45064fb0582c38": "Trabajó",
+   "cbf71f6bf85f65e4": "Continuó durante {duration}",
++  "9947b919f75fa805": "Continuó durante {duration} · {time}",
+   "8571e67ea1596019": "Continuó",
+   "d956ea9d4e3f0ade": "Contexto compactado tras {age} de inactividad",
+   "9996f59c86ed715e": "Intento reemplazado",
+diff --git a/apps/web/src/i18n/translations/fr.json b/apps/web/src/i18n/translations/fr.json
+index 7aaf8e7b9dd489f7ac5802724b332e5f7fec0241..3e2d94f31c6816afd6c13279616ba7edb75b3cb0 100644
+--- a/apps/web/src/i18n/translations/fr.json
++++ b/apps/web/src/i18n/translations/fr.json
+@@ -3712,10 +3712,13 @@
+   "f2661cb679537d7c": "{program} arrêté",
+   "a265d829e76c30fb": "{program} exécuté",
+   "3b8635b46a63c2f0": "Vous avez arrêté après {duration}",
++  "4739b1330b51514c": "Vous avez arrêté après {duration} · {time}",
+   "abebe26bc3e613e8": "Vous avez arrêté cette réponse",
+   "cf180966ebd1c307": "A travaillé pendant {duration}",
++  "ac8f261e7425b349": "A travaillé pendant {duration} · {time}",
+   "ea45064fb0582c38": "A travaillé",
+   "cbf71f6bf85f65e4": "A continué pendant {duration}",
++  "9947b919f75fa805": "A continué pendant {duration} · {time}",
+   "8571e67ea1596019": "A continué",
+   "d956ea9d4e3f0ade": "Contexte compacté après {age} d’inactivité",
+   "9996f59c86ed715e": "Tentative remplacée",
+diff --git a/apps/web/src/i18n/translations/ja.json b/apps/web/src/i18n/translations/ja.json
+index b89c19d94ee8729093bfd854d8c11600700f498e..95aec3aa9ffa44d970db2a0f5f209666e53d5903 100644
+--- a/apps/web/src/i18n/translations/ja.json
++++ b/apps/web/src/i18n/translations/ja.json
+@@ -3705,10 +3705,13 @@
+   "f2661cb679537d7c": "{program} を停止しました",
+   "a265d829e76c30fb": "{program} を実行しました",
+   "3b8635b46a63c2f0": "{duration} 後に停止しました",
++  "4739b1330b51514c": "{duration} 後に停止しました · {time}",
+   "abebe26bc3e613e8": "この応答を停止しました",
+   "cf180966ebd1c307": "{duration}作業しました",
++  "ac8f261e7425b349": "{duration}作業しました · {time}",
+   "ea45064fb0582c38": "作業しました",
+   "cbf71f6bf85f65e4": "{duration} 続行しました",
++  "9947b919f75fa805": "{duration} 続行しました · {time}",
+   "8571e67ea1596019": "続行しました",
+   "d956ea9d4e3f0ade": "{age} アイドル後にコンテキストを圧縮しました",
+   "9996f59c86ed715e": "置き換えられた試行",
+diff --git a/apps/web/src/i18n/translations/ko.json b/apps/web/src/i18n/translations/ko.json
+index 96ff2e950d6549b03ce12e8e2ced4f471a59f70f..3b1619bd1d2d511b628b7982e728bfb901c69ea3 100644
+--- a/apps/web/src/i18n/translations/ko.json
++++ b/apps/web/src/i18n/translations/ko.json
+@@ -3705,10 +3705,13 @@
+   "f2661cb679537d7c": "{program} 중지됨",
+   "a265d829e76c30fb": "{program} 실행함",
+   "3b8635b46a63c2f0": "{duration} 후 중지함",
++  "4739b1330b51514c": "{duration} 후 중지함 · {time}",
+   "abebe26bc3e613e8": "이 응답을 중지함",
+   "cf180966ebd1c307": "{duration} 동안 작업함",
++  "ac8f261e7425b349": "{duration} 동안 작업함 · {time}",
+   "ea45064fb0582c38": "작업함",
+   "cbf71f6bf85f65e4": "{duration} 동안 계속함",
++  "9947b919f75fa805": "{duration} 동안 계속함 · {time}",
+   "8571e67ea1596019": "계속함",
+   "d956ea9d4e3f0ade": "{age} 유휴 후 컨텍스트 압축됨",
+   "9996f59c86ed715e": "대체된 시도",
+diff --git a/apps/web/src/i18n/translations/pt-BR.json b/apps/web/src/i18n/translations/pt-BR.json
+index b65168e8d78ae3de83ceca814f5e03a0396068d7..140e7683dddabd46b439c26dc9bbbc58e00e7623 100644
+--- a/apps/web/src/i18n/translations/pt-BR.json
++++ b/apps/web/src/i18n/translations/pt-BR.json
+@@ -3712,10 +3712,13 @@
+   "f2661cb679537d7c": "{program} interrompido",
+   "a265d829e76c30fb": "Executou {program}",
+   "3b8635b46a63c2f0": "Você parou após {duration}",
++  "4739b1330b51514c": "Você parou após {duration} · {time}",
+   "abebe26bc3e613e8": "Você parou esta resposta",
+   "cf180966ebd1c307": "Trabalhou por {duration}",
++  "ac8f261e7425b349": "Trabalhou por {duration} · {time}",
+   "ea45064fb0582c38": "Trabalhou",
+   "cbf71f6bf85f65e4": "Continuou por {duration}",
++  "9947b919f75fa805": "Continuou por {duration} · {time}",
+   "8571e67ea1596019": "Continuou",
+   "d956ea9d4e3f0ade": "Contexto compactado após {age} ocioso",
+   "9996f59c86ed715e": "Tentativa substituída",
+diff --git a/apps/web/src/i18n/translations/ru.json b/apps/web/src/i18n/translations/ru.json
+index 3748f7281dbc45cad607cff6e2128b1560b7cf70..ded173e87f10f962b6fe87c54b3ee5898c746f4a 100644
+--- a/apps/web/src/i18n/translations/ru.json
++++ b/apps/web/src/i18n/translations/ru.json
+@@ -3712,10 +3712,13 @@
+   "f2661cb679537d7c": "Остановлено: {program}",
+   "a265d829e76c30fb": "Выполнено: {program}",
+   "3b8635b46a63c2f0": "Вы остановили через {duration}",
++  "4739b1330b51514c": "Вы остановили через {duration} · {time}",
+   "abebe26bc3e613e8": "Вы остановили этот ответ",
+   "cf180966ebd1c307": "Работал {duration}",
++  "ac8f261e7425b349": "Работал {duration} · {time}",
+   "ea45064fb0582c38": "Работал",
+   "cbf71f6bf85f65e4": "Продолжал {duration}",
++  "9947b919f75fa805": "Продолжал {duration} · {time}",
+   "8571e67ea1596019": "Продолжал",
+   "d956ea9d4e3f0ade": "Контекст сжат после простоя {age}",
+   "9996f59c86ed715e": "Заменённая попытка",
+diff --git a/apps/web/src/i18n/translations/sv.json b/apps/web/src/i18n/translations/sv.json
+index 72ec3b54e434e71a1b43eaffa0c0caa8bc8a8dd5..89c0db4e1599aab61f0ee7af1a1c7d3817d145a8 100644
+--- a/apps/web/src/i18n/translations/sv.json
++++ b/apps/web/src/i18n/translations/sv.json
+@@ -3712,10 +3712,13 @@
+   "f2661cb679537d7c": "Stoppade {program}",
+   "a265d829e76c30fb": "Körde {program}",
+   "3b8635b46a63c2f0": "Du stoppade efter {duration}",
++  "4739b1330b51514c": "Du stoppade efter {duration} · {time}",
+   "abebe26bc3e613e8": "Du stoppade det här svaret",
+   "cf180966ebd1c307": "Arbetade i {duration}",
++  "ac8f261e7425b349": "Arbetade i {duration} · {time}",
+   "ea45064fb0582c38": "Arbetade",
+   "cbf71f6bf85f65e4": "Fortsatte i {duration}",
++  "9947b919f75fa805": "Fortsatte i {duration} · {time}",
+   "8571e67ea1596019": "Fortsatte",
+   "d956ea9d4e3f0ade": "Kontexten komprimerades efter {age} inaktivitet",
+   "9996f59c86ed715e": "Ersatt försök",
+diff --git a/apps/web/src/i18n/translations/zh.json b/apps/web/src/i18n/translations/zh.json
+index 202385462e2659dad9f3674e41fdc72c7a0e22b3..78b200d06d88f72de4e08c8865f0e13c6ed22984 100644
+--- a/apps/web/src/i18n/translations/zh.json
++++ b/apps/web/src/i18n/translations/zh.json
+@@ -3716,10 +3716,13 @@
+   "f2661cb679537d7c": "已停止 {program}",
+   "a265d829e76c30fb": "已运行 {program}",
+   "3b8635b46a63c2f0": "你在 {duration} 后停止了",
++  "4739b1330b51514c": "你在 {duration} 后停止了 · {time}",
+   "abebe26bc3e613e8": "你停止了这次回复",
+   "cf180966ebd1c307": "工作了 {duration}",
++  "ac8f261e7425b349": "工作了 {duration} · {time}",
+   "ea45064fb0582c38": "已工作",
+   "cbf71f6bf85f65e4": "继续工作了 {duration}",
++  "9947b919f75fa805": "继续工作了 {duration} · {time}",
+   "8571e67ea1596019": "继续工作",
+   "d956ea9d4e3f0ade": "闲置 {age} 后已压缩上下文",
+   "9996f59c86ed715e": "已被替代的尝试",
+diff --git a/patcher/journeys/fixtures/work-timestamps-agent.mjs b/patcher/journeys/fixtures/work-timestamps-agent.mjs
+new file mode 100644
+index 0000000000000000000000000000000000000000..a3511622457bae9a5f8c0b6c3814d6040aad2bc9
+--- /dev/null
++++ b/patcher/journeys/fixtures/work-timestamps-agent.mjs
+@@ -0,0 +1,74 @@
++// A minimal ACP agent for the work-timestamps journey: each turn says a line, runs one finished
++// tool call and replies, so the settled turn folds behind its "Worked for" row. ACP on stdio.
++import * as NodeCrypto from "node:crypto";
++import * as NodeReadline from "node:readline";
++
++const send = (message) =>
++  process.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", ...message })}\n`);
++
++async function prompt(params) {
++  const update = (body) =>
++    send({ method: "session/update", params: { sessionId: params.sessionId, update: body } });
++  const say = (text) =>
++    update({ sessionUpdate: "agent_message_chunk", content: { type: "text", text } });
++  const toolCallId = NodeCrypto.randomUUID();
++  say("Looking at the workspace.");
++  update({
++    sessionUpdate: "tool_call",
++    toolCallId,
++    title: "List files",
++    kind: "execute",
++    status: "in_progress",
++  });
++  await new Promise((resolve) => setTimeout(resolve, 1_500));
++  update({ sessionUpdate: "tool_call_update", toolCallId, status: "completed" });
++  say("Checked the workspace.");
++  return { stopReason: "end_turn" };
++}
++
++async function handle(message) {
++  const params = message.params ?? {};
++  switch (message.method) {
++    case "initialize":
++      return {
++        protocolVersion: 1,
++        agentCapabilities: {
++          loadSession: true,
++          promptCapabilities: { image: false, audio: false, embeddedContext: true },
++          mcpCapabilities: { http: true, sse: false },
++        },
++        authMethods: [],
++        agentInfo: { name: "work-timestamps-journey-agent", version: "1" },
++      };
++    case "session/new":
++    case "session/load":
++      return {
++        ...(message.method === "session/new" ? { sessionId: NodeCrypto.randomUUID() } : {}),
++        models: {
++          currentModelId: "default",
++          availableModels: [{ modelId: "default", name: "Default" }],
++        },
++      };
++    case "session/set_model":
++    case "session/set_mode":
++      return {};
++    case "session/prompt":
++      return prompt(params);
++    default:
++      throw Object.assign(new Error(`Method not found: ${message.method}`), { code: -32601 });
++  }
++}
++
++NodeReadline.createInterface({ input: process.stdin }).on("line", (line) => {
++  if (line.trim() === "") return;
++  const message = JSON.parse(line);
++  if (message.method === undefined || message.id === undefined) return;
++  handle(message).then(
++    (result) => send({ id: message.id, result }),
++    (error) =>
++      send({
++        id: message.id,
++        error: { code: error.code ?? -32603, message: String(error.message) },
++      }),
++  );
++});
+diff --git a/patcher/journeys/work-timestamps.mjs b/patcher/journeys/work-timestamps.mjs
+new file mode 100644
+index 0000000000000000000000000000000000000000..5e987d5729049099fda90e9bb97dc131f5d26947
+--- /dev/null
++++ b/patcher/journeys/work-timestamps.mjs
+@@ -0,0 +1,145 @@
++// Journey: an agent finishes a turn with work in it, and the thread's fold row names how long it
++// worked and when it ended, in this Mac's locale and time zone. The agent is
++// fixtures/work-timestamps-agent.mjs, a provider in the journey's own T3 home.
++//   T3_PATCHER_APP=<built .app> T3_PATCHER_EVIDENCE=<dir> node patcher/journeys/work-timestamps.mjs
++import * as NodeChildProcess from "node:child_process";
++import * as NodeFS from "node:fs";
++import * as NodeOS from "node:os";
++import * as NodePath from "node:path";
++
++import { FIXTURE_DB, STEP_TIMEOUT_MS, journey } from "./support.mjs";
++
++const repoRoot = NodePath.resolve(import.meta.dirname, "../..");
++const agent = NodePath.join(import.meta.dirname, "fixtures/work-timestamps-agent.mjs");
++const THREAD_TITLE = "Work timestamps journey";
++
++// The journey's own T3 home, so the provider is in settings before the server starts.
++const parent = process.env.T3_PATCHER_TMP || process.env.TMPDIR || NodeOS.tmpdir();
++NodeFS.mkdirSync(parent, { recursive: true });
++const base = NodeFS.mkdtempSync(NodePath.join(parent, "t3-work-timestamps-"));
++const t3Home = NodePath.join(base, "t3");
++const workspace = NodePath.join(base, "workspace");
++NodeFS.mkdirSync(NodePath.join(t3Home, "userdata"), { recursive: true });
++NodeFS.copyFileSync(FIXTURE_DB, NodePath.join(t3Home, "userdata/statev2.sqlite"));
++NodeFS.writeFileSync(
++  NodePath.join(t3Home, "userdata/settings.json"),
++  JSON.stringify({
++    providerInstances: {
++      workAgent: {
++        displayName: "Work agent",
++        driver: "acpRegistry",
++        config: { source: "local", commandPath: process.execPath, commandArgs: [agent] },
++      },
++    },
++  }),
++);
++NodeFS.mkdirSync(workspace);
++NodeFS.writeFileSync(NodePath.join(workspace, "README.md"), "Work timestamps journey\n");
++const git = (...args) =>
++  NodeChildProcess.execFileSync("git", args, { cwd: workspace, stdio: "ignore" });
++git("init", "--quiet", "--initial-branch=main");
++git("add", "--all");
++git("-c", "user.name=Journey", "-c", "user.email=journey@example.invalid", "commit", "-qm", "init");
++
++/** The server's own CLI, against the running app's T3 home. */
++function cli(...args) {
++  return NodeChildProcess.execFileSync(
++    process.execPath,
++    ["apps/server/src/bin.ts", ...args, "--base-dir", t3Home],
++    { cwd: repoRoot, encoding: "utf8", timeout: STEP_TIMEOUT_MS * 2 },
++  );
++}
++
++async function untilServerListens() {
++  const runtime = NodePath.join(t3Home, "userdata/server-runtime.json");
++  const deadline = Date.now() + STEP_TIMEOUT_MS;
++  while (!NodeFS.existsSync(runtime)) {
++    if (Date.now() > deadline) throw new Error("the app's server never wrote server-runtime.json");
++    await new Promise((resolve) => setTimeout(resolve, 250));
++  }
++}
++
++try {
++  await journey(
++    "work-timestamps",
++    async ({ page, screenshot }, step) => {
++      step("waiting for the app's server");
++      await untilServerListens();
++      step("adding the workspace as a project");
++      cli("project", "add", workspace, "--title", "Work timestamps");
++      step("running a turn that does some work");
++      const startedMs = Date.now();
++      const started = JSON.parse(
++        cli(
++          "thread",
++          "start",
++          workspace,
++          "Look at the workspace.",
++          "--title",
++          THREAD_TITLE,
++          "--provider",
++          "workAgent",
++          "--model",
++          "default",
++          "--wait",
++          "--json",
++        ),
++      );
++      const endedMs = Date.now();
++      console.log(`thread ${started.threadId}`);
++
++      step("opening the thread");
++      const thread = page.getByTestId("sidebar-row-card").filter({ hasText: THREAD_TITLE });
++      await thread.waitFor({ timeout: STEP_TIMEOUT_MS });
++      await thread.press("Enter");
++      await page.getByText("Checked the workspace.").waitFor({ timeout: STEP_TIMEOUT_MS });
++
++      step("reading the fold row");
++      const fold = page.getByRole("button", { name: /^Worked for / });
++      await fold.waitFor({ timeout: STEP_TIMEOUT_MS });
++      const label = (await fold.textContent())?.trim() ?? "";
++      console.log(`fold row: ${label}`);
++      const match = /^Worked for ([0-9hms. ]+) · (.+)$/.exec(label);
++      if (match === null) throw new Error(`the fold row reads ${JSON.stringify(label)}`);
++      // Each minute the turn could have ended in, formatted as the app's renderer would in this
++      // Mac's OS locale (from desktopBridge.getSystemLocale()) and time zone: time only when it's
++      // today there, with the date otherwise.
++      const { systemLocale, expected } = await page.evaluate(
++        ({ from, to }) => {
++          const rawLocale = window.desktopBridge?.getSystemLocale()?.trim() || "";
++          const locale = rawLocale || undefined;
++          const time = { hour: "numeric", minute: "2-digit", timeZoneName: "short" };
++          const today = new Date().toDateString();
++          const times = [];
++          const firstMinute = Math.floor(from / 60_000) * 60_000;
++          const lastMinute = Math.floor(to / 60_000) * 60_000;
++          for (let at = firstMinute; at <= lastMinute; at += 60_000) {
++            const sameDay = new Date(at).toDateString() === today;
++            const options = sameDay ? time : { ...time, month: "short", day: "numeric" };
++            times.push(new Intl.DateTimeFormat(locale, options).format(at));
++          }
++          return { systemLocale: rawLocale, expected: [...new Set(times)] };
++        },
++        { from: startedMs, to: endedMs },
++      );
++      if (!systemLocale) {
++        throw new Error("desktopBridge.getSystemLocale() returned empty in the packaged app");
++      }
++      if (!expected.includes(match[2])) {
++        throw new Error(
++          `the fold row's end time ${JSON.stringify(match[2])} is none of ${JSON.stringify(expected)} (locale ${systemLocale})`,
++        );
++      }
++      if (/\d:\d\d:\d\d/.test(match[2])) throw new Error(`the end time has seconds: ${match[2]}`);
++      console.log(await screenshot("work-timestamps-fold"));
++    },
++    { seed: false, env: { T3CODE_HOME: t3Home } },
++  );
++} finally {
++  const logs = NodePath.join(t3Home, "userdata/logs");
++  const evidence = process.env.T3_PATCHER_EVIDENCE;
++  if (evidence && NodeFS.existsSync(logs)) {
++    NodeFS.cpSync(logs, NodePath.join(evidence, "work-timestamps-logs"), { recursive: true });
++  }
++  NodeFS.rmSync(base, { recursive: true, force: true, maxRetries: 5 });
++}
