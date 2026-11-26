@@ -129,9 +129,17 @@ export type Feed = typeof Feed.Type;
  * the patcher's `update`: an absolute command, its folder, and the PATH the patcher ran with, since the app runs it
  * without a shell and with its own PATH.
  */
+export const InstalledPatch = Schema.Struct({
+  id: PatchId,
+  title: Schema.optionalKey(Text),
+  summary: Schema.optionalKey(Text),
+  version: PatchVersion,
+});
+export type InstalledPatch = typeof InstalledPatch.Type;
+
 export const InstalledRecord = Schema.Struct({
   t3Version: Text,
-  patches: Schema.Array(Schema.Struct({ id: PatchId, version: PatchVersion })),
+  patches: Schema.Array(InstalledPatch),
   installedAt: Text,
   feed: Text,
   /** Missing when the install wasn't run from a checkout with scripts/patcher.py: update from the command line. */
