@@ -1,6 +1,12 @@
 {
   "patches": [
     {
+      "id": "environment-patches",
+      "title": "Environment patches",
+      "summary": "Settings → Environments shows every environment's version (even when matching the client) and its installed patches in both Map and List views. Map cards display '<version> · <N> patches', and each environment row adds a 'Patches' disclosure beside Routes and Permissions that lists every patch's title, version badge, slug, summary, and an expandable 'What’s included' feature breakdown, preserving open state across Map ↔ List switches. Servers publish their patches on ExecutionEnvironmentDescriptor (and t3_environment_read) from T3_PATCHER_PATCHES baked at build time or <stateDir>/patcher/installed.json.",
+      "version": 1
+    },
+    {
       "id": "journey-kit",
       "title": "Journey kit",
       "summary": "patcher/journeys/support.mjs launches the built app for patch journeys: a throwaway HOME and T3CODE_HOME seeded with the release launch fixture, Chromium's mock keychain, no Dock icon and no window ever shown or focused (a journey fails if one is), telemetry and auto-update off, logs and screenshots into $T3_PATCHER_EVIDENCE. Every other patch's journeys use it. T3's browser tests run in full headless Chromium, which draws frames on a locked Mac.",

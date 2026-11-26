@@ -96,10 +96,25 @@ interface Action {
   readonly perform: (opened: Opened) => Effect.Effect<string, StepFailed, Needs>;
 }
 
-const commandEnv = (target: Target, opened: Opened): Readonly<Record<string, string>> => ({
+const appliedPatchesJson = (patches: ReadonlyArray<Patch>): string =>
+  JSON.stringify(
+    patches.map(({ manifest }) => ({
+      id: manifest.id,
+      title: manifest.title,
+      summary: manifest.summary,
+      version: manifest.version,
+    })),
+  );
+
+const commandEnv = (
+  target: Target,
+  opened: Opened,
+  patches: ReadonlyArray<Patch>,
+): Readonly<Record<string, string>> => ({
   ...target.env,
   T3_PATCHER_VERSION: opened.version,
   T3_PATCHER_SOURCE: opened.workspace.path,
+  T3_PATCHER_PATCHES: appliedPatchesJson(patches),
 });
 
 const shellStep = (kind: StepKind, name: string, command: (opened: Opened) => Command, env: (opened: Opened) => Readonly<Record<string, string>>): Action => ({
@@ -125,14 +140,20 @@ const patchStep = (patch: Patch, save: boolean): Action => ({
   }),
 });
 
-const journeyStep = (target: Target, folders: RunFolders, patch: Patch, journey: Journey): Action => {
+const journeyStep = (
+  target: Target,
+  folders: RunFolders,
+  patches: ReadonlyArray<Patch>,
+  patch: Patch,
+  journey: Journey,
+): Action => {
   const id = patch.manifest.id;
   return shellStep(
     "journey",
     `${id}: ${journey.name}`,
     () => ({ name: journey.name, run: journey.run }),
     (opened) => ({
-      ...commandEnv(target, opened),
+      ...commandEnv(target, opened, patches),
       T3_PATCHER_APP: builtApp(opened.workspace, target),
       T3_PATCHER_EVIDENCE: `${folders.evidence}/${id}/${journey.name}`,
     }),
@@ -177,7 +198,7 @@ const actions = (
   options: RunOptions,
 ): ReadonlyArray<Action> => {
   const save = options.save ?? true;
-  const env = (opened: Opened) => commandEnv(target, opened);
+  const env = (opened: Opened) => commandEnv(target, opened, patches);
   return [
     ...patches.map((patch) => patchStep(patch, save)),
     ...target.checks.map((check) => shellStep("check", check.name, targetCommand(check), env)),
@@ -185,7 +206,9 @@ const actions = (
       patch.manifest.checks.map((check) => shellStep("check", `${patch.manifest.id}: ${check.name}`, () => check, env)),
     ),
     ...target.build.map((command) => shellStep("build", command.name, targetCommand(command), env)),
-    ...patches.flatMap((patch) => patch.manifest.journeys.map((journey) => journeyStep(target, folders, patch, journey))),
+    ...patches.flatMap((patch) =>
+      patch.manifest.journeys.map((journey) => journeyStep(target, folders, patches, patch, journey)),
+    ),
     ...(save ? [saveStep()] : []),
     ...(install ? [installStep(target, patches, options)] : []),
   ];
@@ -348,7 +371,12 @@ export const installedRecord = (
   update: InstalledRecord["update"],
 ): InstalledRecord => ({
   t3Version: version,
-  patches: patches.map(({ manifest }) => ({ id: manifest.id, version: manifest.version })),
+  patches: patches.map(({ manifest }) => ({
+    id: manifest.id,
+    title: manifest.title,
+    summary: manifest.summary,
+    version: manifest.version,
+  })),
   installedAt,
   feed,
   ...(update === undefined ? {} : { update }),

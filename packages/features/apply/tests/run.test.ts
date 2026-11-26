@@ -78,12 +78,20 @@ describe("run", () => {
       expect(yield* Ref.get(fake.installed)).toEqual(["/work/stack/release/T3 Code.app"]);
     }));
 
-  it.effect("passes the version, source, app and evidence folders to commands", () =>
+  it.effect("passes the version, source, patches, app and evidence folders to commands", () =>
     Effect.gen(function* () {
       const fake = yield* fakes();
       const patches = yield* twoPatches();
       yield* run(target(), patches, false, folders).pipe(Effect.provide(fake.layer));
-      const env = { CI: "1", T3_PATCHER_VERSION: "0.1.11", T3_PATCHER_SOURCE: "/work/stack" };
+      const env = {
+        CI: "1",
+        T3_PATCHER_VERSION: "0.1.11",
+        T3_PATCHER_SOURCE: "/work/stack",
+        T3_PATCHER_PATCHES: JSON.stringify([
+          { id: "a", title: "Title a", summary: "Summary a", version: 1 },
+          { id: "b", title: "Title b", summary: "Summary b", version: 1 },
+        ]),
+      };
       const journeyEnv = (id: string) => ({
         ...env,
         T3_PATCHER_APP: "/work/stack/release/T3 Code.app",
@@ -362,8 +370,8 @@ describe("installedRecord", () => {
       const baseCommit = yield* commit("b");
       const patches = [yield* patch("a", { baseCommit, version: 3 }), yield* patch("b", { baseCommit })];
       const installed = [
-        { id: "a", version: 3 },
-        { id: "b", version: 1 },
+        { id: "a", title: "Title a", summary: "Summary a", version: 3 },
+        { id: "b", title: "Title b", summary: "Summary b", version: 1 },
       ];
       expect([
         installedRecord("0.1.12", patches, "2026-11-24T10:00:00.000Z", "https://feed", update),

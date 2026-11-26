@@ -198,7 +198,7 @@ describe("installed record", () => {
       const { fs, at } = yield* temporary;
       const record: InstalledRecord = {
         t3Version: "0.1.11",
-        patches: [{ id: (yield* manifest("a")).id, version: 2 }],
+        patches: [{ id: (yield* manifest("a")).id, title: "Patch a", summary: "Changes a", version: 2 }],
         installedAt: "2026-11-24T10:00:00.000Z",
         feed: FEED_URL,
         update: {
@@ -207,15 +207,22 @@ describe("installed record", () => {
           path: "/opt/homebrew/bin:/usr/bin:/bin",
         },
       };
+      const legacyRecord: InstalledRecord = {
+        ...record,
+        patches: [{ id: (yield* manifest("a")).id, version: 2 }],
+      };
       const missing = yield* loadInstalled(at("user"));
       yield* saveInstalled(at("user"), record);
       const loaded = yield* loadInstalled(at("user"));
       const text = yield* fs.readFileString(at("user", "installed.json"));
+      yield* fs.writeFileString(at("user", "installed.json"), JSON.stringify(legacyRecord));
+      const loadedLegacy = yield* loadInstalled(at("user"));
       yield* fs.writeFileString(at("user", "installed.json"), '{"t3Version":"0.1.11"}');
       const malformed = yield* Effect.flip(loadInstalled(at("user")));
-      expect([missing, loaded, text, malformed]).toEqual([
+      expect([missing, loaded, loadedLegacy, text, malformed]).toEqual([
         Option.none(),
         Option.some(record),
+        Option.some(legacyRecord),
         `${JSON.stringify(record, null, 2)}\n`,
         new StorageFailed({ what: "the installed record" }),
       ]);

@@ -156,8 +156,8 @@ describe("update", () => {
         Option.some({
           t3Version: "1.0.0",
           patches: [
-            { id: "notes-one", version: 2 },
-            { id: "red-color", version: 1 },
+            { id: "notes-one", title: "Add notes", summary: "Adds a notes file.", version: 2 },
+            { id: "red-color", title: "Red color", summary: "Makes the app red.", version: 1 },
           ],
           feed: "https://feed.example/patches/index.json",
           update: sourceFor(data).update,
@@ -232,7 +232,12 @@ describe("update", () => {
         Option.map(seen.installed, (record) => record.patches),
         await headOf(`${data}/repo`),
         await gitIn(`${data}/repo`, "status", "--porcelain"),
-      ]).toEqual(["passed", Option.some([{ id: "notes-one", version: 2 }]), dev, "?? stray.txt\n"]);
+      ]).toEqual([
+        "passed",
+        Option.some([{ id: "notes-one", title: "Add notes", summary: "Adds a notes file.", version: 2 }]),
+        dev,
+        "?? stray.txt\n",
+      ]);
     });
   });
 
@@ -316,7 +321,7 @@ describe("update's list of what it changes", () => {
       expect([seen.report.updating, seen.stack, Option.map(seen.installed, (record) => record.patches)]).toEqual([
         [{ name: "red-color", from: "1", to: "removed" }],
         ["notes-one on"],
-        Option.some([{ id: "notes-one", version: 1 }]),
+        Option.some([{ id: "notes-one", title: "Add notes", summary: "Adds a notes file.", version: 1 }]),
       ]);
     });
   });
@@ -333,8 +338,8 @@ describe("update's list of what it adds", () => {
         [{ name: "red-color", from: "", to: "1" }],
         ["notes-one on", "notes-two off", "red-color on"],
         Option.some([
-          { id: "notes-one", version: 1 },
-          { id: "red-color", version: 1 },
+          { id: "notes-one", title: "Add notes", summary: "Adds a notes file.", version: 1 },
+          { id: "red-color", title: "Red color", summary: "Makes the app red.", version: 1 },
         ]),
       ]);
     });
@@ -414,7 +419,7 @@ describe("apply --install", () => {
         "passed",
         Option.some({
           t3Version: "1.0.0",
-          patches: [{ id: "notes-one", version: 1 }],
+          patches: [{ id: "notes-one", title: "Add notes", summary: "Adds a notes file.", version: 1 }],
           feed: "https://feed.example/patches/index.json",
           update: sourceFor(data).update,
           timed: true,

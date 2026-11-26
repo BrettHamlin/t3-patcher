@@ -1,0 +1,1762 @@
+diff --git a/apps/server/src/environment/ServerEnvironment.test.ts b/apps/server/src/environment/ServerEnvironment.test.ts
+index 49222ecdac52868bdfed80ff6b8e635ba85e8ccc..f371968fb9238a62a4950d775cb11a7a03254735 100644
+--- a/apps/server/src/environment/ServerEnvironment.test.ts
++++ b/apps/server/src/environment/ServerEnvironment.test.ts
+@@ -13,6 +13,7 @@ import { DEFAULT_SIGNAL_EXPORT } from "@t3tools/shared/observability";
+ import * as HostProcess from "@t3tools/shared/HostProcess";
+ import * as OtelEnvironment from "@t3tools/shared/otelEnvironment";
+ 
++import packageJson from "../../package.json" with { type: "json" };
+ import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
+ import {
+   PUBLISH_AGENT_ACTIVITY_SECRET,
+@@ -21,6 +22,7 @@ import {
+ } from "../cloud/config.ts";
+ import * as ServerConfig from "../config.ts";
+ import * as ServerEnvironment from "./ServerEnvironment.ts";
++import { resolveServerEnvironmentPatches } from "./ServerEnvironmentPatches.ts";
+ 
+ const layerServerEnvironment = (baseDir: string) =>
+   ServerEnvironment.layer.pipe(
+@@ -365,4 +367,94 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("ServerEnvironmen
+       }).pipe(Effect.provide(layerTest));
+     }),
+   );
++
++  it.effect(
++    "publishes installed patches from baked build metadata or matching installed.json",
++    () =>
++      Effect.gen(function* () {
++        const fileSystem = yield* FileSystem.FileSystem;
++        const baseDir = yield* fileSystem.makeTempDirectoryScoped({
++          prefix: "t3-server-environment-patches-test-",
++        });
++        const derived = yield* ServerConfig.deriveServerPaths(baseDir, undefined);
++        const patcherDir = `${derived.stateDir}/patcher`;
++        yield* fileSystem.makeDirectory(patcherDir, { recursive: true });
++
++        const unpatched = yield* Effect.gen(function* () {
++          const serverEnvironment = yield* ServerEnvironment.ServerEnvironment;
++          return yield* serverEnvironment.getDescriptor;
++        }).pipe(Effect.provide(layerServerEnvironment(baseDir)));
++        expect(unpatched.patches).toBeUndefined();
++
++        yield* fileSystem.writeFileString(
++          `${patcherDir}/installed.json`,
++          JSON.stringify({
++            t3Version: "0.0.1-stale",
++            patches: [{ id: "picks", title: "Picks", summary: "Blind picks.", version: 1 }],
++          }),
++        );
++        const stale = yield* Effect.gen(function* () {
++          const serverEnvironment = yield* ServerEnvironment.ServerEnvironment;
++          return yield* serverEnvironment.getDescriptor;
++        }).pipe(Effect.provide(layerServerEnvironment(baseDir)));
++        expect(stale.patches).toBeUndefined();
++
++        yield* fileSystem.writeFileString(
++          `${patcherDir}/installed.json`,
++          JSON.stringify({
++            t3Version: packageJson.version,
++            patches: [
++              {
++                id: "picks",
++                title: "Picks",
++                summary: "Blind A/B comparison.",
++                features: ["MCP tool request_picks"],
++                version: 1,
++              },
++              { id: "legacy-only", version: 2 },
++            ],
++          }),
++        );
++        const matched = yield* Effect.gen(function* () {
++          const serverEnvironment = yield* ServerEnvironment.ServerEnvironment;
++          return yield* serverEnvironment.getDescriptor;
++        }).pipe(Effect.provide(layerServerEnvironment(baseDir)));
++        expect(matched.patches).toEqual([
++          {
++            id: "picks",
++            title: "Picks",
++            summary: "Blind A/B comparison.",
++            features: ["MCP tool request_picks"],
++            version: 1,
++          },
++          {
++            id: "legacy-only",
++            title: "legacy-only",
++            summary: "",
++            version: 2,
++          },
++        ]);
++
++        const baked = yield* resolveServerEnvironmentPatches({
++          stateDir: derived.stateDir,
++          serverVersion: packageJson.version,
++          bakedPatchesJson: JSON.stringify([
++            {
++              id: "work-timestamps",
++              title: "Work timestamps",
++              summary: "Turn end time.",
++              version: 3,
++            },
++          ]),
++        });
++        expect(baked).toEqual([
++          {
++            id: "work-timestamps",
++            title: "Work timestamps",
++            summary: "Turn end time.",
++            version: 3,
++          },
++        ]);
++      }),
++  );
+ });
+diff --git a/apps/server/src/environment/ServerEnvironment.ts b/apps/server/src/environment/ServerEnvironment.ts
+index a340037016270d7bbe30577cc0992a0185d5dab9..44bb19e17466e7350b4718caff045f3a7493f3bb 100644
+--- a/apps/server/src/environment/ServerEnvironment.ts
++++ b/apps/server/src/environment/ServerEnvironment.ts
+@@ -25,6 +25,7 @@ import * as ProcessRunner from "../processRunner.ts";
+ import { isSpeechPlatformSupported } from "../speech/platform.ts";
+ import { resolveServerEnvironmentLabel } from "./ServerEnvironmentLabel.ts";
+ import { detectServerEnvironmentMachineKind } from "./ServerEnvironmentMachine.ts";
++import { resolveServerEnvironmentPatches } from "./ServerEnvironmentPatches.ts";
+ 
+ export class ServerEnvironmentIdPersistenceError extends Schema.TaggedError<ServerEnvironmentIdPersistenceError>()(
+   "ServerEnvironmentIdPersistenceError",
+@@ -208,6 +209,10 @@ export const make = Effect.gen(function* () {
+     serverConfig.desktopTelemetryControlFd !== undefined;
+ 
+   const databaseMigration = databaseMigrationHead(serverConfig.dbPath);
++  const patches = yield* resolveServerEnvironmentPatches({
++    stateDir: serverConfig.stateDir,
++    serverVersion: packageJson.version,
++  });
+   const descriptor: ExecutionEnvironmentDescriptor = {
+     environmentId,
+     label,
+@@ -219,6 +224,7 @@ export const make = Effect.gen(function* () {
+     serverVersion: packageJson.version,
+     orchestrationProtocolVersion: ORCHESTRATION_PROTOCOL_VERSION,
+     ...(databaseMigration === undefined ? {} : { databaseMigration }),
++    ...(patches.length > 0 ? { patches } : {}),
+     capabilities: {
+       repositoryIdentity: true,
+       connectionProbe: true,
+diff --git a/apps/server/src/environment/ServerEnvironmentPatches.ts b/apps/server/src/environment/ServerEnvironmentPatches.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..ea9e67725542e34cda778b6cb7ab7c2286acf38d
+--- /dev/null
++++ b/apps/server/src/environment/ServerEnvironmentPatches.ts
+@@ -0,0 +1,81 @@
++import {
++  ExecutionEnvironmentPatch,
++  type ExecutionEnvironmentPatch as EnvironmentPatch,
++} from "@t3tools/contracts";
++import * as Effect from "effect/Effect";
++import * as FileSystem from "effect/FileSystem";
++import * as Option from "effect/Option";
++import * as Path from "effect/Path";
++import * as Schema from "effect/Schema";
++
++declare const __T3CODE_PATCHES__: string | undefined;
++
++const BakedPatchesSchema = Schema.fromJsonString(Schema.Array(ExecutionEnvironmentPatch));
++const decodeBakedPatches = Schema.decodeUnknownOption(BakedPatchesSchema);
++const decodeEnvironmentPatch = Schema.decodeOption(ExecutionEnvironmentPatch);
++
++const InstalledPatchEntry = Schema.Struct({
++  id: Schema.String.check(Schema.isNonEmpty()),
++  title: Schema.optionalKey(Schema.String),
++  summary: Schema.optionalKey(Schema.String),
++  features: Schema.optionalKey(Schema.Array(Schema.String)),
++  version: Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)),
++});
++
++const InstalledRecordSchema = Schema.fromJsonString(
++  Schema.Struct({
++    t3Version: Schema.String,
++    patches: Schema.Array(InstalledPatchEntry),
++  }),
++);
++const decodeInstalledRecord = Schema.decodeUnknownOption(InstalledRecordSchema);
++
++function parseBakedEnvironmentPatches(
++  raw: string | undefined,
++): ReadonlyArray<EnvironmentPatch> | null {
++  const trimmed = raw?.trim() ?? "";
++  if (trimmed === "") return null;
++  const decoded = decodeBakedPatches(trimmed);
++  return Option.isSome(decoded) ? decoded.value : null;
++}
++
++export const resolveServerEnvironmentPatches = Effect.fn("ServerEnvironment.resolvePatches")(
++  function* (input: {
++    readonly stateDir: string;
++    readonly serverVersion: string;
++    readonly bakedPatchesJson?: string | undefined;
++  }) {
++    const baked = parseBakedEnvironmentPatches(
++      input.bakedPatchesJson !== undefined
++        ? input.bakedPatchesJson
++        : typeof __T3CODE_PATCHES__ === "undefined"
++          ? undefined
++          : __T3CODE_PATCHES__,
++    );
++    if (baked !== null) return baked;
++
++    const fs = yield* FileSystem.FileSystem;
++    const path = yield* Path.Path;
++    const recordPath = path.join(input.stateDir, "patcher", "installed.json");
++    const raw = yield* fs.readFileString(recordPath).pipe(Effect.option);
++    if (Option.isNone(raw)) return [];
++    const decoded = decodeInstalledRecord(raw.value);
++    if (Option.isNone(decoded) || decoded.value.t3Version !== input.serverVersion) return [];
++
++    return decoded.value.patches.flatMap((entry): ReadonlyArray<EnvironmentPatch> => {
++      const id = entry.id.trim();
++      if (id === "") return [];
++      const title = entry.title?.trim() || id;
++      const summary = entry.summary ?? "";
++      const features = entry.features?.map((item) => item.trim()).filter((item) => item.length > 0);
++      const normalized = decodeEnvironmentPatch({
++        id,
++        title,
++        summary,
++        ...(features && features.length > 0 ? { features } : {}),
++        version: entry.version,
++      });
++      return Option.isSome(normalized) ? [normalized.value] : [];
++    });
++  },
++);
+diff --git a/apps/server/src/mcp/toolkits/environment/handlers.test.ts b/apps/server/src/mcp/toolkits/environment/handlers.test.ts
+index 9966ef522e93b8c29735022c37d8fe318e9ec823..126fff5b0ead5016bc9f3ab2468c8a782ec3019b 100644
+--- a/apps/server/src/mcp/toolkits/environment/handlers.test.ts
++++ b/apps/server/src/mcp/toolkits/environment/handlers.test.ts
+@@ -107,3 +107,60 @@ it("keeps agent feedback out of the preferences agents read and write", () => {
+     Object.keys(EnvironmentToolkit.tools.t3_environment_preferences_update.parametersSchema.fields),
+   ).not.toContain("agentFeedback");
+ });
++
++it.effect("returns environment patches from t3_environment_read when present", () =>
++  Effect.gen(function* () {
++    const patches = [{ id: "picks", title: "Picks", summary: "Blind A/B comparison.", version: 1 }];
++    const layerDependencies = Layer.mergeAll(
++      ThreadCommandExecutor.layer,
++      Layer.succeed(McpInvocationContext.McpInvocationContext, {
++        environmentId,
++        requestNamespace: "provider:read",
++        thread: {
++          threadId,
++          providerSessionId: "provider:read",
++          providerInstanceId: ProviderInstanceId.make("codex"),
++        },
++        client: undefined,
++        capabilities: new Set(["orchestration" as const]),
++        issuedAt: 0,
++      }),
++      Layer.mock(ThreadManagement.ThreadManagementService)({
++        getThreadShell: () => Effect.succeed(liveThreadShell(threadId)),
++      }),
++      Layer.mock(Environment.ServerEnvironment)({
++        getDescriptor: Effect.succeed({
++          environmentId,
++          label: "Patched Mac",
++          platform: { os: "darwin", arch: "arm64", machine: "laptop" },
++          serverVersion: "0.1.12",
++          patches,
++          capabilities: { repositoryIdentity: true },
++        }),
++      }),
++      Layer.mock(Settings.ServerSettingsService)({
++        getSettings: Effect.succeed(DEFAULT_SERVER_SETTINGS),
++      }),
++    );
++
++    const output = yield* Effect.gen(function* () {
++      const toolkit = yield* EnvironmentToolkit;
++      return yield* toolkit
++        .handle("t3_environment_read", {})
++        .pipe(Stream.unwrap, Stream.runCollect);
++    }).pipe(
++      Effect.provide(
++        McpToolAccess.HandlersLayer.layer(EnvironmentHandlers.layer).pipe(
++          Layer.provideMerge(layerDependencies),
++        ),
++      ),
++    );
++
++    expect(output.at(-1)?.result).toMatchObject({
++      environmentId,
++      label: "Patched Mac",
++      serverVersion: "0.1.12",
++      patches,
++    });
++  }),
++);
+diff --git a/apps/server/src/mcp/toolkits/environment/handlers.ts b/apps/server/src/mcp/toolkits/environment/handlers.ts
+index fb1716885d6e877b547a60642116d753968ce177..4b967e36b43aa663fa7b77e046bb705e12ca9ff8 100644
+--- a/apps/server/src/mcp/toolkits/environment/handlers.ts
++++ b/apps/server/src/mcp/toolkits/environment/handlers.ts
+@@ -50,6 +50,7 @@ export const layer = McpToolAccess.toLayer(EnvironmentToolkit, {
+         label: descriptor.label,
+         serverVersion: descriptor.serverVersion,
+         platform: descriptor.platform,
++        ...(descriptor.patches === undefined ? {} : { patches: descriptor.patches }),
+         preferences: preferences(current),
+       };
+     }),
+diff --git a/apps/server/src/mcp/toolkits/environment/tools.ts b/apps/server/src/mcp/toolkits/environment/tools.ts
+index 9e10380295de25ab421ecd69fe7eb93e0a348c24..5aba73d1db0e10d83d7c5af8b53bbc23691e1af7 100644
+--- a/apps/server/src/mcp/toolkits/environment/tools.ts
++++ b/apps/server/src/mcp/toolkits/environment/tools.ts
+@@ -48,6 +48,7 @@ const EnvironmentReadTool = Tool.make("t3_environment_read", {
+     label: Schema.String,
+     serverVersion: Schema.String,
+     platform: ExecutionEnvironmentDescriptor.fields.platform,
++    patches: ExecutionEnvironmentDescriptor.fields.patches,
+     preferences: Schema.Struct(PreferenceFields),
+   }),
+ })
+diff --git a/apps/server/vite.config.ts b/apps/server/vite.config.ts
+index 2bec8830d86c51b2fff6883b2e8d232741fa8800..12d58a2e00841dd3be46ffcda8e7ebeb9dcab5f6 100644
+--- a/apps/server/vite.config.ts
++++ b/apps/server/vite.config.ts
+@@ -168,6 +168,7 @@ export default mergeConfig(
+         __T3CODE_BUILD_RELAY_CLIENT_OTLP_TRACES_TOKEN__: JSON.stringify(
+           repoEnv.T3CODE_RELAY_CLIENT_OTLP_TRACES_TOKEN?.trim() ?? "",
+         ),
++        __T3CODE_PATCHES__: JSON.stringify(process.env.T3_PATCHER_PATCHES?.trim() ?? ""),
+       },
+     },
+     test: {
+diff --git a/apps/web/src/components/settings/ConnectionsSettings.tsx b/apps/web/src/components/settings/ConnectionsSettings.tsx
+index 523e25e754c52fa80341049355127bb78b8c03ff..2d46562a81b8f78e4c474fc9683b4583911791f4 100644
+--- a/apps/web/src/components/settings/ConnectionsSettings.tsx
++++ b/apps/web/src/components/settings/ConnectionsSettings.tsx
+@@ -48,6 +48,7 @@ import { LocalEnvironmentSetting } from "./LocalEnvironmentSetting";
+ import { useSearchableSetting } from "./settingsSearch";
+ import { ConnectDeviceApprovalSettings } from "./ConnectDeviceApprovalSettings";
+ import { EnvironmentIconMenu } from "./EnvironmentIconPicker";
++import { EnvironmentDisclosureProvider, LocalEnvironmentRow } from "./EnvironmentPatchesList";
+ import { FoldedSettingsSection } from "./FoldedSettingsSection";
+ import { EnvironmentsMap } from "./EnvironmentsMap";
+ import { LinkedEnvironmentsSettings } from "./LinkedEnvironmentsSettings";
+@@ -181,7 +182,9 @@ export function ConnectionsSettings({ view }: { readonly view: "environments" |
+   return view === "access" ? (
+     <AccessSettings />
+   ) : (
+-    <ConnectionsSettingsContent view="environments" accessEnvironmentId={null} />
++    <EnvironmentDisclosureProvider>
++      <ConnectionsSettingsContent view="environments" accessEnvironmentId={null} />
++    </EnvironmentDisclosureProvider>
+   );
+ }
+ 
+@@ -1829,6 +1832,13 @@ function ConnectionsSettingsContent({
+       {desktopBridge ? (
+         <SettingsSection id="this-app" title={gt("This app")}>
+           <LocalEnvironmentSetting />
++          {primaryEnvironment && environmentsView === "list" ? (
++            <LocalEnvironmentRow environment={primaryEnvironment} />
++          ) : null}
++        </SettingsSection>
++      ) : primaryEnvironment && environmentsView === "list" ? (
++        <SettingsSection id="this-app" title={gt("This machine")}>
++          <LocalEnvironmentRow environment={primaryEnvironment} />
+         </SettingsSection>
+       ) : null}
+       <SettingsSection
+diff --git a/apps/web/src/components/settings/EnvironmentPatchesList.browser.test.tsx b/apps/web/src/components/settings/EnvironmentPatchesList.browser.test.tsx
+new file mode 100644
+index 0000000000000000000000000000000000000000..3d32035a3729ddee8816360299841ddf10b12875
+--- /dev/null
++++ b/apps/web/src/components/settings/EnvironmentPatchesList.browser.test.tsx
+@@ -0,0 +1,250 @@
++import {
++  BearerConnectionProfile,
++  BearerConnectionTarget,
++  PrimaryConnectionTarget,
++} from "@t3tools/client-runtime/connection";
++import { EnvironmentId, type ExecutionEnvironmentPatch, ServerConfig } from "@t3tools/contracts";
++import * as Option from "effect/Option";
++import * as Schema from "effect/Schema";
++import { useState } from "react";
++import { describe, expect, it, vi } from "vite-plus/test";
++import { userEvent } from "vite-plus/test/browser";
++
++vi.mock(import("~/state/session"), async (importOriginal) => ({
++  ...(await importOriginal()),
++  usePreparedConnection: (() => Option.none()) as never,
++}));
++
++import { APP_VERSION } from "~/branding";
++import type { EnvironmentPresentation } from "~/state/environments";
++import { render } from "../../../test/render";
++import {
++  EnvironmentDisclosureProvider,
++  EnvironmentPatchesList,
++  LocalEnvironmentRow,
++} from "./EnvironmentPatchesList";
++import { SavedBackendListRow } from "./SavedEnvironmentRows";
++
++const LOCAL_ID = EnvironmentId.make("env-local");
++const REMOTE_ID = EnvironmentId.make("env-remote");
++
++const PATCHES: ReadonlyArray<ExecutionEnvironmentPatch> = [
++  {
++    id: "journey-kit",
++    title: "Journey kit",
++    summary: "Launches built apps in an isolated T3 home.",
++    version: 2,
++  },
++  {
++    id: "picks",
++    title: "Picks",
++    summary:
++      "Agents ask the owner for human judgments in T3 Code itself. A new MCP tool, request_picks, takes 1-200 questions with 2-4 shuffled options.",
++    version: 1,
++  },
++];
++
++const decodeServerConfig = Schema.decodeSync(ServerConfig);
++
++function makeServerConfig(
++  environmentId: EnvironmentId,
++  label: string,
++  serverVersion: string,
++  patches?: ReadonlyArray<ExecutionEnvironmentPatch>,
++): ServerConfig {
++  return decodeServerConfig({
++    environment: {
++      environmentId,
++      label,
++      platform: { os: "darwin", arch: "arm64", machine: "mac-mini" },
++      serverVersion,
++      orchestrationProtocolVersion: 2,
++      ...(patches === undefined ? {} : { patches }),
++      capabilities: {},
++    },
++    auth: {
++      policy: "loopback-browser",
++      bootstrapMethods: ["one-time-token"],
++      sessionMethods: ["browser-session-cookie"],
++      sessionCookieName: "t3_session",
++    },
++    cwd: "/workspace",
++    keybindingsConfigPath: "/userdata/keybindings.json",
++    keybindings: [],
++    issues: [],
++    providers: [],
++    availableEditors: [],
++    observability: {
++      logsDirectoryPath: "/workspace/logs",
++      localTracingEnabled: false,
++      otlpTracesEnabled: false,
++      otlpMetricsEnabled: false,
++    },
++    settings: {},
++  });
++}
++
++function makeRemoteEnvironment(options: {
++  readonly enabled?: boolean;
++  readonly phase?: EnvironmentPresentation["connection"]["phase"];
++  readonly serverVersion?: string | null;
++  readonly patches?: ReadonlyArray<ExecutionEnvironmentPatch>;
++}): EnvironmentPresentation {
++  const enabled = options.enabled ?? true;
++  const phase = options.phase ?? "connected";
++  const serverVersion = options.serverVersion === undefined ? APP_VERSION : options.serverVersion;
++  return {
++    environmentId: REMOTE_ID,
++    label: "Archduke Avacado Odyssey",
++    displayUrl: "http://192.168.68.203:3773/",
++    relayManaged: false,
++    entry: {
++      target: new BearerConnectionTarget({
++        environmentId: REMOTE_ID,
++        label: "Archduke Avacado Odyssey",
++        connectionId: "lan",
++      }),
++      profile: Option.some(
++        new BearerConnectionProfile({
++          connectionId: "lan",
++          environmentId: REMOTE_ID,
++          label: "Archduke Avacado Odyssey",
++          httpBaseUrl: "http://192.168.68.203:3773/",
++          wsBaseUrl: "ws://192.168.68.203:3773/",
++        }),
++      ),
++      alternateRoutes: [],
++      enabled,
++    },
++    connection: { phase, error: null, traceId: null },
++    serverConfig:
++      serverVersion === null
++        ? null
++        : makeServerConfig(REMOTE_ID, "Archduke Avacado Odyssey", serverVersion, options.patches),
++    refusedRouteIds: [],
++  };
++}
++
++describe("EnvironmentPatchesList & environment rows", () => {
++  it("keeps a remote environment's version visible even when matching APP_VERSION, and expands patches and included features across view switches", async () => {
++    const remote = makeRemoteEnvironment({
++      serverVersion: APP_VERSION,
++      patches: PATCHES,
++    });
++    const local: EnvironmentPresentation = {
++      environmentId: LOCAL_ID,
++      label: "So’s MacBook Air",
++      displayUrl: null,
++      relayManaged: false,
++      entry: {
++        target: new PrimaryConnectionTarget({
++          environmentId: LOCAL_ID,
++          label: "So’s MacBook Air",
++          httpBaseUrl: "http://127.0.0.1:3773/",
++          wsBaseUrl: "ws://127.0.0.1:3773/",
++        }),
++        profile: Option.none(),
++        alternateRoutes: [],
++        enabled: true,
++      },
++      connection: { phase: "connected", error: null, traceId: null },
++      serverConfig: makeServerConfig(LOCAL_ID, "So’s MacBook Air", APP_VERSION, PATCHES),
++      refusedRouteIds: [],
++    };
++
++    function Harness() {
++      const [view, setView] = useState<"map" | "list">("map");
++      return (
++        <EnvironmentDisclosureProvider>
++          <button type="button" onClick={() => setView((v) => (v === "map" ? "list" : "map"))}>
++            Switch view ({view})
++          </button>
++          {view === "list" ? <LocalEnvironmentRow environment={local} /> : null}
++          <SavedBackendListRow
++            key={`${view}-${remote.environmentId}`}
++            environment={remote}
++            removingEnvironmentId={null}
++            onSetEnabled={() => undefined}
++            onRemove={() => undefined}
++            onAddRoute={() => undefined}
++          />
++        </EnvironmentDisclosureProvider>
++      );
++    }
++
++    await using screen = await render(<Harness />);
++
++    await expect.element(screen.getByText("http://192.168.68.203:3773/ · Connected")).toBeVisible();
++    await expect.element(screen.getByText(APP_VERSION, { exact: true })).toBeVisible();
++
++    const patchesButton = screen.getByRole("button", { name: "2 patches" });
++    await expect.element(patchesButton).toHaveAttribute("aria-expanded", "false");
++    await userEvent.click(patchesButton);
++    await expect.element(patchesButton).toHaveAttribute("aria-expanded", "true");
++
++    await expect.element(screen.getByText("Journey kit")).toBeVisible();
++    await expect.element(screen.getByText("v2")).toBeVisible();
++    await expect.element(screen.getByText("Picks")).toBeVisible();
++    await expect
++      .element(screen.getByText("Agents ask the owner for human judgments in T3 Code itself."))
++      .toBeVisible();
++
++    const whatsIncluded = screen.getByRole("button", { name: "What’s included" });
++    await userEvent.click(whatsIncluded);
++    await expect
++      .element(
++        screen.getByText(
++          "A new MCP tool, request_picks, takes 1-200 questions with 2-4 shuffled options.",
++        ),
++      )
++      .toBeVisible();
++
++    // Switching from Map to List remounts the row and keeps disclosure + expanded feature state.
++    await userEvent.click(screen.getByRole("button", { name: "Switch view (map)" }));
++    await expect.element(screen.getByText("This machine · Connected")).toBeVisible();
++    expect(screen.getByText(APP_VERSION, { exact: true }).elements()).toHaveLength(2);
++    await expect
++      .element(
++        screen.getByText(
++          "A new MCP tool, request_picks, takes 1-200 questions with 2-4 shuffled options.",
++        ),
++      )
++      .toBeVisible();
++    await userEvent.click(screen.getByRole("button", { name: "Hide included features" }));
++    expect(
++      screen
++        .getByText(
++          "A new MCP tool, request_picks, takes 1-200 questions with 2-4 shuffled options.",
++        )
++        .elements(),
++    ).toHaveLength(0);
++  });
++
++  it("shows empty states for offline and connected-unpatched environments", async () => {
++    await using offline = await render(
++      <EnvironmentPatchesList
++        environmentLabel="omarchy"
++        connected={false}
++        descriptorKnown={false}
++        patches={[]}
++        expandedPatchIds={[]}
++        onTogglePatchDetail={() => undefined}
++      />,
++    );
++    await expect.element(offline.getByText("Connect to view installed patches.")).toBeVisible();
++
++    await using unpatched = await render(
++      <EnvironmentPatchesList
++        environmentLabel="omarchy"
++        connected
++        descriptorKnown
++        patches={[]}
++        expandedPatchIds={[]}
++        onTogglePatchDetail={() => undefined}
++      />,
++    );
++    await expect
++      .element(unpatched.getByText("No patches installed on this environment."))
++      .toBeVisible();
++  });
++});
+diff --git a/apps/web/src/components/settings/EnvironmentPatchesList.tsx b/apps/web/src/components/settings/EnvironmentPatchesList.tsx
+new file mode 100644
+index 0000000000000000000000000000000000000000..944147b071ea6a259d860e84307f8c2f3f4de09b
+--- /dev/null
++++ b/apps/web/src/components/settings/EnvironmentPatchesList.tsx
+@@ -0,0 +1,270 @@
++import { connectionStatusTitle } from "@t3tools/client-runtime/connection";
++import {
++  type EnvironmentId,
++  type ExecutionEnvironmentPatch,
++  resolveEnvironmentMachineKind,
++} from "@t3tools/contracts";
++import { T, useGT, useMessages } from "gt-react";
++import { ChevronRightIcon } from "lucide-react";
++import { createContext, type ReactNode, useContext, useState } from "react";
++
++import { cn } from "~/lib/utils";
++import type { EnvironmentPresentation } from "~/state/environments";
++import { EnvironmentRow, EnvironmentTransportLabel } from "./EnvironmentRow";
++import { splitPatchDescription } from "./environmentPatches.logic";
++
++export const EMPTY_ENVIRONMENT_PATCHES: ReadonlyArray<ExecutionEnvironmentPatch> = [];
++
++interface EnvironmentDisclosureEntry {
++  readonly patchesOpen: boolean;
++  readonly expandedPatchIds: ReadonlyArray<string>;
++}
++
++const DEFAULT_DISCLOSURE_ENTRY: EnvironmentDisclosureEntry = {
++  patchesOpen: false,
++  expandedPatchIds: [],
++};
++
++interface EnvironmentDisclosureStore {
++  readonly entries: ReadonlyMap<EnvironmentId, EnvironmentDisclosureEntry>;
++  readonly update: (
++    environmentId: EnvironmentId,
++    updater: (current: EnvironmentDisclosureEntry) => EnvironmentDisclosureEntry,
++  ) => void;
++}
++
++const EnvironmentDisclosureContext = createContext<EnvironmentDisclosureStore | null>(null);
++
++export function EnvironmentDisclosureProvider({ children }: { readonly children: ReactNode }) {
++  const [entries, setEntries] = useState<ReadonlyMap<EnvironmentId, EnvironmentDisclosureEntry>>(
++    () => new Map(),
++  );
++  const update = (
++    environmentId: EnvironmentId,
++    updater: (current: EnvironmentDisclosureEntry) => EnvironmentDisclosureEntry,
++  ) => {
++    setEntries((prev) => {
++      const current = prev.get(environmentId) ?? DEFAULT_DISCLOSURE_ENTRY;
++      const next = new Map(prev);
++      next.set(environmentId, updater(current));
++      return next;
++    });
++  };
++  return (
++    <EnvironmentDisclosureContext value={{ entries, update }}>
++      {children}
++    </EnvironmentDisclosureContext>
++  );
++}
++
++export function useEnvironmentDisclosure(environmentId: EnvironmentId) {
++  const store = useContext(EnvironmentDisclosureContext);
++  const [localEntry, setLocalEntry] =
++    useState<EnvironmentDisclosureEntry>(DEFAULT_DISCLOSURE_ENTRY);
++
++  const entry = store ? (store.entries.get(environmentId) ?? DEFAULT_DISCLOSURE_ENTRY) : localEntry;
++  const apply = (updater: (current: EnvironmentDisclosureEntry) => EnvironmentDisclosureEntry) => {
++    if (store) {
++      store.update(environmentId, updater);
++    } else {
++      setLocalEntry(updater);
++    }
++  };
++
++  return {
++    patchesOpen: entry.patchesOpen,
++    expandedPatchIds: entry.expandedPatchIds,
++    setPatchesOpen: (next: boolean | ((open: boolean) => boolean)) =>
++      apply((current) => ({
++        ...current,
++        patchesOpen: typeof next === "function" ? next(current.patchesOpen) : next,
++      })),
++    togglePatchDetail: (patchId: string) =>
++      apply((current) => ({
++        ...current,
++        expandedPatchIds: current.expandedPatchIds.includes(patchId)
++          ? current.expandedPatchIds.filter((id) => id !== patchId)
++          : [...current.expandedPatchIds, patchId],
++      })),
++  };
++}
++
++export function EnvironmentPatchesToggle({
++  panelId,
++  open,
++  patchCount,
++  showCount,
++  onToggle,
++}: {
++  readonly panelId: string;
++  readonly open: boolean;
++  readonly patchCount: number;
++  readonly showCount: boolean;
++  readonly onToggle: () => void;
++}) {
++  const gt = useGT();
++  return (
++    <>
++      <span aria-hidden className="shrink-0">
++        ·
++      </span>
++      <button
++        type="button"
++        aria-expanded={open}
++        aria-controls={panelId}
++        onClick={onToggle}
++        className="inline-flex shrink-0 items-center gap-0.5 rounded-sm text-muted-foreground outline-none hover:text-foreground focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring"
++      >
++        {showCount && patchCount > 0 ? (
++          gt("{count, plural, one {# patch} other {# patches}}", { count: patchCount })
++        ) : (
++          <T>Patches</T>
++        )}
++        <ChevronRightIcon
++          aria-hidden
++          className={cn(
++            "size-3 shrink-0 transition-transform duration-150 motion-reduce:transition-none",
++            open && "rotate-90",
++          )}
++        />
++      </button>
++    </>
++  );
++}
++
++export function EnvironmentPatchesList({
++  environmentLabel,
++  connected,
++  descriptorKnown,
++  patches,
++  expandedPatchIds,
++  onTogglePatchDetail,
++}: {
++  readonly environmentLabel: string;
++  readonly connected: boolean;
++  readonly descriptorKnown: boolean;
++  readonly patches: ReadonlyArray<ExecutionEnvironmentPatch>;
++  readonly expandedPatchIds: ReadonlyArray<string>;
++  readonly onTogglePatchDetail: (patchId: string) => void;
++}) {
++  const gt = useGT();
++  if (!connected && !descriptorKnown) {
++    return (
++      <p className="py-3 text-xs text-muted-foreground">
++        <T>Connect to view installed patches.</T>
++      </p>
++    );
++  }
++  if (patches.length === 0) {
++    return (
++      <p className="py-3 text-xs text-muted-foreground">
++        <T>No patches installed on this environment.</T>
++      </p>
++    );
++  }
++  return (
++    <ol
++      aria-label={gt("Patches installed on {environment}", {
++        environment: environmentLabel,
++      })}
++      className="divide-y divide-border/40 py-1"
++    >
++      {patches.map((patch) => {
++        const { headline, included } = splitPatchDescription(patch);
++        const expanded = expandedPatchIds.includes(patch.id);
++        return (
++          <li key={patch.id} className="py-2">
++            <p className="flex flex-wrap items-center gap-1.5 text-xs font-medium text-foreground">
++              <span>{patch.title}</span>
++              <span className="rounded-sm bg-muted px-1 font-mono text-2xs font-normal text-muted-foreground">
++                v{patch.version}
++              </span>
++              <span className="font-mono text-2xs font-normal text-muted-foreground">
++                {patch.id}
++              </span>
++            </p>
++            {headline !== "" ? (
++              <p className="mt-0.5 text-2xs leading-relaxed text-muted-foreground">{headline}</p>
++            ) : null}
++            {expanded && included.length > 0 ? (
++              <ul className="mt-1.5 list-disc space-y-1 pl-4 text-2xs text-muted-foreground">
++                {included.map((feature) => (
++                  <li key={feature}>{feature}</li>
++                ))}
++              </ul>
++            ) : null}
++            {included.length > 0 ? (
++              <button
++                type="button"
++                aria-expanded={expanded}
++                className="mt-1 inline-block rounded-xs text-2xs text-muted-foreground underline underline-offset-2 outline-none hover:text-foreground focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring"
++                onClick={() => onTogglePatchDetail(patch.id)}
++              >
++                {expanded ? gt("Hide included features") : gt("What’s included")}
++              </button>
++            ) : null}
++          </li>
++        );
++      })}
++    </ol>
++  );
++}
++
++export function LocalEnvironmentRow({
++  environment,
++}: {
++  readonly environment: EnvironmentPresentation;
++}) {
++  const m = useMessages();
++  const { patchesOpen, setPatchesOpen, expandedPatchIds, togglePatchDetail } =
++    useEnvironmentDisclosure(environment.environmentId);
++  const descriptor = environment.serverConfig?.environment ?? null;
++  const patches = descriptor?.patches ?? EMPTY_ENVIRONMENT_PATCHES;
++  const isConnected = environment.connection.phase === "connected";
++  const panelId = `environment-patches-${environment.environmentId}`;
++
++  return (
++    <EnvironmentRow
++      kind={resolveEnvironmentMachineKind(environment.serverConfig)}
++      label={environment.label}
++      subtitle={
++        <span className="flex min-w-0 flex-wrap items-center gap-1">
++          <span className="min-w-0 truncate">
++            <EnvironmentTransportLabel environment={environment} />
++            {" · "}
++            {connectionStatusTitle(environment.connection, m)}
++          </span>
++          {descriptor ? (
++            <>
++              <span aria-hidden className="shrink-0">
++                ·
++              </span>
++              <span className="shrink-0">{descriptor.serverVersion}</span>
++            </>
++          ) : null}
++          <EnvironmentPatchesToggle
++            panelId={panelId}
++            open={patchesOpen}
++            patchCount={patches.length}
++            showCount={isConnected || descriptor !== null}
++            onToggle={() => setPatchesOpen((open) => !open)}
++          />
++        </span>
++      }
++      detail={
++        patchesOpen ? (
++          <div id={panelId} className="mt-2 border-t border-border/50">
++            <EnvironmentPatchesList
++              environmentLabel={environment.label}
++              connected={isConnected}
++              descriptorKnown={descriptor !== null}
++              patches={patches}
++              expandedPatchIds={expandedPatchIds}
++              onTogglePatchDetail={togglePatchDetail}
++            />
++          </div>
++        ) : null
++      }
++    />
++  );
++}
+diff --git a/apps/web/src/components/settings/EnvironmentsMap.tsx b/apps/web/src/components/settings/EnvironmentsMap.tsx
+index 5d4b2f96754c82cfc0c74245a1d304d73ef5740e..23e022d4f5f8c8faa700523116f442707c49128e 100644
+--- a/apps/web/src/components/settings/EnvironmentsMap.tsx
++++ b/apps/web/src/components/settings/EnvironmentsMap.tsx
+@@ -1165,6 +1165,14 @@ function environmentStatusText(
+   linkCount: number,
+   gt: GT,
+ ): string {
++  const descriptor = environment?.serverConfig?.environment;
++  if (node.enabled && node.phase !== "unsupported" && !refused && descriptor) {
++    const patchCount = descriptor.patches?.length ?? 0;
++    const patchesText = gt("{count, plural, =0 {0 patches} one {# patch} other {# patches}}", {
++      count: patchCount,
++    });
++    return `${descriptor.serverVersion} · ${patchesText}`;
++  }
+   if (node.phase !== "connected") return connectionStateText(node, environment, refused, gt);
+   switch (node.outgoing) {
+     case "loading":
+@@ -2147,11 +2155,13 @@ const FleetScene = memo(function FleetScene({
+           gt,
+         );
+         // The card's state is short; the name carries the reason and what it leaves unknown.
++        const connectionStatus = environment ? savedBackendStatus(environment, m).text : status;
+         const spoken =
+           node.phase === "connected"
+             ? status
+             : gt("{status}. Links unknown", {
+-                status: environment ? savedBackendStatus(environment, m).text : status,
++                status:
++                  status === connectionStatus ? connectionStatus : `${status}, ${connectionStatus}`,
+               });
+         const dimmed = !node.enabled || node.phase === "unsupported";
+         const handle = layout.handles.get(node.id);
+@@ -2202,7 +2212,9 @@ const FleetScene = memo(function FleetScene({
+                 <span
+                   className={cn(
+                     "block truncate text-2xs leading-4",
+-                    node.outgoing === "error" && node.phase === "connected"
++                    !environment?.serverConfig?.environment &&
++                      node.outgoing === "error" &&
++                      node.phase === "connected"
+                       ? "text-destructive"
+                       : "text-muted-foreground",
+                   )}
+diff --git a/apps/web/src/components/settings/EnvironmentsMapDetails.tsx b/apps/web/src/components/settings/EnvironmentsMapDetails.tsx
+index 38c6d8d5eb93b3f7fbf490869da285955a573389..0d3c6dfb53e2778e51b845593738495c7e658ba3 100644
+--- a/apps/web/src/components/settings/EnvironmentsMapDetails.tsx
++++ b/apps/web/src/components/settings/EnvironmentsMapDetails.tsx
+@@ -1,11 +1,6 @@
+ import { useAtomValue } from "@effect/atom-react";
+-import { connectionStatusTitle } from "@t3tools/client-runtime/connection";
+ import type { PeerLinkHealth } from "@t3tools/client-runtime/state/peerLinks";
+-import {
+-  AuthMcpClientAccess,
+-  type EnvironmentId,
+-  resolveEnvironmentMachineKind,
+-} from "@t3tools/contracts";
++import { AuthMcpClientAccess, type EnvironmentId } from "@t3tools/contracts";
+ import * as DateTime from "effect/DateTime";
+ import { T, useGT, useMessages } from "gt-react";
+ import { ArrowRightIcon, ClockAlertIcon, PlusIcon, TriangleAlertIcon, XIcon } from "lucide-react";
+@@ -21,7 +16,7 @@ import { accessConfig } from "../auth/ConnectAgentSurface";
+ import { Button } from "../ui/button";
+ import { Input } from "../ui/input";
+ import { formatAccessTimestamp } from "./ConnectionsSettings.logic";
+-import { EnvironmentRow, EnvironmentTransportLabel } from "./EnvironmentRow";
++import { LocalEnvironmentRow } from "./EnvironmentPatchesList";
+ import {
+   type FleetEnvironmentNode,
+   type FleetFocus,
+@@ -631,7 +626,6 @@ function NodeDetails({
+   readonly onSelect: (focus: FleetFocus) => void;
+ }) {
+   const gt = useGT();
+-  const m = useMessages();
+   const labelOf = (id: string) => graph.nodes.find((entry) => entry.id === id)?.label ?? "";
+   if (node.kind === "client") {
+     const hosts = graph.nodes.filter((entry) => entry.kind === "environment");
+@@ -715,23 +709,7 @@ function NodeDetails({
+   const loaded = node.outgoing === "loaded";
+   return (
+     <>
+-      {saved ??
+-        (environment ? (
+-          <EnvironmentRow
+-            kind={resolveEnvironmentMachineKind(environment.serverConfig)}
+-            label={environment.label}
+-            subtitle={
+-              <>
+-                <EnvironmentTransportLabel environment={environment} />
+-                {" · "}
+-                {connectionStatusTitle(environment.connection, m)}
+-                {environment.serverConfig
+-                  ? ` · ${environment.serverConfig.environment.serverVersion}`
+-                  : ""}
+-              </>
+-            }
+-          />
+-        ) : null)}
++      {saved ?? (environment ? <LocalEnvironmentRow environment={environment} /> : null)}
+       <div className={cn(SECTION, "space-y-3 border-t border-border/60")}>
+         {environment && saved !== null ? <Reconnect environment={environment} /> : null}
+         {note ? <p className="max-w-2xl text-muted-foreground">{note}</p> : null}
+diff --git a/apps/web/src/components/settings/SavedEnvironmentRows.tsx b/apps/web/src/components/settings/SavedEnvironmentRows.tsx
+index 2b9ad1225ff0a8a77287262ba55db2224cb150a1..fb3122ae0a80d7704f117194e2c305d7ec81a4cb 100644
+--- a/apps/web/src/components/settings/SavedEnvironmentRows.tsx
++++ b/apps/web/src/components/settings/SavedEnvironmentRows.tsx
+@@ -31,6 +31,12 @@ import { cn } from "../../lib/utils";
+ import { SettingsRow } from "./settingsLayout";
+ import { useSearchableSetting } from "./settingsSearch";
+ import { EnvironmentIconMenu } from "./EnvironmentIconPicker";
++import {
++  EMPTY_ENVIRONMENT_PATCHES,
++  EnvironmentPatchesList,
++  EnvironmentPatchesToggle,
++  useEnvironmentDisclosure,
++} from "./EnvironmentPatchesList";
+ import { EnvironmentRoutesList } from "./EnvironmentRoutesList";
+ import {
+   ConnectionDiagnosisPanel,
+@@ -138,6 +144,8 @@ export function SavedBackendListRow({
+   const [permissionsOpen, setPermissionsOpen] = useState(false);
+   const [diagnosisOpen, setDiagnosisOpen] = useState(false);
+   const environmentId = environment.environmentId;
++  const { patchesOpen, setPatchesOpen, expandedPatchIds, togglePatchDetail } =
++    useEnvironmentDisclosure(environmentId);
+   const unsupported = environment.connection.phase === "unsupported";
+   const blocked = unsupported && !hasSavedBearerRoute(environment.entry);
+   const enabled = environment.entry.enabled && !unsupported;
+@@ -193,7 +201,6 @@ export function SavedBackendListRow({
+   const resumingServerUpdate =
+     serverUpdateState.status === "running" && serverUpdateState.stage === "resuming";
+   const status = savedBackendStatus(environment, messages);
+-  const serverVersion = environment.serverConfig?.environment.serverVersion ?? null;
+   // Discovery empties its map on every refresh, so hold the last descriptor
+   // seen or the glyph would blink back to the generic one each time.
+   const relayDiscovery = useRelayEnvironmentDiscovery();
+@@ -204,6 +211,10 @@ export function SavedBackendListRow({
+   if (discoveredDescriptor !== undefined && discoveredDescriptor !== lastDescriptor) {
+     setLastDescriptor(discoveredDescriptor);
+   }
++  const descriptor = environment.serverConfig?.environment ?? lastDescriptor ?? null;
++  const serverVersion = descriptor?.serverVersion ?? null;
++  const patches = descriptor?.patches ?? EMPTY_ENVIRONMENT_PATCHES;
++  const patchesPanelId = `environment-patches-${environmentId}`;
+   const discoveredRelayHttpBaseUrl =
+     relayDiscovery.environments.get(environmentId)?.environment.endpoint.httpBaseUrl;
+   const [lastRelayHttpBaseUrl, setLastRelayHttpBaseUrl] = useState(discoveredRelayHttpBaseUrl);
+@@ -236,7 +247,6 @@ export function SavedBackendListRow({
+     environmentTransportLabel(environment, connectedTarget, messages),
+     // The headline below names the failure in full.
+     diagnosis ? null : resumingServerUpdate ? gt("Restarting") : status.text,
+-    enabled && versionMismatch ? serverVersion : null,
+   ]
+     .filter((value): value is string => value !== null)
+     .join(" · ");
+@@ -260,7 +270,9 @@ export function SavedBackendListRow({
+           serverVersion: versionMismatch.serverVersion,
+           clientVersion: versionMismatch.clientVersion,
+         })}`
+-      : ""
++      : enabled && serverVersion
++        ? `\n${serverVersion}`
++        : ""
+   }`;
+ 
+   return (
+@@ -269,7 +281,7 @@ export function SavedBackendListRow({
+       label={environment.label}
+       dimmed={!enabled}
+       subtitle={
+-        <span className="flex min-w-0 items-center gap-1">
++        <span className="flex min-w-0 flex-wrap items-center gap-1">
+           <Tooltip>
+             {/* The status can change while the tooltip is open, and base-ui only
+                 re-measures the popup when the trigger's payload changes. */}
+@@ -294,6 +306,14 @@ export function SavedBackendListRow({
+               {statusTooltip}
+             </TooltipPopup>
+           </Tooltip>
++          {enabled && serverVersion ? (
++            <>
++              <span aria-hidden className="shrink-0">
++                ·
++              </span>
++              <span className="shrink-0">{serverVersion}</span>
++            </>
++          ) : null}
+           <span aria-hidden className="shrink-0">
+             ·
+           </span>
+@@ -331,6 +351,13 @@ export function SavedBackendListRow({
+               )}
+             />
+           </button>
++          <EnvironmentPatchesToggle
++            panelId={patchesPanelId}
++            open={patchesOpen}
++            patchCount={patches.length}
++            showCount={enabled && (isConnected || descriptor !== null)}
++            onToggle={() => setPatchesOpen((open) => !open)}
++          />
+         </span>
+       }
+       below={
+@@ -379,6 +406,18 @@ export function SavedBackendListRow({
+               />
+             </div>
+           )}
++          {patchesOpen && (
++            <div id={patchesPanelId} className="mt-2 border-t border-border/50">
++              <EnvironmentPatchesList
++                environmentLabel={environment.label}
++                connected={isConnected}
++                descriptorKnown={enabled && descriptor !== null}
++                patches={enabled ? patches : EMPTY_ENVIRONMENT_PATCHES}
++                expandedPatchIds={expandedPatchIds}
++                onTogglePatchDetail={togglePatchDetail}
++              />
++            </div>
++          )}
+         </>
+       }
+     >
+diff --git a/apps/web/src/components/settings/environmentPatches.logic.test.ts b/apps/web/src/components/settings/environmentPatches.logic.test.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..9619411898b5b37ead92ffc86b6a98ab896f5a45
+--- /dev/null
++++ b/apps/web/src/components/settings/environmentPatches.logic.test.ts
+@@ -0,0 +1,42 @@
++import { describe, expect, it } from "vite-plus/test";
++
++import { splitPatchDescription } from "./environmentPatches.logic";
++
++describe("splitPatchDescription", () => {
++  it("uses explicit features when present and keeps the full summary as headline", () => {
++    expect(
++      splitPatchDescription({
++        summary: "Blind A/B comparison inbox inside T3 Code.",
++        features: ["MCP tool request_picks", "Cross-environment /picks inbox"],
++      }),
++    ).toEqual({
++      headline: "Blind A/B comparison inbox inside T3 Code.",
++      included: ["MCP tool request_picks", "Cross-environment /picks inbox"],
++    });
++  });
++
++  it("splits multi-sentence summaries into the first-sentence headline and remaining included bullets", () => {
++    expect(
++      splitPatchDescription({
++        summary:
++          "Agents ask the owner for human judgments in T3 Code itself. A new MCP tool, request_picks, takes 1-200 questions. Done wakes the asking thread with every answer unblinded.",
++      }),
++    ).toEqual({
++      headline: "Agents ask the owner for human judgments in T3 Code itself.",
++      included: [
++        "A new MCP tool, request_picks, takes 1-200 questions.",
++        "Done wakes the asking thread with every answer unblinded.",
++      ],
++    });
++  });
++
++  it("returns only the headline when a summary is a single sentence or empty", () => {
++    expect([
++      splitPatchDescription({ summary: "Launches built apps in an isolated home." }),
++      splitPatchDescription({ summary: "   " }),
++    ]).toEqual([
++      { headline: "Launches built apps in an isolated home.", included: [] },
++      { headline: "", included: [] },
++    ]);
++  });
++});
+diff --git a/apps/web/src/components/settings/environmentPatches.logic.ts b/apps/web/src/components/settings/environmentPatches.logic.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..016fc2a982827c7286be247f5d8cc8857e078335
+--- /dev/null
++++ b/apps/web/src/components/settings/environmentPatches.logic.ts
+@@ -0,0 +1,34 @@
++import type { ExecutionEnvironmentPatch } from "@t3tools/contracts";
++
++export interface SplitPatchDescription {
++  readonly headline: string;
++  readonly included: ReadonlyArray<string>;
++}
++
++const SENTENCE_BOUNDARY = /(?<=[.!?])\s+(?=[A-Z0-9"'`(])/;
++
++export function splitPatchDescription(
++  patch: Pick<ExecutionEnvironmentPatch, "summary" | "features">,
++): SplitPatchDescription {
++  const trimmed = patch.summary.trim();
++  const explicit = [
++    ...new Set((patch.features ?? []).map((item) => item.trim()).filter((item) => item !== "")),
++  ];
++  if (explicit.length > 0) {
++    return { headline: trimmed, included: explicit };
++  }
++  if (trimmed === "") {
++    return { headline: "", included: [] };
++  }
++  const sentences = trimmed
++    .split(SENTENCE_BOUNDARY)
++    .map((sentence) => sentence.trim())
++    .filter((sentence) => sentence !== "");
++  if (sentences.length <= 1) {
++    return { headline: trimmed, included: [] };
++  }
++  return {
++    headline: sentences[0]!,
++    included: [...new Set(sentences.slice(1))],
++  };
++}
+diff --git a/apps/web/src/i18n/translations/de.json b/apps/web/src/i18n/translations/de.json
+index 5fd6ff3ede89a7a81d36e15752bc754a650fb624..ff40e0f971611d1640ddcc4bff5168531164a4a8 100644
+--- a/apps/web/src/i18n/translations/de.json
++++ b/apps/web/src/i18n/translations/de.json
+@@ -9036,6 +9036,14 @@
+   "d1781a918f8a11cf": "Agenten auf diesem Computer ausführen. Ausschalten, um T3 Code nur mit Remote-Umgebungen zu nutzen.",
+   "e1391d08740f38f0": "Ausgeschaltet. Agenten laufen nur in Remote-Umgebungen.",
+   "1bb6eb8f0604ec00": "Lokale Umgebung",
++  "4b55033768dcc78c": "{count, plural, one {# Patch} other {# Patches}}",
++  "67bee5774f99fe1b": "Auf {environment} installierte Patches",
++  "f4fb18612dfa950f": "Enthaltene Funktionen ausblenden",
++  "c63fa12a48f6c88d": "Enthaltene Funktionen",
++  "f182ef95c65c9728": "Patches",
++  "fac2e5e394fb402e": "Verbinden, um installierte Patches anzuzeigen.",
++  "f28c98ca4ced83d2": "Auf dieser Umgebung sind keine Patches installiert.",
++  "77e857278bc40a87": "{count, plural, =0 {0 Patches} one {# Patch} other {# Patches}}",
+   "06873604593555f2": "Lokale Umgebung ausschalten?",
+   "4ced358c0a88e181": "Lokale Umgebung einschalten?",
+   "2bb64ad2007e3c6a": "T3 Code startet neu, ohne einen Server auf diesem Computer auszuführen. Hier laufende Agenten und Terminals werden beendet, und andere Geräte können sich nicht mehr mit diesem Computer verbinden. Deine Projekte, dein Verlauf und deine Remote-Umgebungen sind nicht betroffen.",
+diff --git a/apps/web/src/i18n/translations/en.json b/apps/web/src/i18n/translations/en.json
+index fa018a7c51464a86d51b73fcc252d2587a19221b..e9bf551c8ee7d6166ad60dd5de97db2a228afc3c 100644
+--- a/apps/web/src/i18n/translations/en.json
++++ b/apps/web/src/i18n/translations/en.json
+@@ -9044,6 +9044,14 @@
+   "d1781a918f8a11cf": "Run agents on this computer. Turn off to use T3 Code only with remote environments.",
+   "e1391d08740f38f0": "Turned off. Agents only run in remote environments.",
+   "1bb6eb8f0604ec00": "Local environment",
++  "4b55033768dcc78c": "{count, plural, one {# patch} other {# patches}}",
++  "67bee5774f99fe1b": "Patches installed on {environment}",
++  "f4fb18612dfa950f": "Hide included features",
++  "c63fa12a48f6c88d": "What’s included",
++  "f182ef95c65c9728": "Patches",
++  "fac2e5e394fb402e": "Connect to view installed patches.",
++  "f28c98ca4ced83d2": "No patches installed on this environment.",
++  "77e857278bc40a87": "{count, plural, =0 {0 patches} one {# patch} other {# patches}}",
+   "06873604593555f2": "Turn off local environment?",
+   "4ced358c0a88e181": "Turn on local environment?",
+   "2bb64ad2007e3c6a": "T3 Code will restart without running a server on this computer. Any agents and terminals running here will stop, and other devices will no longer be able to connect to this computer. Your projects, history, and remote environments are unaffected.",
+diff --git a/apps/web/src/i18n/translations/es.json b/apps/web/src/i18n/translations/es.json
+index 50309bfa62b158db0c0c20e158e2b1c529157129..02938ae90ba4cd36f61f3a878d7ce78444629834 100644
+--- a/apps/web/src/i18n/translations/es.json
++++ b/apps/web/src/i18n/translations/es.json
+@@ -9034,6 +9034,14 @@
+   "d1781a918f8a11cf": "Ejecuta agentes en este equipo. Desactívalo para usar T3 Code solo con entornos remotos.",
+   "e1391d08740f38f0": "Desactivado. Los agentes solo se ejecutan en entornos remotos.",
+   "1bb6eb8f0604ec00": "Entorno local",
++  "4b55033768dcc78c": "{count, plural, one {# parche} other {# parches}}",
++  "67bee5774f99fe1b": "Parches instalados en {environment}",
++  "f4fb18612dfa950f": "Ocultar funciones incluidas",
++  "c63fa12a48f6c88d": "Qué incluye",
++  "f182ef95c65c9728": "Parches",
++  "fac2e5e394fb402e": "Conéctate para ver los parches instalados.",
++  "f28c98ca4ced83d2": "No hay parches instalados en este entorno.",
++  "77e857278bc40a87": "{count, plural, =0 {0 parches} one {# parche} other {# parches}}",
+   "06873604593555f2": "¿Desactivar el entorno local?",
+   "4ced358c0a88e181": "¿Activar el entorno local?",
+   "2bb64ad2007e3c6a": "T3 Code se reiniciará sin ejecutar un servidor en este equipo. Se detendrán los agentes y terminales que se ejecuten aquí, y otros dispositivos ya no podrán conectarse a este equipo. Tus proyectos, el historial y los entornos remotos no se ven afectados.",
+diff --git a/apps/web/src/i18n/translations/fr.json b/apps/web/src/i18n/translations/fr.json
+index ef718bab748889edb8d1901a522913b6b5276b8e..6991c8097fad17927098e5525034ad2f95486362 100644
+--- a/apps/web/src/i18n/translations/fr.json
++++ b/apps/web/src/i18n/translations/fr.json
+@@ -9036,6 +9036,14 @@
+   "d1781a918f8a11cf": "Exécute des agents sur cet ordinateur. Désactivez l’option pour utiliser T3 Code uniquement avec des environnements distants.",
+   "e1391d08740f38f0": "Désactivé. Les agents ne s’exécutent que dans des environnements distants.",
+   "1bb6eb8f0604ec00": "Environnement local",
++  "4b55033768dcc78c": "{count, plural, one {# correctif} other {# correctifs}}",
++  "67bee5774f99fe1b": "Correctifs installés sur {environment}",
++  "f4fb18612dfa950f": "Masquer les fonctionnalités incluses",
++  "c63fa12a48f6c88d": "Contenu inclus",
++  "f182ef95c65c9728": "Correctifs",
++  "fac2e5e394fb402e": "Connectez-vous pour voir les correctifs installés.",
++  "f28c98ca4ced83d2": "Aucun correctif installé sur cet environnement.",
++  "77e857278bc40a87": "{count, plural, =0 {0 correctif} one {# correctif} other {# correctifs}}",
+   "06873604593555f2": "Désactiver l’environnement local ?",
+   "4ced358c0a88e181": "Activer l’environnement local ?",
+   "2bb64ad2007e3c6a": "T3 Code va redémarrer sans exécuter de serveur sur cet ordinateur. Les agents et terminaux en cours ici s’arrêteront, et les autres appareils ne pourront plus se connecter à cet ordinateur. Vos projets, votre historique et vos environnements distants ne sont pas affectés.",
+diff --git a/apps/web/src/i18n/translations/ja.json b/apps/web/src/i18n/translations/ja.json
+index 206f1bbddfd7c4b96a1c5274fa25d9c66f7954de..cac3b9cc70ea5a3c34d0a5046dae7b85fe50a856 100644
+--- a/apps/web/src/i18n/translations/ja.json
++++ b/apps/web/src/i18n/translations/ja.json
+@@ -8991,6 +8991,14 @@
+   "d1781a918f8a11cf": "このコンピューターでエージェントを実行します。オフにすると、T3 Code はリモート環境でのみ使用します。",
+   "e1391d08740f38f0": "オフになっています。エージェントはリモート環境でのみ実行されます。",
+   "1bb6eb8f0604ec00": "ローカル環境",
++  "4b55033768dcc78c": "{count, plural, other {# 個のパッチ}}",
++  "67bee5774f99fe1b": "{environment} にインストールされたパッチ",
++  "f4fb18612dfa950f": "含まれる機能を隠す",
++  "c63fa12a48f6c88d": "含まれる機能",
++  "f182ef95c65c9728": "パッチ",
++  "fac2e5e394fb402e": "接続してインストール済みのパッチを表示します。",
++  "f28c98ca4ced83d2": "この環境にはパッチがインストールされていません。",
++  "77e857278bc40a87": "{count, plural, =0 {0 個のパッチ} other {# 個のパッチ}}",
+   "06873604593555f2": "ローカル環境をオフにしますか？",
+   "4ced358c0a88e181": "ローカル環境をオンにしますか？",
+   "2bb64ad2007e3c6a": "T3 Code はこのコンピューターでサーバーを実行せずに再起動します。ここで実行中のエージェントとターミナルは停止し、他のデバイスはこのコンピューターに接続できなくなります。プロジェクト、履歴、リモート環境には影響しません。",
+diff --git a/apps/web/src/i18n/translations/ko.json b/apps/web/src/i18n/translations/ko.json
+index 18acb6158025985d14f55401cacd9937cfaca11f..58183003f44a3bf4b8bfd5593ec4420b3531e9a4 100644
+--- a/apps/web/src/i18n/translations/ko.json
++++ b/apps/web/src/i18n/translations/ko.json
+@@ -8994,6 +8994,14 @@
+   "d1781a918f8a11cf": "이 컴퓨터에서 에이전트를 실행합니다. 끄면 원격 환경에서만 T3 Code를 사용합니다.",
+   "e1391d08740f38f0": "꺼져 있습니다. 에이전트는 원격 환경에서만 실행됩니다.",
+   "1bb6eb8f0604ec00": "로컬 환경",
++  "4b55033768dcc78c": "{count, plural, other {패치 #개}}",
++  "67bee5774f99fe1b": "{environment}에 설치된 패치",
++  "f4fb18612dfa950f": "포함된 기능 숨기기",
++  "c63fa12a48f6c88d": "포함된 기능",
++  "f182ef95c65c9728": "패치",
++  "fac2e5e394fb402e": "설치된 패치를 보려면 연결하세요.",
++  "f28c98ca4ced83d2": "이 환경에 설치된 패치가 없습니다.",
++  "77e857278bc40a87": "{count, plural, =0 {패치 0개} other {패치 #개}}",
+   "06873604593555f2": "로컬 환경을 끌까요?",
+   "4ced358c0a88e181": "로컬 환경을 켤까요?",
+   "2bb64ad2007e3c6a": "T3 Code가 이 컴퓨터에서 서버를 실행하지 않은 상태로 다시 시작됩니다. 여기서 실행 중인 에이전트와 터미널은 중지되고, 다른 기기는 더 이상 이 컴퓨터에 연결할 수 없습니다. 프로젝트, 기록, 원격 환경에는 영향이 없습니다.",
+diff --git a/apps/web/src/i18n/translations/pt-BR.json b/apps/web/src/i18n/translations/pt-BR.json
+index 05b2204a445ae3025d7f0691ca48dc0d17f1a71b..106c74b2b722af554f5431d7cc8abeb54f247faa 100644
+--- a/apps/web/src/i18n/translations/pt-BR.json
++++ b/apps/web/src/i18n/translations/pt-BR.json
+@@ -9035,6 +9035,14 @@
+   "d1781a918f8a11cf": "Executa agentes neste computador. Desative para usar o T3 Code só com ambientes remotos.",
+   "e1391d08740f38f0": "Desativado. Os agentes só rodam em ambientes remotos.",
+   "1bb6eb8f0604ec00": "Ambiente local",
++  "4b55033768dcc78c": "{count, plural, one {# patch} other {# patches}}",
++  "67bee5774f99fe1b": "Patches instalados em {environment}",
++  "f4fb18612dfa950f": "Ocultar recursos incluídos",
++  "c63fa12a48f6c88d": "O que está incluído",
++  "f182ef95c65c9728": "Patches",
++  "fac2e5e394fb402e": "Conecte-se para ver os patches instalados.",
++  "f28c98ca4ced83d2": "Nenhum patch instalado neste ambiente.",
++  "77e857278bc40a87": "{count, plural, =0 {0 patches} one {# patch} other {# patches}}",
+   "06873604593555f2": "Desativar o ambiente local?",
+   "4ced358c0a88e181": "Ativar o ambiente local?",
+   "2bb64ad2007e3c6a": "O T3 Code vai reiniciar sem executar um servidor neste computador. Agentes e terminais em execução aqui vão parar, e outros dispositivos não poderão mais se conectar a este computador. Seus projetos, histórico e ambientes remotos não são afetados.",
+diff --git a/apps/web/src/i18n/translations/ru.json b/apps/web/src/i18n/translations/ru.json
+index 3556dd9455160491b154c25d06230bbb4d5b35ab..6640bae9d15bebf8819140b7fae9c73552875d30 100644
+--- a/apps/web/src/i18n/translations/ru.json
++++ b/apps/web/src/i18n/translations/ru.json
+@@ -9036,6 +9036,14 @@
+   "d1781a918f8a11cf": "Запускать агентов на этом компьютере. Выключите, чтобы использовать T3 Code только с удалёнными окружениями.",
+   "e1391d08740f38f0": "Выключено. Агенты работают только в удалённых окружениях.",
+   "1bb6eb8f0604ec00": "Локальное окружение",
++  "4b55033768dcc78c": "{count, plural, one {# патч} few {# патча} many {# патчей} other {# патчей}}",
++  "67bee5774f99fe1b": "Патчи, установленные на {environment}",
++  "f4fb18612dfa950f": "Скрыть включённые функции",
++  "c63fa12a48f6c88d": "Что включено",
++  "f182ef95c65c9728": "Патчи",
++  "fac2e5e394fb402e": "Подключитесь, чтобы увидеть установленные патчи.",
++  "f28c98ca4ced83d2": "В этом окружении нет установленных патчей.",
++  "77e857278bc40a87": "{count, plural, =0 {0 патчей} one {# патч} few {# патча} many {# патчей} other {# патчей}}",
+   "06873604593555f2": "Выключить локальное окружение?",
+   "4ced358c0a88e181": "Включить локальное окружение?",
+   "2bb64ad2007e3c6a": "T3 Code перезапустится без сервера на этом компьютере. Все агенты и терминалы, запущенные здесь, остановятся, а другие устройства больше не смогут подключаться к этому компьютеру. Ваши проекты, история и удалённые окружения не затрагиваются.",
+diff --git a/apps/web/src/i18n/translations/sv.json b/apps/web/src/i18n/translations/sv.json
+index 6b559d46a1f99db089f533cbb04a45cfd0c0dd17..0135dc74539b115b40939a4afe0aa943303c96f4 100644
+--- a/apps/web/src/i18n/translations/sv.json
++++ b/apps/web/src/i18n/translations/sv.json
+@@ -9042,6 +9042,14 @@
+   "d1781a918f8a11cf": "Kör agenter på den här datorn. Stäng av för att bara använda T3 Code med fjärrmiljöer.",
+   "e1391d08740f38f0": "Avstängd. Agenter körs bara i fjärrmiljöer.",
+   "1bb6eb8f0604ec00": "Lokal miljö",
++  "4b55033768dcc78c": "{count, plural, one {# patch} other {# patchar}}",
++  "67bee5774f99fe1b": "Patchar installerade på {environment}",
++  "f4fb18612dfa950f": "Dölj inkluderade funktioner",
++  "c63fa12a48f6c88d": "Det här ingår",
++  "f182ef95c65c9728": "Patchar",
++  "fac2e5e394fb402e": "Anslut för att visa installerade patchar.",
++  "f28c98ca4ced83d2": "Inga patchar är installerade i den här miljön.",
++  "77e857278bc40a87": "{count, plural, =0 {0 patchar} one {# patch} other {# patchar}}",
+   "06873604593555f2": "Stänga av den lokala miljön?",
+   "4ced358c0a88e181": "Aktivera den lokala miljön?",
+   "2bb64ad2007e3c6a": "T3 Code startar om utan att köra en server på den här datorn. Agenter och terminaler som körs här stoppas, och andra enheter kan inte längre ansluta till den här datorn. Dina projekt, din historik och dina fjärrmiljöer påverkas inte.",
+diff --git a/apps/web/src/i18n/translations/zh.json b/apps/web/src/i18n/translations/zh.json
+index 4d6210cc5e6d04990157c1c154adbe20fd976806..d92244ba0f6f7b03c5955a1205b081dc1e3826ec 100644
+--- a/apps/web/src/i18n/translations/zh.json
++++ b/apps/web/src/i18n/translations/zh.json
+@@ -9051,6 +9051,14 @@
+   "d1781a918f8a11cf": "在本机上运行智能体。关闭后，T3 Code 将仅使用远程环境。",
+   "e1391d08740f38f0": "已关闭。智能体仅在远程环境中运行。",
+   "1bb6eb8f0604ec00": "本地环境",
++  "4b55033768dcc78c": "{count, plural, other {# 个补丁}}",
++  "67bee5774f99fe1b": "已安装在 {environment} 上的补丁",
++  "f4fb18612dfa950f": "隐藏包含的功能",
++  "c63fa12a48f6c88d": "包含内容",
++  "f182ef95c65c9728": "补丁",
++  "fac2e5e394fb402e": "连接后可查看已安装的补丁。",
++  "f28c98ca4ced83d2": "此环境未安装任何补丁。",
++  "77e857278bc40a87": "{count, plural, =0 {0 个补丁} other {# 个补丁}}",
+   "06873604593555f2": "关闭本地环境？",
+   "4ced358c0a88e181": "开启本地环境？",
+   "2bb64ad2007e3c6a": "T3 Code 将重启，不再在本机上运行服务器。本机上运行的智能体和终端将停止，其他设备也将无法连接本机。你的项目、历史记录和远程环境不受影响。",
+diff --git a/packages/contracts/src/environment.test.ts b/packages/contracts/src/environment.test.ts
+index 1646684f1da021363c2c97d3c4bd98a4881af75d..2d23ee88343276f03f3f8bbf508f3deb900d61c9 100644
+--- a/packages/contracts/src/environment.test.ts
++++ b/packages/contracts/src/environment.test.ts
+@@ -48,4 +48,27 @@ describe("ExecutionEnvironmentDescriptor", () => {
+       ).toBeUndefined();
+     }
+   });
++
++  it("decodes optional environment patches and drops malformed patch payloads forward-compatibly", () => {
++    expect(decodeDescriptor(descriptor).patches).toBeUndefined();
++    const patches = [
++      {
++        id: "picks",
++        title: "Picks",
++        summary: "Blind A/B comparison inbox.",
++        features: ["MCP tool request_picks", "Cross-environment /picks inbox"],
++        version: 1,
++      },
++      {
++        id: "work-timestamps",
++        title: "Work timestamps",
++        summary: "Fold row end time.",
++        version: 2,
++      },
++    ];
++    expect(decodeDescriptor({ ...descriptor, patches }).patches).toEqual(patches);
++    expect(
++      decodeDescriptor({ ...descriptor, patches: [{ id: "bad", version: 0 }] }).patches,
++    ).toBeUndefined();
++  });
+ });
+diff --git a/packages/contracts/src/environment.ts b/packages/contracts/src/environment.ts
+index b07eeb04f5bb7ccbc2231a08bfe69bd6c7da80d4..beaf66c555d35e1d857ab51c1d8eebe4c6fb8ced 100644
+--- a/packages/contracts/src/environment.ts
++++ b/packages/contracts/src/environment.ts
+@@ -231,6 +231,15 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
+ });
+ export type ExecutionEnvironmentCapabilities = typeof ExecutionEnvironmentCapabilities.Type;
+ 
++export const ExecutionEnvironmentPatch = Schema.Struct({
++  id: TrimmedNonEmptyString,
++  title: TrimmedNonEmptyString,
++  summary: Schema.String,
++  features: ForwardCompatibleOptional(Schema.Array(TrimmedNonEmptyString)),
++  version: Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)),
++});
++export type ExecutionEnvironmentPatch = typeof ExecutionEnvironmentPatch.Type;
++
+ export const ExecutionEnvironmentDescriptor = Schema.Struct({
+   environmentId: EnvironmentId,
+   label: TrimmedNonEmptyString,
+@@ -239,6 +248,8 @@ export const ExecutionEnvironmentDescriptor = Schema.Struct({
+   orchestrationProtocolVersion: Schema.optionalKey(Schema.Int),
+   /** Highest migration this server's database holds; absent on older servers. */
+   databaseMigration: Schema.optionalKey(Schema.Int),
++  /** Patches applied to this server's build, in stack order; absent on unpatched servers. */
++  patches: ForwardCompatibleOptional(Schema.Array(ExecutionEnvironmentPatch)),
+   capabilities: ExecutionEnvironmentCapabilities,
+ });
+ export type ExecutionEnvironmentDescriptor = typeof ExecutionEnvironmentDescriptor.Type;
+diff --git a/patcher/journeys/environment-patches.mjs b/patcher/journeys/environment-patches.mjs
+new file mode 100644
+index 0000000000000000000000000000000000000000..3755c4ad3dc6d02fe2d3a71b65898bff26e135a2
+--- /dev/null
++++ b/patcher/journeys/environment-patches.mjs
+@@ -0,0 +1,289 @@
++// Journey: Settings → Environments shows each environment's version (even when matching the client)
++// and installed patches with their version and included features in both Map view and List view,
++// preserving disclosure state across Map ↔ List switches.
++//   T3_PATCHER_APP=<built .app> T3_PATCHER_EVIDENCE=<dir> node patcher/journeys/environment-patches.mjs
++import * as NodeChildProcess from "node:child_process";
++import * as NodeFS from "node:fs";
++import * as NodeNet from "node:net";
++import * as NodeOS from "node:os";
++import * as NodePath from "node:path";
++
++import { FIXTURE_DB, STEP_TIMEOUT_MS, evidenceDir, journey } from "./support.mjs";
++
++const repoRoot = NodePath.resolve(import.meta.dirname, "../..");
++
++const CURRENT = NodeChildProcess.execFileSync(
++  "/usr/libexec/PlistBuddy",
++  [
++    "-c",
++    "Print :CFBundleShortVersionString",
++    NodePath.join(process.env.T3_PATCHER_APP ?? "", "Contents/Info.plist"),
++  ],
++  { encoding: "utf8" },
++).trim();
++const REMOTE_VERSION = JSON.parse(
++  NodeFS.readFileSync(NodePath.join(repoRoot, "apps/server/package.json"), "utf8"),
++).version;
++const LOCAL_PATCH_COUNT = JSON.parse(process.env.T3_PATCHER_PATCHES || "[]").length;
++const LOCAL_PATCHES_LABEL = LOCAL_PATCH_COUNT === 1 ? "1 patch" : `${LOCAL_PATCH_COUNT} patches`;
++
++function freePort() {
++  return new Promise((resolve, reject) => {
++    const srv = NodeNet.createServer();
++    srv.on("error", reject);
++    srv.listen(0, "127.0.0.1", () => {
++      const address = srv.address();
++      const port = typeof address === "object" && address !== null ? address.port : 0;
++      srv.close((err) => (err ? reject(err) : resolve(port)));
++    });
++  });
++}
++
++async function settled(page) {
++  await page.evaluate(() =>
++    Promise.all(document.getAnimations().map((animation) => animation.finished.catch(() => {}))),
++  );
++}
++
++const parent = process.env.T3_PATCHER_TMP || process.env.TMPDIR || NodeOS.tmpdir();
++NodeFS.mkdirSync(parent, { recursive: true });
++const root = NodeFS.mkdtempSync(NodePath.join(parent, "t3-env-patches-"));
++const localHome = NodePath.join(root, "local-t3");
++const remoteHome = NodePath.join(root, "remote-t3");
++NodeFS.mkdirSync(NodePath.join(localHome, "userdata"), { recursive: true });
++NodeFS.copyFileSync(FIXTURE_DB, NodePath.join(localHome, "userdata/statev2.sqlite"));
++
++NodeFS.mkdirSync(NodePath.join(remoteHome, "userdata/patcher"), { recursive: true });
++NodeFS.writeFileSync(
++  NodePath.join(remoteHome, "userdata/patcher/installed.json"),
++  JSON.stringify({
++    t3Version: REMOTE_VERSION,
++    patches: [
++      {
++        id: "journey-kit",
++        title: "Journey kit",
++        summary: "Headless Electron & Playwright journey harness with isolated T3 home.",
++        version: 2,
++      },
++      {
++        id: "picks",
++        title: "Picks",
++        summary:
++          "Blind A/B image & video comparison inbox inside T3 Code. A new MCP tool, request_picks, takes 1-200 questions with 2-4 shuffled options. Cross-environment /picks inbox with keyboard shortcuts and unblinded JSON wake.",
++        version: 1,
++      },
++    ],
++    installedAt: "2026-11-26T00:00:00.000Z",
++    feed: "https://feed.invalid/patches/index.json",
++  }),
++);
++
++const remotePort = await freePort();
++const remoteLog = NodePath.join(root, "remote-server.log");
++const remoteOut = NodeFS.openSync(remoteLog, "a");
++const remoteServer = NodeChildProcess.spawn(
++  process.execPath,
++  [
++    "apps/server/src/bin.ts",
++    "--mode",
++    "web",
++    "--host",
++    "127.0.0.1",
++    "--port",
++    String(remotePort),
++    "--base-dir",
++    remoteHome,
++    "--no-browser",
++    "--auto-bootstrap-project-from-cwd=false",
++  ],
++  {
++    cwd: repoRoot,
++    env: {
++      ...process.env,
++      T3CODE_HOME: remoteHome,
++      T3CODE_ENVIRONMENT_LABEL: "Archduke Avacado Odyssey",
++      T3CODE_TELEMETRY_ENABLED: "false",
++    },
++    stdio: ["ignore", remoteOut, remoteOut],
++  },
++);
++
++async function waitForRemoteRuntime() {
++  const runtimePath = NodePath.join(remoteHome, "userdata/server-runtime.json");
++  const deadline = Date.now() + STEP_TIMEOUT_MS;
++  while (!NodeFS.existsSync(runtimePath)) {
++    if (remoteServer.exitCode !== null) {
++      throw new Error(
++        `remote server exited (${remoteServer.exitCode}):\n${NodeFS.readFileSync(remoteLog, "utf8")}`,
++      );
++    }
++    if (Date.now() > deadline) {
++      throw new Error(
++        `remote server never wrote server-runtime.json:\n${NodeFS.readFileSync(remoteLog, "utf8")}`,
++      );
++    }
++    await new Promise((resolve) => setTimeout(resolve, 200));
++  }
++}
++
++try {
++  await waitForRemoteRuntime();
++  const pairOutput = NodeChildProcess.execFileSync(
++    process.execPath,
++    ["apps/server/src/bin.ts", "pair", "--base-dir", remoteHome],
++    {
++      cwd: repoRoot,
++      env: { ...process.env, T3CODE_HOME: remoteHome },
++      encoding: "utf8",
++      timeout: STEP_TIMEOUT_MS,
++    },
++  );
++  const urlMatch = /http:\/\/127\.0\.0\.1:\d+\/[^\s]+/.exec(pairOutput);
++  if (!urlMatch) {
++    throw new Error(`could not find pairing URL in pair output:\n${pairOutput}`);
++  }
++  const pairingUrl = urlMatch[0];
++
++  await journey(
++    "environment-patches",
++    async ({ page, screenshot }, step) => {
++      await page.setViewportSize({ width: 1280, height: 900 });
++
++      step("opening Settings → Environments");
++      const settingsButton = page.getByRole("button", { name: /Settings/i }).first();
++      await settingsButton.waitFor({ timeout: STEP_TIMEOUT_MS });
++      await settingsButton.click();
++      const environmentsNav = page.locator('[data-settings-section="/settings/connections"]');
++      await environmentsNav.waitFor({ timeout: STEP_TIMEOUT_MS });
++      await environmentsNav.click();
++
++      step("pairing the remote environment through Add environment");
++      await page.getByRole("button", { name: "Add environment" }).first().click();
++      const addDialog = page.getByRole("dialog", { name: "Add Environment" });
++      const hostInput = addDialog.getByPlaceholder("backend.example.com");
++      await hostInput.waitFor({ timeout: STEP_TIMEOUT_MS });
++      await hostInput.fill(pairingUrl);
++      await addDialog.getByRole("button", { name: "Add environment" }).click();
++      await addDialog.waitFor({ state: "hidden", timeout: STEP_TIMEOUT_MS });
++      const addedToast = page.getByRole("dialog", { name: "Backend added" });
++      if ((await addedToast.count()) > 0) {
++        await addedToast
++          .locator("button")
++          .first()
++          .click()
++          .catch(() => {});
++      }
++
++      step("verifying Map view node subtitles and selecting Archduke Avacado Odyssey");
++      const odysseyMapNode = page
++        .locator("button")
++        .filter({ hasText: "Archduke Avacado Odyssey" })
++        .filter({ hasText: `${REMOTE_VERSION} · 2 patches` })
++        .first();
++      await odysseyMapNode.waitFor({ timeout: STEP_TIMEOUT_MS });
++      const macbookMapNode = page
++        .locator("button")
++        .filter({ hasText: "So’s MacBook Air" })
++        .filter({ hasText: `${CURRENT} · ${LOCAL_PATCHES_LABEL}` })
++        .first();
++      await macbookMapNode.waitFor({ timeout: STEP_TIMEOUT_MS });
++
++      await odysseyMapNode.click();
++      const mapDetails = page.locator("#remote-environments");
++      await mapDetails.getByText("Connected", { exact: false }).first().waitFor({
++        timeout: STEP_TIMEOUT_MS,
++      });
++      await mapDetails.getByText(REMOTE_VERSION, { exact: true }).waitFor({
++        timeout: STEP_TIMEOUT_MS,
++      });
++
++      step("expanding remote patches and included features in Map view");
++      const routesBtn = page.getByRole("button", { name: "Routes", exact: true });
++      if ((await routesBtn.getAttribute("aria-expanded")) === "true") {
++        await routesBtn.click();
++      }
++      const odysseyPatchesBtn = page.getByRole("button", { name: "2 patches", exact: true });
++      await odysseyPatchesBtn.waitFor({ timeout: STEP_TIMEOUT_MS });
++      await odysseyPatchesBtn.click();
++
++      const patchesList = page.getByRole("list", {
++        name: "Patches installed on Archduke Avacado Odyssey",
++      });
++      await patchesList.waitFor({ timeout: STEP_TIMEOUT_MS });
++      await patchesList.getByText("Picks", { exact: true }).waitFor({ timeout: STEP_TIMEOUT_MS });
++      await patchesList.getByText("v1", { exact: true }).waitFor({ timeout: STEP_TIMEOUT_MS });
++      await patchesList
++        .getByText("Blind A/B image & video comparison inbox inside T3 Code.")
++        .waitFor({ timeout: STEP_TIMEOUT_MS });
++
++      await patchesList.getByRole("button", { name: "What’s included" }).click();
++      await patchesList
++        .getByText(
++          "A new MCP tool, request_picks, takes 1-200 questions with 2-4 shuffled options.",
++        )
++        .waitFor({ timeout: STEP_TIMEOUT_MS });
++      await page
++        .locator("#remote-environments")
++        .evaluate((el) => el.scrollIntoView({ behavior: "instant", block: "start" }));
++      await settled(page);
++      console.log(await screenshot("environment-patches-map"));
++
++      step("switching to List view and verifying preserved disclosure plus local machine patches");
++      await page
++        .getByRole("group", { name: "Show environments as" })
++        .getByRole("button", { name: "List", exact: true })
++        .click();
++
++      // Local environment row appears under This app in List view with its baked patches.
++      const thisAppSection = page.locator("#this-app");
++      await thisAppSection
++        .getByText("This machine · Connected")
++        .waitFor({ timeout: STEP_TIMEOUT_MS });
++      await thisAppSection
++        .getByText(CURRENT, { exact: true })
++        .waitFor({ timeout: STEP_TIMEOUT_MS });
++      // Remote environment keeps its matching version visible and keeps Picks's included features open!
++      await page
++        .locator("#remote-environments")
++        .getByText(REMOTE_VERSION, { exact: true })
++        .waitFor({ timeout: STEP_TIMEOUT_MS });
++      await page
++        .getByRole("list", { name: "Patches installed on Archduke Avacado Odyssey" })
++        .getByText(
++          "A new MCP tool, request_picks, takes 1-200 questions with 2-4 shuffled options.",
++        )
++        .waitFor({ timeout: STEP_TIMEOUT_MS });
++
++      await thisAppSection.getByRole("button", { name: LOCAL_PATCHES_LABEL, exact: true }).click();
++      const localPatchesList = page.getByRole("list", {
++        name: "Patches installed on So’s MacBook Air",
++      });
++      await localPatchesList
++        .getByText("Environment patches", { exact: true })
++        .waitFor({ timeout: STEP_TIMEOUT_MS });
++      await settled(page);
++      console.log(await screenshot("environment-patches-list"));
++
++      step("switching off the remote environment and verifying the offline patches state");
++      await page.getByRole("switch", { name: "Switch off Archduke Avacado Odyssey" }).click();
++      await page
++        .getByText("Connect to view installed patches.")
++        .waitFor({ timeout: STEP_TIMEOUT_MS });
++    },
++    {
++      seed: false,
++      env: {
++        T3CODE_HOME: localHome,
++        T3CODE_ENVIRONMENT_LABEL: "So’s MacBook Air",
++      },
++    },
++  );
++} finally {
++  remoteServer.kill("SIGKILL");
++  NodeFS.closeSync(remoteOut);
++  const evidence = evidenceDir();
++  if (NodeFS.existsSync(remoteLog)) {
++    NodeFS.copyFileSync(remoteLog, NodePath.join(evidence, "remote-server.log"));
++  }
++  NodeFS.rmSync(root, { recursive: true, force: true, maxRetries: 5 });
++}
