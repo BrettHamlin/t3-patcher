@@ -1,12 +1,13 @@
 // Explore the built app: open it on a data folder, run a few steps, and save what it shows. Exploring isn't proof;
 // once a behaviour works, write the journey that proves it. Run through `python3 scripts/verify.py look`.
 // Usage: node journeys/support/look.ts <data folder> <output folder> [fill <test id> <text> | click <test id>]...
+import * as NodeCrypto from "node:crypto";
 import * as NodeFs from "node:fs/promises";
 import * as NodePath from "node:path";
 
 import { _electron } from "playwright-core";
 
-import { command } from "./app.ts";
+import { closeApp, command, launchEnv } from "./app.ts";
 
 type Step = { readonly fill: string; readonly text: string } | { readonly click: string };
 
@@ -25,7 +26,9 @@ if (data === undefined || out === undefined) {
 const steps = parse(words);
 await NodeFs.mkdir(data, { recursive: true });
 await NodeFs.mkdir(out, { recursive: true });
-const app = await _electron.launch({ ...(await command(data)) });
+const launchId = NodeCrypto.randomUUID();
+const app = await _electron.launch({ ...(await command(data)), env: launchEnv(launchId) });
+const child = app.process();
 try {
   const page = await app.firstWindow();
   await page.waitForLoadState("domcontentloaded");
@@ -42,5 +45,5 @@ try {
   await NodeFs.writeFile(NodePath.join(out, "look.txt"), `${ids.join("\n")}\n`);
   process.stdout.write(`${NodePath.join(out, "look.png")}\n${ids.join("\n")}\n`);
 } finally {
-  await app.close();
+  await closeApp(app, child, launchId);
 }

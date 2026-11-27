@@ -19,14 +19,14 @@ Usage: python3 scripts/verify.py [map|run]     (default: run, which does the map
 from pathlib import Path
 import json
 import shutil
-import subprocess
 import sys
 import tempfile
 import tomllib
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from build import build  # noqa: E402
-from tools import install, node_env  # noqa: E402
+from paths import machine_setting  # noqa: E402
+from tools import handle_termination, install, node_env, run_group  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 EVIDENCE = ROOT / '.build/evidence/latest'
@@ -90,6 +90,15 @@ def map_errors(features: list[dict]) -> list[str]:
     return errors
 
 
+def verify_workers(env: dict) -> int:
+    raw = env.get('BSTACK_VERIFY_WORKERS')
+    if raw is not None and raw != '':
+        if not raw.isdigit() or int(raw) < 1:
+            sys.exit(f'$BSTACK_VERIFY_WORKERS must be a whole number of at least 1, not {raw!r}.')
+        return int(raw)
+    return machine_setting('verify_workers', 1)
+
+
 def run(env: dict, features: list[dict], build_first: bool = True) -> list[str]:
     """Run the journeys and check them against the map. With $BSTACK_PACKAGED_APP in `env`, they launch that app
     (package.py) instead of the built one, and nothing is built here."""
@@ -98,8 +107,10 @@ def run(env: dict, features: list[dict], build_first: bool = True) -> list[str]:
         return [f'[verified-features] the app didn\'t build, so it can\'t run: {failed}']
     errors: list[str] = []
     results = EVIDENCE / 'results.json'
-    proc = subprocess.run(['vp', 'test', 'run', '--project', 'journeys', '--reporter=json', f'--outputFile={results}'],
-                          cwd=ROOT, env=env, capture_output=True, text=True)
+    workers = verify_workers(env)
+    worker_flags = ['--fileParallelism', f'--maxWorkers={workers}'] if workers > 1 else ['--no-file-parallelism', '--maxWorkers=1']
+    proc = run_group(['vp', 'test', 'run', '--project', 'journeys', *worker_flags, '--reporter=json', f'--outputFile={results}'],
+                     ROOT, {**env, 'BSTACK_VERIFY_WORKERS': str(workers), 'VITEST_MAX_WORKERS': str(workers)})
     if not results.is_file():
         return [f'[verified-features] the journeys didn\'t run:\n{(proc.stdout + proc.stderr).strip()[-4000:]}']
     report = json.loads(results.read_text())
@@ -141,9 +152,13 @@ def run(env: dict, features: list[dict], build_first: bool = True) -> list[str]:
                               'shows the feature working: screenshots are the evidence.')
             lines += [f'### {name}: {"PASS" if passed and shots else "FAIL"}', '', journey.get('proves', ''), '']
             lines += [f'- ![{shot.stem}]({name}/{shot.name})' for shot in shots] + ['']
-    (EVIDENCE / 'evidence.md').write_text('\n'.join(lines))
-    if proc.returncode != 0 and not errors:
+    if '[no-concurrency-escapes]' in proc.stderr:
+        leak = proc.stderr.strip()[-3000:]
+        errors.append(leak)
+        lines += ['## Process leak', '', leak, '']
+    elif proc.returncode != 0 and not errors:
         errors.append(f'[verified-features] the journeys failed:\n{(proc.stdout + proc.stderr).strip()[-3000:]}')
+    (EVIDENCE / 'evidence.md').write_text('\n'.join(lines))
     return errors
 
 
@@ -169,26 +184,29 @@ def look(args: list[str]) -> int:
         print(failed)
         return 1
     out = ROOT / '.build/look'
-    proc = subprocess.run(['node', 'journeys/support/look.ts', str(data), str(out), *args], cwd=ROOT / 'apps/desktop',
-                          env=env, capture_output=True, text=True)
+    proc = run_group(['node', 'journeys/support/look.ts', str(data), str(out), *args], ROOT / 'apps/desktop', env)
     print((proc.stdout + proc.stderr).strip() + f'\ndata folder: {data}')
     return proc.returncode
 
 
 if __name__ == '__main__':
-    if sys.argv[1:2] == ['look']:
-        sys.exit(look(sys.argv[2:]))
-    mode = sys.argv[1] if len(sys.argv) > 1 else 'run'
-    if mode not in ('map', 'run'):
-        sys.exit(__doc__)
-    if mode == 'run':
-        shutil.rmtree(EVIDENCE, ignore_errors=True)  # never leave an earlier run's evidence as the latest
-    features, errors = verified_map()
-    if mode == 'run' and not errors:
-        EVIDENCE.mkdir(parents=True)
-        env = node_env()
-        install(env)
-        errors += run(env, features)
+    handle_termination()
+    try:
+        if sys.argv[1:2] == ['look']:
+            sys.exit(look(sys.argv[2:]))
+        mode = sys.argv[1] if len(sys.argv) > 1 else 'run'
+        if mode not in ('map', 'run'):
+            sys.exit(__doc__)
+        if mode == 'run':
+            shutil.rmtree(EVIDENCE, ignore_errors=True)  # never leave an earlier run's evidence as the latest
+        features, errors = verified_map()
+        if mode == 'run' and not errors:
+            EVIDENCE.mkdir(parents=True)
+            env = node_env()
+            install(env)
+            errors += run(env, features)
+    except KeyboardInterrupt:
+        sys.exit('\nStopped.')
     done = (f'verify: every feature mapped; every journey passed. Evidence: {EVIDENCE / "evidence.md"}' if mode == 'run'
             else 'verify map: every feature mapped (journeys not run)')
     print('\n'.join(errors) if errors else done)

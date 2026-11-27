@@ -22,6 +22,7 @@ import urllib.request
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from paths import cache_root, link_build_dirs, project_cache  # noqa: E402
+from reap import abort_active, defer_signals, handle_termination, reset_abort, run_group  # noqa: E402, F401
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -71,7 +72,11 @@ def node_env() -> dict:
     tools folder, installed packages in .build/ (linked into the cache folder), and no telemetry or global config."""
     link_build_dirs(ROOT)
     node, pnpm = tool_path('node'), tool_path('pnpm')
-    env = {k: v for k, v in os.environ.items() if not k.lower().startswith(('npm_config_', 'pnpm_config_'))}
+    # Desktop agent hosts (T3 Code, VS Code) set ELECTRON_RUN_AS_NODE=1, which makes Electron reject Chromium flags;
+    # inherited VITEST_MAX_WORKERS would override verify.py's per-machine worker cap.
+    env = {k: v for k, v in os.environ.items()
+           if not k.lower().startswith(('npm_config_', 'pnpm_config_'))
+           and k not in ('ELECTRON_RUN_AS_NODE', 'VITEST_MAX_WORKERS')}
     env.update({
         'PATH': os.pathsep.join([str(ROOT / 'node_modules/.bin'), str(node.parent), str(pnpm.parent), env.get('PATH', '')]),
         'COREPACK_ENABLE_STRICT': '0',
@@ -87,6 +92,8 @@ def node_env() -> dict:
         'NO_UPDATE_NOTIFIER': '1',
         'DO_NOT_TRACK': '1',
     })
+    # Keep Go-based native tools (effect-tsgo / esbuild) from spawning numCPU threads per compiler worker at once.
+    env.setdefault('GOMAXPROCS', '2')
     return env
 
 
@@ -134,8 +141,8 @@ def install(env: dict) -> None:
     it instead), then Electron's binary if it's missing."""
     # In CI the lockfile must already match every package.json: pnpm doesn't freeze it by itself with these flags.
     frozen = ['--frozen-lockfile'] if os.environ.get('CI', '').lower() not in ('', '0', 'false') else []
-    proc = subprocess.run(['pnpm', 'install', '--prefer-offline', '--reporter=append-only', *frozen], cwd=ROOT,
-                          env=env, capture_output=True, text=True)
+    proc = run_group(['pnpm', 'install', '--prefer-offline', '--reporter=append-only', *frozen], ROOT, env,
+                     check_survivors=False)
     if proc.returncode != 0:
         sys.exit(f'pnpm install failed:\n{(proc.stdout + proc.stderr).strip()[-3000:]}')
     # Electron's install.js downloads the binary into the tools folder and checks it against the checksums.json in the
@@ -143,7 +150,7 @@ def install(env: dict) -> None:
     for package in sorted(ROOT.glob('apps/*/node_modules/electron')):
         if (package / 'path.txt').is_file() and (package / 'dist').is_dir():
             continue
-        proc = subprocess.run(['node', 'install.js'], cwd=package, env=env, capture_output=True, text=True)
+        proc = run_group(['node', 'install.js'], package, env, check_survivors=False)
         if proc.returncode != 0:
             sys.exit(f'Electron install failed:\n{(proc.stdout + proc.stderr).strip()[-3000:]}')
 
