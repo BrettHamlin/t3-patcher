@@ -19,11 +19,10 @@ Usage: python3 scripts/settings.py
 from pathlib import Path
 import json
 import re
-import subprocess
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from tools import install, node_env  # noqa: E402
+from tools import handle_termination, install, node_env, run_group  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 FIX = ('Restore it. If the change is meant, it needs the owner: they change the setting and arch/settings.json together. '
@@ -58,8 +57,7 @@ def compiler_findings(env: dict, expected: dict) -> list[str]:
     configs.append(('journeys', ROOT / 'apps/desktop/journeys/tsconfig.json'))
     for role, config in configs:
         where = config.relative_to(ROOT)
-        proc = subprocess.run(['effect-tsgo', 'tsc', '--showConfig', '-p', str(where)], cwd=ROOT, env=env,
-                              capture_output=True, text=True)
+        proc = run_group(['effect-tsgo', 'tsc', '--showConfig', '-p', str(where)], ROOT, env)
         if proc.returncode != 0:
             out.append(f'[protected-enforcement] {where}: the compiler couldn\'t read it: {proc.stdout + proc.stderr}')
             continue
@@ -100,13 +98,13 @@ def effect_findings(expected: dict) -> list[str]:
     return [f'[protected-enforcement] tsconfig.effect.json: the Effect language service changed ({what}). {FIX}']
 
 
-def vite_config(env: dict) -> dict:
-    proc = subprocess.run(['node', '--input-type=module', '-e',
-                           'process.stdout.write(JSON.stringify((await import("./vite.config.ts")).default))'],
-                          cwd=ROOT, env=env, capture_output=True, text=True)
+def vite_config(env: dict) -> tuple[dict | None, str]:
+    proc = run_group(['node', '--input-type=module', '-e',
+                      'process.stdout.write(JSON.stringify((await import("./vite.config.ts")).default))'],
+                     ROOT, env)
     if proc.returncode != 0:
-        sys.exit(f'vite.config.ts couldn\'t be loaded:\n{(proc.stdout + proc.stderr)[-2000:]}')
-    return json.loads(proc.stdout)
+        return None, (proc.stdout + proc.stderr).strip()[-2000:]
+    return json.loads(proc.stdout), ''
 
 
 def severity(value: object) -> object:
@@ -185,21 +183,29 @@ def codeowners_findings(expected: list[str]) -> list[str]:
 
 def findings(env: dict) -> list[str]:
     expected = json.loads((ROOT / 'arch/settings.json').read_text())
-    config = vite_config(env)
+    config, vite_error = vite_config(env)
     out = compiler_findings(env, expected['compiler'])
     out += effect_findings(expected['effect'])
-    out += lint_findings(config.get('lint', {}), expected['lint'])
-    if config.get('test') != expected['test']:
-        out.append(f'[protected-enforcement] vite.config.ts: the test settings changed (retries, `.only`, which files '
-                   f'run, fake timers). {FIX}')
+    if config is None:
+        out.append(vite_error if '[no-concurrency-escapes]' in vite_error
+                   else f'[protected-enforcement] vite.config.ts couldn\'t be loaded:\n{vite_error}')
+    else:
+        out += lint_findings(config.get('lint', {}), expected['lint'])
+        if config.get('test') != expected['test']:
+            out.append(f'[protected-enforcement] vite.config.ts: the test settings changed (retries, `.only`, which files '
+                       f'run, fake timers). {FIX}')
     out += workspace_findings(expected['workspace'])
     out += codeowners_findings(expected['codeowners'])
     return out
 
 
 if __name__ == '__main__':
-    env = node_env()
-    install(env)
-    found = findings(env)
+    handle_termination()
+    try:
+        env = node_env()
+        install(env)
+        found = findings(env)
+    except KeyboardInterrupt:
+        sys.exit('\nStopped.')
     print('\n'.join(found) if found else 'settings: every enforcement setting is as recorded')
     sys.exit(1 if found else 0)

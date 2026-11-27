@@ -44,7 +44,17 @@ import {
   userdataFolder,
   workspaceFor,
 } from "./services.ts";
-import { buildEnv, type Line, outcome, parse, stackLines, stepLine, updatingLine } from "./text.ts";
+import {
+  buildEnv,
+  type Line,
+  outcome,
+  parse,
+  parseVerifyWorkers,
+  refreshBuildEnv,
+  stackLines,
+  stepLine,
+  updatingLine,
+} from "./text.ts";
 
 const USAGE = `usage: t3-patcher <command> [--userdata <folder>]
   init [--patches <folder>] [--work <folder>] [--force]
@@ -107,6 +117,17 @@ const cacheWork = Effect.fn("cacheWork")(function* (home: string) {
   });
 });
 
+/** Reads `verify_workers` from `~/.config/b-stack/config.toml` when present (default 1). */
+const configuredVerifyWorkers = Effect.fn("configuredVerifyWorkers")(function* (home: string) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const file = path.join(home, ".config/b-stack/config.toml");
+  const text = (yield* fs.exists(file)) ? yield* fs.readFileString(file) : "";
+  const parsed = parseVerifyWorkers(text);
+  if (parsed !== undefined) return parsed;
+  return yield* new Refused({ why: `verify_workers in ${file} must be a whole number of at least 1` });
+});
+
 const init = Effect.fn("init")(function* (userdata: string, home: string, line: Line) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -117,15 +138,22 @@ const init = Effect.fn("init")(function* (userdata: string, home: string, line: 
   const patches = path.resolve(line.options.get("patches") ?? path.join(import.meta.dirname, "../../../patches"));
   const given = line.options.get("work");
   const work = given === undefined ? yield* cacheWork(home) : path.resolve(given);
+  const verifyWorkers = yield* configuredVerifyWorkers(home);
   yield* saveSettings(userdata, defaultSettings({ patches, work }));
   yield* Console.log(`saved ${file}\npatches: ${patches}\nwork: ${work}`);
   const folder = path.join(work, "build-env");
   const env = path.join(folder, "env.sh");
   if (yield* fs.exists(env)) {
-    yield* Console.log(`build environment: ${env} (kept)`);
+    if (line.flags.has("force")) {
+      const existing = yield* fs.readFileString(env);
+      yield* fs.writeFileString(env, refreshBuildEnv(existing, folder, yield* Config.String("PATH"), verifyWorkers));
+      yield* Console.log(`build environment: updated ${env}`);
+    } else {
+      yield* Console.log(`build environment: ${env} (kept)`);
+    }
   } else {
     yield* fs.makeDirectory(folder, { recursive: true });
-    yield* fs.writeFileString(env, buildEnv(folder, yield* Config.String("PATH")));
+    yield* fs.writeFileString(env, buildEnv(folder, yield* Config.String("PATH"), verifyWorkers));
     yield* Console.log(`build environment: wrote ${env}`);
   }
   yield* Console.log(yield* linkElectronCache(home, path.join(folder, "electron-cache")));

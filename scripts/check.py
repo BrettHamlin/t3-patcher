@@ -25,7 +25,6 @@ from pathlib import Path
 import argparse
 import json
 import os
-import subprocess
 import sys
 import tempfile
 import time
@@ -34,21 +33,28 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from arch import findings as arch_findings  # noqa: E402
 from handback import record_check, snapshot  # noqa: E402
 from settings import findings as settings_findings  # noqa: E402
-from tools import install, node_env  # noqa: E402
+from tools import abort_active, defer_signals, handle_termination, install, node_env, reset_abort, run_group  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 GATES = ['compiler', 'lint', 'deps', 'arch', 'settings', 'tests', 'verify']
 
 
 def run(cmd: list[str], env: dict) -> tuple[bool, str]:
-    proc = subprocess.run(cmd, cwd=ROOT, env=env, capture_output=True, text=True)
+    proc = run_group(cmd, ROOT, env)
     return proc.returncode == 0, (proc.stdout + proc.stderr).strip()
 
 
+def has_code(package: Path) -> bool:
+    """Whether the package has a TypeScript file where its role's tsconfig looks (src/ and tests/)."""
+    return any(p.suffix in ('.ts', '.tsx') for folder in ('src', 'tests') for p in (package / folder).rglob('*'))
+
+
 def tsconfigs() -> list[Path]:
-    """Every package's tsconfig.json, plus the journeys'."""
+    """Every package's tsconfig.json, plus the journeys'. A package with no code yet (an app's fixtures before its
+    first fixture) has nothing to compile, and the compiler fails on a project with no inputs, so it's left out."""
     shape = json.loads((ROOT / 'arch/shape.json').read_text())
-    found = [p for role in shape['roles'].values() for folder in role['folders'] for p in ROOT.glob(f'{folder}/tsconfig.json')]
+    found = [p for role in shape['roles'].values() for folder in role['folders'] for p in ROOT.glob(f'{folder}/tsconfig.json')
+             if has_code(p.parent)]
     return sorted(found + [p for p in [ROOT / 'apps/desktop/journeys/tsconfig.json'] if p.is_file()])
 
 
@@ -57,8 +63,23 @@ def compiler(env: dict) -> tuple[bool, str]:
         ok, output = run(['effect-tsgo', 'tsc', '-p', str(config.relative_to(ROOT))], env)
         # Effect's suggestions are advice, not failures (the exit code says which).
         return ok, '\n'.join(l for l in output.splitlines() if ': suggestion TS' not in l)
-    with ThreadPoolExecutor() as pool:
-        results = list(pool.map(one, tsconfigs()))
+    configs = tsconfigs()
+    reset_abort()
+    pool = ThreadPoolExecutor(max_workers=min(2, max(1, len(configs))))
+    futures = []
+    try:
+        for config in configs:
+            futures.append(pool.submit(one, config))
+        results = [future.result() for future in futures]
+    except BaseException:
+        with defer_signals(reraise=False, clear_pending=True):
+            abort_active()
+            for future in futures:
+                future.cancel()
+            pool.shutdown(wait=True, cancel_futures=True)
+        raise
+    else:
+        pool.shutdown(wait=True)
     return all(ok for ok, _ in results), '\n'.join(output for _, output in results if output)
 
 
@@ -126,6 +147,7 @@ def check(selected: list[str]) -> list[str]:
 
 
 if __name__ == '__main__':
+    handle_termination()
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--only', action='append', choices=GATES)
     chosen = parser.parse_args().only or GATES

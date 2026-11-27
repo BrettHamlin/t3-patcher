@@ -9,8 +9,8 @@
     {
       "id": "journey-kit",
       "title": "Journey kit",
-      "summary": "patcher/journeys/support.mjs launches the built app for patch journeys: a throwaway HOME and T3CODE_HOME seeded with the release launch fixture, Chromium's mock keychain, no Dock icon and no window ever shown or focused (a journey fails if one is), telemetry and auto-update off, logs and screenshots into $T3_PATCHER_EVIDENCE. Every other patch's journeys use it. T3's browser tests run in full headless Chromium, which draws frames on a locked Mac.",
-      "version": 3
+      "summary": "patcher/journeys/support.mjs launches the built app for patch journeys: a throwaway HOME and T3CODE_HOME seeded with the release launch fixture, Chromium's mock keychain, no Dock icon and no window ever shown or focused (a journey fails if one is), telemetry and auto-update off, logs and screenshots into $T3_PATCHER_EVIDENCE, tearing down Electron's process group under bounded deadlines if setup fails before the first window opens. Every other patch's journeys use it. T3's Vitest suites cap worker concurrency from BSTACK_VERIFY_WORKERS (default 1), and browser tests run in full headless Chromium in their own group order so frames draw on a locked Mac without colliding with unit runs.",
+      "version": 4
     },
     {
       "id": "patch-updates",

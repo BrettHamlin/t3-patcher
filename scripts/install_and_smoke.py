@@ -24,6 +24,9 @@ import sys
 import tempfile
 import threading
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from reap import handle_termination, run_group  # noqa: E402
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -66,7 +69,7 @@ def main(args: list[str]) -> int:
     if len(args) < 3:
         print(__doc__)
         return 2
-    installer, tools, evidence = Path(args[0]).resolve(), args[1], args[2]
+    installer, tools, evidence = Path(args[0]).resolve(), str(Path(args[1]).resolve()), str(Path(args[2]).resolve())
     signed = '--signed' in args
     update = args[args.index('--update') + 1:args.index('--update') + 4] if '--update' in args else []
     env = dict(os.environ)
@@ -94,7 +97,8 @@ def main(args: list[str]) -> int:
         return 1
     server = serve(Path(update[0]).resolve(), int(update[2])) if update else None
     try:
-        proc = subprocess.run(['node', str(ROOT / 'scripts/smoke.mjs'), str(app), tools, evidence, *update[1:2]], env=env)
+        proc = run_group(['node', str(ROOT / 'scripts/smoke.mjs'), str(app), tools, evidence, *update[1:2]],
+                         ROOT, env, stream=True)
     finally:
         if server:
             server.shutdown()
@@ -102,4 +106,8 @@ def main(args: list[str]) -> int:
 
 
 if __name__ == '__main__':
-    sys.exit(main(sys.argv[1:]))
+    handle_termination()
+    try:
+        sys.exit(main(sys.argv[1:]))
+    except KeyboardInterrupt:
+        sys.exit('\nStopped.')

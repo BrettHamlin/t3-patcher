@@ -36,7 +36,7 @@ import tempfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from build import DIST, build  # noqa: E402
-from tools import electron_dist, install, node_env  # noqa: E402
+from tools import electron_dist, handle_termination, install, node_env, run_group  # noqa: E402
 import verify  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -60,8 +60,9 @@ NOTARIZING = ('APPLE_ID', 'APPLE_APP_SPECIFIC_PASSWORD', 'APPLE_TEAM_ID')
 SKIPPED = ('skipped macOS application code signing', 'code signing will be skipped', 'signing is skipped')
 
 
-def run(cmd: list[str], env: dict, cwd: Path = ROOT) -> str:
-    proc = subprocess.run(cmd, cwd=cwd, env=env, capture_output=True, text=True)
+def run(cmd: list[str], env: dict, cwd: Path = ROOT, *, supervise: bool = True) -> str:
+    proc = (run_group(cmd, cwd, env) if supervise
+            else subprocess.run(cmd, cwd=cwd, env=env, capture_output=True, text=True))
     if proc.returncode != 0:
         sys.exit(f'`{" ".join(cmd[:3])} ...` failed:\n{(proc.stdout + proc.stderr).strip()[-4000:]}')
     return proc.stdout + proc.stderr
@@ -189,8 +190,8 @@ def journeys(env: dict, target: str, executable: Path) -> list[str]:
 def smoke(env: dict, executable: Path, evidence: str) -> str:
     folder = ROOT / '.build/evidence' / evidence
     shutil.rmtree(folder, ignore_errors=True)  # only this run's screenshots
-    proc = subprocess.run(['node', 'scripts/smoke.mjs', str(executable), str(ROOT / 'apps/desktop'), str(folder)],
-                          cwd=ROOT, env=env, capture_output=True, text=True)
+    proc = run_group(['node', 'scripts/smoke.mjs', str(executable), str(ROOT / 'apps/desktop'), str(folder)],
+                     ROOT, env)
     if proc.returncode != 0:
         sys.exit(f'{evidence}: the smoke test failed:\n{(proc.stdout + proc.stderr).strip()[-3000:]}')
     return proc.stdout.strip()
@@ -200,7 +201,7 @@ def smoke_dmg(env: dict, name: str, version: str) -> str:
     """The app as a user gets it: mounted from the .dmg, read-only."""
     image = OUT / 'out' / f'{name}-{version}-mac-arm64.dmg'
     mount = Path(tempfile.mkdtemp(prefix='dmg-'))
-    run(['hdiutil', 'attach', '-nobrowse', '-readonly', '-mountpoint', str(mount), str(image)], env)
+    run(['hdiutil', 'attach', '-nobrowse', '-readonly', '-mountpoint', str(mount), str(image)], env, supervise=False)
     try:
         return smoke(env, mount / f'{name}.app/Contents/MacOS/{name}', 'mac-arm64-dmg')
     finally:
@@ -208,6 +209,7 @@ def smoke_dmg(env: dict, name: str, version: str) -> str:
 
 
 if __name__ == '__main__':
+    handle_termination()
     args = [a for a in sys.argv[1:] if a != '--no-journeys']
     version = json.loads((ROOT / 'package.json').read_text())['version']
     if '--version' in args:
@@ -217,19 +219,22 @@ if __name__ == '__main__':
     unknown = [t for t in chosen if t not in TARGETS]
     if unknown:
         sys.exit(f'unknown target {", ".join(unknown)}; targets: {", ".join(TARGETS)}\n\n{__doc__}')
-    env = node_env()
-    install(env)
-    executables = package(env, chosen, version)
-    if '--no-journeys' not in sys.argv[1:]:
-        name = json.loads((ROOT / 'package.json').read_text())['name']
-        for target, executable in executables.items():
-            if target == 'mac-arm64':
-                errors = journeys(env, target, executable)
-                if errors:
-                    sys.exit('\n'.join(errors + [f'The {target} app failed its journeys.']))
-                print(f'{target}: every journey passed against the app. Evidence: {verify.EVIDENCE / "evidence.md"}')
-                print(f'{target} .dmg: {smoke_dmg(env, name, version)}')
-            elif target == 'mac-x64':
-                print(f'mac-x64 (Rosetta): {smoke(env, executable, "mac-x64")}')
-            else:
-                print(f'{target}: prove it on that system with scripts/install_and_smoke.py (CI does)')
+    try:
+        env = node_env()
+        install(env)
+        executables = package(env, chosen, version)
+        if '--no-journeys' not in sys.argv[1:]:
+            name = json.loads((ROOT / 'package.json').read_text())['name']
+            for target, executable in executables.items():
+                if target == 'mac-arm64':
+                    errors = journeys(env, target, executable)
+                    if errors:
+                        sys.exit('\n'.join(errors + [f'The {target} app failed its journeys.']))
+                    print(f'{target}: every journey passed against the app. Evidence: {verify.EVIDENCE / "evidence.md"}')
+                    print(f'{target} .dmg: {smoke_dmg(env, name, version)}')
+                elif target == 'mac-x64':
+                    print(f'mac-x64 (Rosetta): {smoke(env, executable, "mac-x64")}')
+                else:
+                    print(f'{target}: prove it on that system with scripts/install_and_smoke.py (CI does)')
+    except KeyboardInterrupt:
+        sys.exit('\nStopped.')

@@ -1,8 +1,80 @@
+diff --git a/apps/desktop/vite.config.ts b/apps/desktop/vite.config.ts
+index 4866dd32d08f9c244ec848d6d4751162a89ff78c..fae9dd79e7ca31f4920f26e9c80032b14bc8ae10 100644
+--- a/apps/desktop/vite.config.ts
++++ b/apps/desktop/vite.config.ts
+@@ -9,6 +9,11 @@ import { loadRepoEnv } from "../../scripts/lib/public-config.ts";
+ 
+ const repoEnv = loadRepoEnv();
+ const domTests = ["src/preview/PickPreload.test.ts"];
++const verifyWorkers = Math.max(
++  1,
++  Number.parseInt(process.env.BSTACK_VERIFY_WORKERS ?? "1", 10) || 1,
++);
++delete process.env.VITEST_MAX_WORKERS;
+ 
+ // Install only bundle externals; the server bundle already carries its dependency tree.
+ const isMainProcessExternal = (id: string) =>
+@@ -183,6 +188,8 @@ export default defineConfig({
+     },
+   ],
+   test: {
++    fileParallelism: verifyWorkers > 1,
++    maxWorkers: verifyWorkers,
+     // The Windows lane runs workspace suites concurrently; filesystem-heavy
+     // desktop integration tests can exceed Vitest's 5 second default there.
+     testTimeout: 15_000,
+diff --git a/apps/mobile/vite.config.ts b/apps/mobile/vite.config.ts
+index c3dd6195f3f038937ef51502da9d919899cc9af4..537ad0e50412f44df85096e18c6ce2bede685534 100644
+--- a/apps/mobile/vite.config.ts
++++ b/apps/mobile/vite.config.ts
+@@ -78,6 +78,11 @@ const babel: {
+ } = require("@babel/core");
+ const babelConfig = require("./babel.config.js")({ cache: () => {} });
+ const testPlatform = process.env.T3_MOBILE_TEST_PLATFORM === "android" ? "android" : "ios";
++const verifyWorkers = Math.max(
++  1,
++  Number.parseInt(process.env.BSTACK_VERIFY_WORKERS ?? "1", 10) || 1,
++);
++delete process.env.VITEST_MAX_WORKERS;
+ 
+ // gt-react-native loads react-native and its hooks need <GTProvider>; tests get GT's core set up the way gt-react's initializeGTSPA does, which renders English without a provider.
+ const gtTestModule = "\0gt-react-native";
+@@ -115,6 +120,8 @@ export default defineConfig({
+     },
+   ],
+   test: {
++    fileParallelism: verifyWorkers > 1,
++    maxWorkers: verifyWorkers,
+     hookTimeout: 60_000,
+     testTimeout: 60_000,
+     projects: [
 diff --git a/apps/web/vite.config.ts b/apps/web/vite.config.ts
-index 2a68257cbfa635f5a2e8c33e6e9988f5cc78bb11..f3dfd6e7a4ff92799553b54988461b1ddbb8ae63 100644
+index 2a68257cbfa635f5a2e8c33e6e9988f5cc78bb11..a0d38381ee14df30e053988d6f9df6c13419edc3 100644
 --- a/apps/web/vite.config.ts
 +++ b/apps/web/vite.config.ts
-@@ -140,7 +140,9 @@ const browserTestProject = {
+@@ -100,6 +100,11 @@ const unitTestProject = {
+ // Hash checkout paths to ports 20000-23999; Vitest's fixed port collides under inherited strictPort.
+ // Stay below ephemeral ranges: Windows reserves Hyper-V/WSL blocks there and EACCES is not skipped.
+ const browserTestApiPort = 20_000 + ((Hash.string(import.meta.dirname) >>> 0) % 4_000);
++const verifyWorkers = Math.max(
++  1,
++  Number.parseInt(process.env.BSTACK_VERIFY_WORKERS ?? "1", 10) || 1,
++);
++delete process.env.VITEST_MAX_WORKERS;
+ 
+ const browserTestProject = {
+   extends: true,
+@@ -133,6 +138,9 @@ const browserTestProject = {
+   test: {
+     name: "browser",
+     include: ["src/**/*.browser.test.{ts,tsx}"],
++    sequence: { groupOrder: 1 },
++    fileParallelism: verifyWorkers > 1,
++    maxWorkers: verifyWorkers,
+     hookTimeout: 15_000,
+     testTimeout: 15_000,
+     setupFiles: ["./test/browserSetup.ts"],
+@@ -140,7 +148,9 @@ const browserTestProject = {
      browser: {
        enabled: true,
        headless: true,
@@ -13,6 +85,37 @@ index 2a68257cbfa635f5a2e8c33e6e9988f5cc78bb11..f3dfd6e7a4ff92799553b54988461b1d
        instances: [{ browser: "chromium" }],
        screenshotFailures: false,
        commands: {
+@@ -447,6 +457,8 @@ export default defineConfig(({ command }) => {
+     },
+     worker: { format: "es" },
+     test: {
++      fileParallelism: verifyWorkers > 1,
++      maxWorkers: verifyWorkers,
+       projects: [
+         defineProject(unitTestProject),
+         defineProject(browserTestProject),
+diff --git a/packages/client-runtime/vite.config.ts b/packages/client-runtime/vite.config.ts
+index 18cae2d8d8c959f65dd07a577bd3b0d19a08278d..178dae402267b57cb44caaacbb1d4442001b30cc 100644
+--- a/packages/client-runtime/vite.config.ts
++++ b/packages/client-runtime/vite.config.ts
+@@ -1,9 +1,17 @@
+ import "vite-plus/test/config";
+ import { defineConfig } from "vite-plus";
+ 
++const verifyWorkers = Math.max(
++  1,
++  Number.parseInt(process.env.BSTACK_VERIFY_WORKERS ?? "1", 10) || 1,
++);
++delete process.env.VITEST_MAX_WORKERS;
++
+ export default defineConfig({
+   test: {
+     environment: "node",
++    fileParallelism: verifyWorkers > 1,
++    maxWorkers: verifyWorkers,
+     include: ["src/**/*.test.ts"],
+     setupFiles: [
+       "../shared/src/testing/longTempDir.ts",
 diff --git a/patcher/journeys/app-opens.mjs b/patcher/journeys/app-opens.mjs
 new file mode 100644
 index 0000000000000000000000000000000000000000..7258764f516719f15ac086486fb6769ddbfd5e6b
@@ -37,14 +140,15 @@ index 0000000000000000000000000000000000000000..7258764f516719f15ac086486fb6769d
 +});
 diff --git a/patcher/journeys/support.mjs b/patcher/journeys/support.mjs
 new file mode 100644
-index 0000000000000000000000000000000000000000..62e74d6ac27a15c29dcd753135bf6476ec3990e7
+index 0000000000000000000000000000000000000000..0f9136fc27fcce16c9560c2259eb6fbc6eeb6b10
 --- /dev/null
 +++ b/patcher/journeys/support.mjs
-@@ -0,0 +1,165 @@
+@@ -0,0 +1,263 @@
 +// Launches a built app for t3-patcher journeys, isolated from the installed app and the keychain.
 +// Env: T3_PATCHER_APP (built .app), T3_PATCHER_EVIDENCE (screenshots, logs), optional
 +// T3_PATCHER_TMP (parent of the throwaway home; defaults to $TMPDIR).
 +import * as NodeChildProcess from "node:child_process";
++import * as NodeCrypto from "node:crypto";
 +import * as NodeFS from "node:fs";
 +import * as NodeModule from "node:module";
 +import * as NodeOS from "node:os";
@@ -83,6 +187,53 @@ index 0000000000000000000000000000000000000000..62e74d6ac27a15c29dcd753135bf6476
 +  return NodePath.join(appPath, "Contents/MacOS", name);
 +}
 +
++function withDeadline(promise, ms, description) {
++  let timer;
++  return Promise.race([
++    promise,
++    new Promise((_, reject) => {
++      timer = setTimeout(
++        () => reject(new Error(`timed out after ${ms}ms while ${description}`)),
++        ms,
++      );
++      timer.unref();
++    }),
++  ]).finally(() => clearTimeout(timer));
++}
++
++function killTaggedDescendants(launchId) {
++  const tag = `BSTACK_LAUNCH_ID=${launchId}`;
++  if (NodeFS.existsSync("/proc")) {
++    for (const name of NodeFS.readdirSync("/proc")) {
++      if (!/^\d+$/.test(name)) continue;
++      const pid = Number.parseInt(name, 10);
++      if (pid <= 1 || pid === process.pid) continue;
++      try {
++        const entries = NodeFS.readFileSync(`/proc/${pid}/environ`, "utf8").split("\0");
++        if (entries.includes(tag)) process.kill(pid, "SIGKILL");
++      } catch {}
++    }
++  } else if (process.getuid !== undefined && NodeFS.existsSync("/bin/ps")) {
++    const res = NodeChildProcess.spawnSync(
++      "/bin/ps",
++      ["-E", "-u", String(process.getuid()), "-ww", "-o", "pid=,command="],
++      { encoding: "utf8" },
++    );
++    for (const line of (res.stdout ?? "").split("\n")) {
++      const trimmed = line.trim();
++      const space = trimmed.indexOf(" ");
++      if (space <= 0) continue;
++      const pid = Number.parseInt(trimmed.slice(0, space), 10);
++      const rest = trimmed.slice(space + 1);
++      if (pid > 1 && pid !== process.pid && new RegExp(`(?:^|\\s)${tag}(?:\\s|$)`).test(rest)) {
++        try {
++          process.kill(pid, "SIGKILL");
++        } catch {}
++      }
++    }
++  }
++}
++
 +/**
 + * Starts the app. Returns { app, page, home, t3Home, screenshot(name), close() }.
 + * `seed: true` copies the release launch fixture into the T3 home.
@@ -97,6 +248,23 @@ index 0000000000000000000000000000000000000000..62e74d6ac27a15c29dcd753135bf6476
 +  NodeFS.mkdirSync(NodePath.join(t3Home, "userdata"), { recursive: true });
 +  if (seed) NodeFS.copyFileSync(FIXTURE_DB, NodePath.join(t3Home, "userdata/statev2.sqlite"));
 +
++  const launchId = NodeCrypto.randomUUID();
++  const launchEnv = {
++    ...process.env,
++    // macOS userData, and so the single-instance lock, follows HOME only. The real HOME
++    // would share the installed app's profile and hand this launch to the running app.
++    HOME: home,
++    XDG_CONFIG_HOME: NodePath.join(home, ".config"),
++    XDG_DATA_HOME: NodePath.join(home, ".local/share"),
++    XDG_CACHE_HOME: NodePath.join(home, ".cache"),
++    T3CODE_HOME: t3Home,
++    T3CODE_TELEMETRY_ENABLED: "false",
++    T3CODE_DISABLE_AUTO_UPDATE: "true",
++    ...env,
++    BSTACK_LAUNCH_ID: launchId,
++  };
++  delete launchEnv.ELECTRON_RUN_AS_NODE;
++
 +  const cleanup = () => NodeFS.rmSync(home, { recursive: true, force: true, maxRetries: 5 });
 +  let app;
 +  try {
@@ -105,40 +273,84 @@ index 0000000000000000000000000000000000000000..62e74d6ac27a15c29dcd753135bf6476
 +      // Chromium keeps its encryption key in the keychain; a fake HOME has none (a "Keychain Not
 +      // Found" dialog) and the real one prompts an ad-hoc build. The mock keychain avoids both.
 +      args: ["--use-mock-keychain"],
-+      env: {
-+        ...process.env,
-+        // macOS userData, and so the single-instance lock, follows HOME only. The real HOME
-+        // would share the installed app's profile and hand this launch to the running app.
-+        HOME: home,
-+        XDG_CONFIG_HOME: NodePath.join(home, ".config"),
-+        XDG_DATA_HOME: NodePath.join(home, ".local/share"),
-+        XDG_CACHE_HOME: NodePath.join(home, ".cache"),
-+        T3CODE_HOME: t3Home,
-+        T3CODE_TELEMETRY_ENABLED: "false",
-+        T3CODE_DISABLE_AUTO_UPDATE: "true",
-+        ...env,
-+      },
++      env: launchEnv,
 +      timeout: STEP_TIMEOUT_MS,
 +    });
 +  } catch (error) {
++    killTaggedDescendants(launchId);
 +    cleanup();
 +    throw error;
 +  }
-+  // Keep the app out of the way of whoever is using the Mac: no Dock icon, windows never shown or focused. Playwright
-+  // holds the app's "ready" until it attaches, so this runs before any window opens. Hidden windows still paint.
-+  await app.evaluate(({ app: electronApp, BrowserWindow }) => {
-+    electronApp.dock?.hide();
-+    electronApp.focus = () => {};
-+    for (const name of ["show", "showInactive", "focus", "moveTop"])
-+      BrowserWindow.prototype[name] = () => {};
-+    electronApp.on("browser-window-created", (_event, window) => {
-+      window.webContents.setBackgroundThrottling(false);
-+      window.on("show", () => (globalThis.patcherWindowShown = true));
-+    });
-+  });
-+  const page = await app.firstWindow({ timeout: STEP_TIMEOUT_MS });
 +
-+  let closed = false;
++  // Playwright drops the process handle once the app closes, so read it immediately on launch.
++  const child = app.process();
++  let teardownPromise;
++  const teardown = () =>
++    (teardownPromise ??= (async () => {
++      try {
++        try {
++          const logs = NodePath.join(t3Home, "userdata/logs");
++          if (NodeFS.existsSync(logs)) {
++            NodeFS.cpSync(logs, NodePath.join(evidence, "logs"), { recursive: true });
++          }
++        } catch {}
++        await Promise.race([
++          app.close().catch(() => {}),
++          new Promise((resolve) => setTimeout(resolve, 10_000).unref()),
++        ]);
++        if (child && child.exitCode === null && child.signalCode === null) {
++          if (child.pid) {
++            try {
++              process.kill(-child.pid, "SIGKILL");
++            } catch {}
++          }
++          try {
++            child.kill("SIGKILL");
++          } catch {}
++        }
++        killTaggedDescendants(launchId);
++        for (const stream of child?.stdio ?? []) {
++          stream?.destroy();
++        }
++        child?.unref?.();
++        // Launching registers the build under the installed app's bundle id and URL schemes.
++        try {
++          NodeChildProcess.execFileSync(LSREGISTER, ["-u", appPath], {
++            stdio: "ignore",
++            timeout: 5_000,
++          });
++        } catch {}
++      } finally {
++        cleanup();
++      }
++    })());
++
++  let page;
++  try {
++    // Keep the app out of the way of whoever is using the Mac: no Dock icon, windows never shown or focused. Playwright
++    // holds the app's "ready" until it attaches, so this runs before any window opens. Hidden windows still paint.
++    await withDeadline(
++      app.evaluate(({ app: electronApp, BrowserWindow }) => {
++        electronApp.dock?.hide();
++        electronApp.focus = () => {};
++        for (const name of ["show", "showInactive", "focus", "moveTop"])
++          BrowserWindow.prototype[name] = () => {};
++        electronApp.on("browser-window-created", (_event, window) => {
++          window.webContents.setBackgroundThrottling(false);
++          window.on("show", () => (globalThis.patcherWindowShown = true));
++        });
++      }),
++      STEP_TIMEOUT_MS,
++      "configuring the app before the first window opens",
++    );
++    page = await app.firstWindow({ timeout: STEP_TIMEOUT_MS });
++  } catch (error) {
++    await teardown();
++    throw error;
++  }
++
++  let closePromise;
++  let checkedVisibility = false;
 +  return {
 +    app,
 +    page,
@@ -150,33 +362,22 @@ index 0000000000000000000000000000000000000000..62e74d6ac27a15c29dcd753135bf6476
 +      return file;
 +    },
 +    async close() {
-+      if (closed) return;
-+      closed = true;
-+      // Bounded, so a stuck app can't stop the teardown below; a failed probe fails the journey.
-+      const shown = await Promise.race([
-+        app.evaluate(
-+          ({ BrowserWindow }) =>
-+            globalThis.patcherWindowShown === true ||
-+            BrowserWindow.getAllWindows().some((window) => window.isVisible()),
-+        ),
-+        new Promise((resolve) => setTimeout(() => resolve("unknown"), 5_000).unref()),
-+      ]).catch(() => "unknown");
-+      const logs = NodePath.join(t3Home, "userdata/logs");
-+      if (NodeFS.existsSync(logs)) {
-+        NodeFS.cpSync(logs, NodePath.join(evidence, "logs"), { recursive: true });
-+      }
-+      // Playwright drops the process handle once the app closes, so read it first.
-+      const child = app.process();
-+      await Promise.race([
-+        app.close().catch(() => {}),
-+        new Promise((resolve) => setTimeout(resolve, 10_000).unref()),
-+      ]);
-+      child.kill("SIGKILL");
-+      // Launching registers the build under the installed app's bundle id and URL schemes.
-+      try {
-+        NodeChildProcess.execFileSync(LSREGISTER, ["-u", appPath], { stdio: "ignore" });
-+      } catch {}
-+      cleanup();
++      const firstCaller = !checkedVisibility;
++      checkedVisibility = true;
++      const shown = await (closePromise ??= (async () => {
++        // Bounded, so a stuck app can't stop the teardown below; a failed probe fails the journey.
++        const visibility = await Promise.race([
++          app.evaluate(
++            ({ BrowserWindow }) =>
++              globalThis.patcherWindowShown === true ||
++              BrowserWindow.getAllWindows().some((window) => window.isVisible()),
++          ),
++          new Promise((resolve) => setTimeout(() => resolve("unknown"), 5_000).unref()),
++        ]).catch(() => "unknown");
++        await teardown();
++        return visibility;
++      })());
++      if (!firstCaller) return;
 +      if (shown === "unknown") throw new Error("couldn't check whether a window was shown");
 +      if (shown)
 +        throw new Error("a window was shown on screen; journeys must stay in the background");
@@ -206,3 +407,28 @@ index 0000000000000000000000000000000000000000..62e74d6ac27a15c29dcd753135bf6476
 +    await session?.close();
 +  }
 +}
+diff --git a/vite.config.ts b/vite.config.ts
+index c8f6ca58b1194e2bf04783d4a36858764ad14541..74627f5e2727aca82f25fc2a1b833dfb66e353a3 100644
+--- a/vite.config.ts
++++ b/vite.config.ts
+@@ -27,6 +27,11 @@ const TEST_CONFIG_PACKAGES = [
+ // config. Packages that borrow this config (`--config ../../vite.config.ts`) run
+ // from their own directory, as CI does, so they keep one plain project.
+ const isRepoRootTestRun = process.cwd() === import.meta.dirname;
++const verifyWorkers = Math.max(
++  1,
++  Number.parseInt(process.env.BSTACK_VERIFY_WORKERS ?? "1", 10) || 1,
++);
++delete process.env.VITEST_MAX_WORKERS;
+ 
+ const RESTRICTED_IMPORT_PATHS = [
+   {
+@@ -118,6 +123,8 @@ export default defineConfig({
+   },
+   test: {
+     environment: "node",
++    fileParallelism: verifyWorkers > 1,
++    maxWorkers: verifyWorkers,
+     // Fixture subprocesses must not inherit the outer task runner’s cache policy.
+     env: { VP_REMOTE_CACHE: "off", VP_REMOTE_CACHE_URL: "" },
+     exclude: TEST_EXCLUDE,
