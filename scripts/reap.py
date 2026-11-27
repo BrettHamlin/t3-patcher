@@ -432,7 +432,7 @@ def _is_dangling_symlink(path: Path) -> bool:
         return True
 
 
-def _resolve_cache_probe(cand: Path, pseudo: set[Path]) -> tuple[Path | None, Path | None]:
+def _resolve_cache_probe(cand: Path, pseudo_cache: list[set[Path] | None]) -> tuple[Path | None, Path | None]:
     for part_path in (cand, *cand.parents):
         if _is_dangling_symlink(part_path):
             return None, None
@@ -449,7 +449,7 @@ def _resolve_cache_probe(cand: Path, pseudo: set[Path]) -> tuple[Path | None, Pa
             resolved_anc = anc.resolve()
         except (OSError, RuntimeError):
             return None, None
-        if resolved_anc == Path('/') or not resolved_anc.is_dir() or resolved_anc in pseudo:
+        if resolved_anc == Path('/') or not resolved_anc.is_dir():
             return None, None
         try:
             if hasattr(os, 'statvfs') and (os.statvfs(resolved_anc).f_flag & getattr(os, 'ST_RDONLY', 1)):
@@ -457,6 +457,10 @@ def _resolve_cache_probe(cand: Path, pseudo: set[Path]) -> tuple[Path | None, Pa
         except OSError:
             return None, None
         if not os.access(resolved_anc, os.W_OK | os.X_OK):
+            return None, None
+        if pseudo_cache[0] is None:
+            pseudo_cache[0] = _pseudo_mounts()
+        if resolved_anc in pseudo_cache[0]:
             return None, None
         return resolved_anc, target
     return None, None
@@ -527,10 +531,10 @@ def _watched_mounts(cwd: Path, env: dict) -> tuple[dict[Path, int], set[Path], s
         if raw_val := eff.get(key, '').strip():
             cache_candidates.append((f'${key}', _in_cwd(resolved_cwd, raw_val, eff_home)))
     if cache_candidates:
-        pseudo = _pseudo_mounts()
+        pseudo_cache: list[set[Path] | None] = [None]
         for label, cand in cache_candidates:
             try:
-                resolved_probe, pending_target = _resolve_cache_probe(cand, pseudo)
+                resolved_probe, pending_target = _resolve_cache_probe(cand, pseudo_cache)
                 if resolved_probe is None or not resolved_probe.exists():
                     return {}, set(), f'required {label} {cand} is not available'
                 mounts[resolved_probe] = os.stat(resolved_probe).st_dev
@@ -802,7 +806,7 @@ class _PosixSupervisor(_Supervisor):
 
     def wait_leader(self) -> None:
         """Wait until the leader process exits into a zombie WITHOUT calling waitpid, keeping its PGID anchored."""
-        while not self._leader_exited.wait(timeout=0.05):
+        while not self._leader_exited.wait(timeout=0.01):
             row = _darwin_one(self.leader_pid) if sys.platform == 'darwin' else _linux_one(self.leader_pid)
             if row is None or row.zombie:
                 self._leader_exited.set()
@@ -869,7 +873,7 @@ class _PosixSupervisor(_Supervisor):
             except (ProcessLookupError, PermissionError, OSError):
                 pass
 
-    def terminate(self) -> None:
+    def terminate(self, *, clean: bool = False) -> None:
         # Serialize anchored leader-group killpg with waitpid (`reap_leader`) so the PGID cannot be recycled mid-call.
         with self._reap_lock:
             if not self._leader_reaped and self.leader_pid > 1 and self.leader_pid != os.getpgrp():
@@ -877,6 +881,8 @@ class _PosixSupervisor(_Supervisor):
                     os.killpg(self.leader_pid, signal.SIGKILL)
                 except (ProcessLookupError, PermissionError, OSError):
                     pass
+        if clean:
+            return
         for attempt in range(2):
             table = self._record_snapshot(include_env=True)
             protected, _ = _ancestors(os.getpid(), table)
@@ -990,7 +996,10 @@ def run_group(cmd: list[str], cwd: Path, env: dict, *, stream: bool = False,
                         )
             if sup.volume_error is not None:
                 survivors = []
-            sup.terminate()
+            if isinstance(sup, _PosixSupervisor):
+                sup.terminate(clean=(check_survivors and not survivors and sup.volume_error is None))
+            else:
+                sup.terminate()
             returncode = sup.reap_leader()
             if sup.volume_error is not None:
                 returncode = 1
@@ -1025,13 +1034,16 @@ def run_group(cmd: list[str], cwd: Path, env: dict, *, stream: bool = False,
                 if isinstance(sup, _PosixSupervisor):
                     sup.stop_watching()
                 if sup is not None:
-                    sup.terminate()
                     with _ACTIVE_LOCK:
                         _ACTIVE.discard(sup)
-                    try:
-                        returncode = sup.reap_leader() if proc is not None and proc.returncode is None else returncode
-                    except OSError:
-                        pass
+                    if proc is not None and proc.returncode is None:
+                        sup.terminate()
+                        try:
+                            returncode = sup.reap_leader()
+                        except OSError:
+                            pass
+                    elif isinstance(sup, _WindowsSupervisor):
+                        sup.terminate()
                 elif proc is not None and proc.poll() is None:
                     proc.kill()
                     proc.wait()

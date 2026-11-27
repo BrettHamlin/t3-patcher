@@ -390,13 +390,42 @@ describe("commandShell", () => {
         }),
       );
 
+      const graceWatch = path.join(root, "grace-watch");
+      const movedGraceWatch = path.join(root, "moved-grace-watch");
+      yield* sh(root, "/bin/mkdir", ["-p", graceWatch]);
+      const resolvedGraceWatch = (yield* sh(graceWatch, "/bin/pwd", ["-P"])).trim();
+      const s17Failed = yield* Effect.flip(
+        shell.run(
+          workDir,
+          {
+            name: "grace window unmount",
+            run: `(/bin/sleep 0.34 && /bin/mv "${graceWatch}" "${movedGraceWatch}") &`,
+          },
+          { BSTACK_CACHE_DIR: cacheDir, BSTACK_WATCH_PATH: graceWatch },
+        ),
+      );
+      expect(s17Failed).toEqual(
+        new StepFailed({
+          reason: `[volume-lost] backing path ${resolvedGraceWatch} became unavailable (volume unmounted); terminated child process tree immediately so revoked-vnode processes cannot spin CPU.`,
+        }),
+      );
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)));
+
+  it.live("evaluates $T3_PATCHER_ENV under supervision, honors overrides and effective HOME config, and rejects dangling symlinks", () =>
+    Effect.gen(function* () {
+      const path = yield* Path.Path;
+      const root = yield* temporary;
+      const logs = path.join(root, "logs");
+      const shell = yield* shellIn(logs);
+      const workDir = path.join(root, "checkout");
+      const cacheDir = path.join(root, "cache");
+      const relEnvDir = path.join(workDir, "envdir");
       const mountContainer = path.join(root, "mount-container");
       const unmountedTarget = path.join(mountContainer, "disconnected-vol", "cache");
-      yield* sh(root, "/bin/mkdir", ["-p", mountContainer]);
+      yield* sh(root, "/bin/mkdir", ["-p", workDir, cacheDir, relEnvDir, mountContainer]);
       yield* sh(root, "/bin/chmod", ["555", mountContainer]);
       yield* Effect.addFinalizer(() => sh(root, "/bin/chmod", ["755", mountContainer]).pipe(Effect.ignore));
 
-      // Relative `input.folder = "checkout"` + inherited disconnected cache replaced or unset by `env.sh` (S6 + S14).
       const localReplacementCache = path.join(root, "local-replacement-cache");
       yield* sh(root, "/bin/mkdir", ["-p", localReplacementCache]);
       yield* sh(
@@ -433,7 +462,6 @@ describe("commandShell", () => {
       );
       expect(yield* read(path.join(logs, "relative-checkout-override.log"))).toBe(`${localReplacementCache}|unset`);
 
-      // Supervised `env.sh` probe handles `if false` & `$(...)`, reaps preflight children, rejects symlinks, watches grace window, and uses effective HOME (S9, S11, S13-S15, S17, S18).
       const condOkEnv = path.join(relEnvDir, "cond-ok.sh");
       const cmdSubBadEnv = path.join(relEnvDir, "cmdsub-bad.sh");
       yield* sh(
@@ -504,21 +532,6 @@ describe("commandShell", () => {
         ),
       );
 
-      const graceWatch = path.join(root, "grace-watch");
-      const movedGraceWatch = path.join(root, "moved-grace-watch");
-      yield* sh(root, "/bin/mkdir", ["-p", graceWatch]);
-      const resolvedGraceWatch = (yield* sh(graceWatch, "/bin/pwd", ["-P"])).trim();
-      const s17Failed = yield* Effect.flip(
-        shell.run(
-          workDir,
-          {
-            name: "grace window unmount",
-            run: `(/bin/sleep 0.34 && /bin/mv "${graceWatch}" "${movedGraceWatch}") &`,
-          },
-          { BSTACK_CACHE_DIR: cacheDir, BSTACK_WATCH_PATH: graceWatch },
-        ),
-      );
-
       const altHome = path.join(root, "alt-home");
       const altConfigDir = path.join(altHome, ".config", "b-stack");
       const altConfigFile = path.join(altConfigDir, "config.toml");
@@ -545,12 +558,43 @@ describe("commandShell", () => {
         ),
       );
 
-      const s19TimeoutEnv = path.join(relEnvDir, "timeout.sh");
+      expect([
+        Number.isInteger(preflightPid) && preflightPid > 0,
+        processState(preflightPid),
+        cmdSubFailed,
+        s13Failed,
+        s15DanglingFailed,
+        s15ContainerFailed,
+        s18Failed,
+      ]).toEqual([
+        true,
+        "esrch",
+        new StepFailed({ reason: `[volume-lost] required $PLAYWRIGHT_BROWSERS_PATH ${unmountedTarget} is not available` }),
+        new StepFailed({ reason: `[volume-lost] required $PLAYWRIGHT_BROWSERS_PATH ${unmountedTarget} is not available` }),
+        new StepFailed({ reason: `[volume-lost] required $PLAYWRIGHT_BROWSERS_PATH ${danglingLink} is not available` }),
+        new StepFailed({
+          reason: `[volume-lost] required $PLAYWRIGHT_BROWSERS_PATH ${path.join(containerLink, "disconnected-vol", "cache")} is not available`,
+        }),
+        new StepFailed({ reason: `[volume-lost] required cache_dir (${altConfigFile}) ${unmountedTarget} is not available` }),
+      ]);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)));
+
+  it.live("stops launch with [volume-lost] when $T3_PATCHER_ENV evaluation times out", () =>
+    Effect.gen(function* () {
+      const path = yield* Path.Path;
+      const root = yield* temporary;
+      const logs = path.join(root, "logs");
+      const shell = yield* shellIn(logs);
+      const workDir = path.join(root, "checkout");
+      const cacheDir = path.join(root, "cache");
+      const envDir = path.join(workDir, "envdir");
+      const s19TimeoutEnv = path.join(envDir, "timeout.sh");
       const s19NeverRan = path.join(root, "s19-never-ran.txt");
+      yield* sh(root, "/bin/mkdir", ["-p", workDir, cacheDir, envDir]);
       yield* sh(
         root,
         "/bin/sh",
-        ["-c", `printf 'export BSTACK_CACHE_DIR="$(/bin/sleep 2.3 && printf %%s "${unmountedTarget}")"\\n' > "${s19TimeoutEnv}"`],
+        ["-c", `printf 'export BSTACK_CACHE_DIR="$(/bin/sleep 2.3 && printf /nonexistent)"\\n' > "${s19TimeoutEnv}"`],
       );
       const s19Failed = yield* Effect.flip(
         shell.run(
@@ -559,32 +603,8 @@ describe("commandShell", () => {
           { BSTACK_CACHE_DIR: cacheDir, T3_PATCHER_ENV: s19TimeoutEnv },
         ),
       );
-
-      expect([
-        Number.isInteger(preflightPid) && preflightPid > 0,
-        processState(preflightPid),
-        yield* exists(s19NeverRan),
-        cmdSubFailed,
-        s13Failed,
-        s15DanglingFailed,
-        s15ContainerFailed,
-        s17Failed,
-        s18Failed,
-        s19Failed,
-      ]).toEqual([
-        true,
-        "esrch",
+      expect([yield* exists(s19NeverRan), s19Failed]).toEqual([
         false,
-        new StepFailed({ reason: `[volume-lost] required $PLAYWRIGHT_BROWSERS_PATH ${unmountedTarget} is not available` }),
-        new StepFailed({ reason: `[volume-lost] required $PLAYWRIGHT_BROWSERS_PATH ${unmountedTarget} is not available` }),
-        new StepFailed({ reason: `[volume-lost] required $PLAYWRIGHT_BROWSERS_PATH ${danglingLink} is not available` }),
-        new StepFailed({
-          reason: `[volume-lost] required $PLAYWRIGHT_BROWSERS_PATH ${path.join(containerLink, "disconnected-vol", "cache")} is not available`,
-        }),
-        new StepFailed({
-          reason: `[volume-lost] backing path ${resolvedGraceWatch} became unavailable (volume unmounted); terminated child process tree immediately so revoked-vnode processes cannot spin CPU.`,
-        }),
-        new StepFailed({ reason: `[volume-lost] required cache_dir (${altConfigFile}) ${unmountedTarget} is not available` }),
         new StepFailed({ reason: `[volume-lost] evaluating $T3_PATCHER_ENV ${s19TimeoutEnv} timed out` }),
       ]);
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)));
