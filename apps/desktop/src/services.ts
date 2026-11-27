@@ -50,6 +50,7 @@ import {
 } from "@app/stack";
 import { commandResolver, commandShell, gitPublishedPatches, gitSource, macInstallation } from "@app/system";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as Config from "effect/Config";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
@@ -63,6 +64,8 @@ import * as ChildProcess from "effect/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
+
+import { defaultVerifyWorkers, parseVerifyWorkers } from "./text.ts";
 
 export class Busy extends Schema.TaggedError<Busy>()("Busy", { pid: Schema.Number }) {
   override get message(): string {
@@ -164,16 +167,58 @@ export const stackServices = (userdata: string, settings: Settings): Layer.Layer
 
 export type Services = Library | StackStore | PatchWriter | Source | Shell | Resolver | Installation | PublishedPatches;
 
+const hostVerifyWorkers = Effect.gen(function* () {
+  const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+  const probe = yield* Effect.scoped(
+    Effect.gen(function* () {
+      const handle = yield* spawner.spawn(
+        ChildProcess.make("sysctl", ["-n", "hw.logicalcpu", "hw.memsize"], { stdin: "ignore" }),
+      );
+      const [out, code] = yield* Effect.all(
+        [Stream.mkString(Stream.decodeText(handle.stdout)), handle.exitCode],
+        { concurrency: "unbounded" },
+      );
+      return code === 0 ? out : "";
+    }),
+  ).pipe(Effect.orElseSucceed(() => ""));
+  const [coresRaw = "", memRaw = ""] = probe.trim().split(/\s+/);
+  const cores = Number.parseInt(coresRaw, 10);
+  const memoryBytes = Number.parseInt(memRaw, 10);
+  return Number.isFinite(cores) && Number.isFinite(memoryBytes) ? defaultVerifyWorkers(cores, memoryBytes) : 1;
+});
+
+/** Reads `verify_workers` from `<home>/.config/b-stack/config.toml`, else this machine's default; undefined when invalid. */
+export const resolvedVerifyWorkers = Effect.fn("resolvedVerifyWorkers")(function* (home: string) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const fallback = yield* hostVerifyWorkers;
+  const file = path.join(home, ".config/b-stack/config.toml");
+  const text = (yield* fs.exists(file).pipe(Effect.orElseSucceed(() => false)))
+    ? yield* fs.readFileString(file).pipe(Effect.orElseSucceed(() => ""))
+    : "";
+  return parseVerifyWorkers(text, fallback);
+});
+
 /** Every real service for `settings`: the patches and stack, git, commands and the installed app. */
 export const servicesFor = (userdata: string, settings: Settings): Layer.Layer<Services> =>
   Layer.unwrap(
     Effect.gen(function* () {
       const path = yield* Path.Path;
       const logs = path.join(settings.work, "logs");
+      const home = Option.getOrElse(
+        yield* Config.option(Config.String("HOME")).pipe(Effect.orElseSucceed(() => Option.none<string>())),
+        () => "",
+      );
+      const verifyWorkers =
+        (home === "" ? undefined : yield* resolvedVerifyWorkers(home)) ?? (yield* hostVerifyWorkers);
+      const shellDefaults = {
+        BSTACK_VERIFY_WORKERS: String(verifyWorkers),
+        npm_config_prefer_offline: "true",
+      };
       return Layer.mergeAll(
         filePatchWriter(settings.patches),
         gitSource({ work: settings.work, repository: settings.target.repository }),
-        commandShell(logs),
+        commandShell(logs, shellDefaults),
         commandResolver({ command: settings.resolver, logs }),
         macInstallation({ installed: settings.target.installed, backups: path.join(settings.work, "backups") }),
         gitPublishedPatches({ source: settings.patches, clone: path.join(settings.work, "published") }),

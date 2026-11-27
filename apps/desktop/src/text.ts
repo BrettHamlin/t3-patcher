@@ -224,8 +224,14 @@ const parseTomlPositiveInt = (raw: string): number | undefined => {
   return parsed >= 1n && parsed <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(parsed) : undefined;
 };
 
-/** Reads top-level `verify_workers` from `~/.config/b-stack/config.toml` text: defaults to 1, undefined when invalid. */
-export const parseVerifyWorkers = (configToml: string): number | undefined => {
+const GIB = 1024 ** 3;
+
+/** Default verify workers for a machine: one per two cores and per 4 GiB of memory, from 1 to 4. */
+export const defaultVerifyWorkers = (cores: number, memoryBytes: number): number =>
+  Math.max(1, Math.min(4, Math.floor(cores / 2), Math.floor(memoryBytes / (4 * GIB))));
+
+/** Reads top-level `verify_workers` from `~/.config/b-stack/config.toml` text: defaults to `fallback`, undefined when invalid. */
+export const parseVerifyWorkers = (configToml: string, fallback = 1): number | undefined => {
   let i = configToml.startsWith("\uFEFF") ? 1 : 0;
   const n = configToml.length;
   let seenTarget = false;
@@ -333,7 +339,7 @@ export const parseVerifyWorkers = (configToml: string): number | undefined => {
     }
     if (i < n && configToml[i] !== "\r" && configToml[i] !== "\n") return undefined;
   }
-  return seenTarget ? result : 1;
+  return seenTarget ? result : fallback;
 };
 
 const UNSET_LINE = "unset pnpm_config_virtual_store_dir npm_config_virtual_store_dir";

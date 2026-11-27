@@ -1,24 +1,24 @@
 {
   "id": "patch-updates",
   "title": "Patch updates",
-  "summary": "On a build made by T3 Patcher (with <T3 home>/userdata/patcher/installed.json), the sidebar's update pill offers newer versions of installed patches, brand-new published patches (enabled by default unless turned off in stack.json), and new T3 Code versions; Update runs the patcher's update command (rebuild with every enabled patch, check, install, relaunch) instead of electron-updater, showing its steps live. T3CODE_PATCH_UPDATE_FEED overrides the feed.",
-  "version": 2,
+  "summary": "On a build made by T3 Patcher (with <T3 home>/userdata/patcher/installed.json), the sidebar's update pill offers newer versions of installed patches, brand-new published patches (enabled by default unless turned off in stack.json), and new T3 Code versions; Update runs the patcher's update command (rebuild with every enabled patch, check, install, relaunch) instead of electron-updater, showing its steps live. T3CODE_PATCH_UPDATE_FEED overrides the feed and T3CODE_UPDATE_STARTUP_DELAY_MS overrides the startup poll delay in tests and journeys.",
+  "version": 3,
   "base": {
-    "version": "0.1.12",
-    "commit": "ca81b7b97a1c4b91e5ac25768d0f6629f37732fd"
+    "version": "0.1.13",
+    "commit": "bc0f04da94f64b5e487c598761a43b4cf06b2ac9"
   },
   "checks": [
     {
       "name": "desktop update tests",
-      "run": ". \"$T3_PATCHER_ENV\" && cd apps/desktop && vp test run src/updates/DesktopPatchUpdates.test.ts src/updates/DesktopUpdates.patched.test.ts src/updates/DesktopUpdates.test.ts src/updates/DesktopRemoteUpdates.test.ts src/app/DesktopApp.test.ts"
+      "run": ". \"$T3_PATCHER_ENV\" && node patcher/check.mjs vitest apps/desktop/src/updates/DesktopPatchUpdates.test.ts apps/desktop/src/updates/DesktopUpdates.patched.test.ts apps/desktop/src/updates/DesktopUpdates.test.ts apps/desktop/src/updates/DesktopRemoteUpdates.test.ts apps/desktop/src/app/DesktopApp.test.ts"
     },
     {
       "name": "web update tests",
-      "run": ". \"$T3_PATCHER_ENV\" && export PLAYWRIGHT_BROWSERS_PATH=\"${PLAYWRIGHT_BROWSERS_PATH:-$BE/ms-playwright}\" && cd apps/web && pnpm exec playwright install chromium-headless-shell && vp test run --project unit src/state/desktopPatchUpdate.test.ts src/components/sidebar/patchUpdate.logic.test.ts && vp test run --project browser src/components/sidebar/SidebarPatchUpdatePill.browser.test.tsx src/components/sidebar/SidebarUpdatePill.browser.test.tsx"
+      "run": ". \"$T3_PATCHER_ENV\" && node patcher/check.mjs vitest apps/web/src/state/desktopPatchUpdate.test.ts apps/web/src/components/sidebar/patchUpdate.logic.test.ts apps/web/src/components/sidebar/SidebarPatchUpdatePill.browser.test.tsx apps/web/src/components/sidebar/SidebarUpdatePill.browser.test.tsx"
     },
     {
       "name": "translations",
-      "run": ". \"$T3_PATCHER_ENV\" && pnpm run i18n:check"
+      "run": ". \"$T3_PATCHER_ENV\" && node patcher/check.mjs i18n"
     }
   ],
   "journeys": [

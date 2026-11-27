@@ -2,27 +2,27 @@
   "id": "picks",
   "title": "Picks",
   "summary": "Agents ask the owner for blind RLHF, reference-selection, and pairwise/multi-way media judgments in T3 Code itself. A new MCP tool, request_picks, takes a batch of 1-200 questions, each with 2-4 image or video options (absolute paths, checked and copied into the attachments store under a bounded per-file timeout) and an optional exact display box; it returns pending at once, while refusing delegated child threads so the parent thread asks instead. The server shuffles each question's options, and the Picks inbox (a sidebar item with the open count, and a /picks page across connected environments whose cards open a batch and show its first prompt, progress bar, CTA and Not sent once every answer is in) shows them by place only, one question at a time, with the thread sidebar hidden. Inside a calibrated #181b20 neutral darkroom viewport, options sit on unified #2a2e36 stages over #21252c plinths as pure radio choices, shrink-wrapped to natural media size within stated caps (480, 320 or 240 px for 2, 3 or 4 options, never upscaled) or framed unclipped inside a stepped neutral mat at the agent's exact box, in one row, 2x2, or single-plate blink mode (automatically when options exceed side-by-side space, or on demand via B and the header Side by side / Blink switcher), plus a synchronized multi-candidate detail loupe (Z, 2.5x or 4x pixelated) tracking normalized cursor coordinates across every option simultaneously; a question takes picks once all its media has loaded. Videos have no controls, start together and are driven by a unified dark-surface studio transport bar and Space, S (half speed), R (replay) and comma or period (one frame). Each question offers radio buttons for its options (1-4) plus Can't tell (0) when allowed, without auto-advancing or auto-submitting on selection, and a single Send picks submit button (Cmd/Ctrl+Enter) enabled once all questions are answered; B toggles side-by-side vs blink; F/Shift+F cycles blink options; Z toggles the detail loupe; N opens a rationale note on the question on screen; Shift+N opens the note of the last one answered; U jumps to the next blank; ? opens the keyboard shortcuts popover; arrows and a high-contrast progress strip move between questions. Each answer is saved as it is made; Send picks records the batch answered and wakes the asking thread with one message listing every answer unblinded, plus the same as JSON, and the thread's card lists what was sent. Batches are a pick_request turn item on the asking thread, held open across automatic settlement and closed without a wake when the thread is explicitly stopped, settled, archived or deleted. Server entrypoints default UV_THREADPOOL_SIZE to 16 so slow or blocked external-volume reads cannot starve the libuv worker pool, and the open-batch partial index is created idempotently at startup rather than as a numbered migration.",
-  "version": 4,
+  "version": 5,
   "base": {
-    "version": "0.1.12",
-    "commit": "ca81b7b97a1c4b91e5ac25768d0f6629f37732fd"
+    "version": "0.1.13",
+    "commit": "bc0f04da94f64b5e487c598761a43b4cf06b2ac9"
   },
   "checks": [
     {
       "name": "server picks tests",
-      "run": ". \"$T3_PATCHER_ENV\" && cd apps/server && pnpm exec vp test run src/picks/PickRequests.test.ts src/picks/pickWake.test.ts src/orchestration-v2/ProviderRuntimeRecoveryService.test.ts src/provider/AgentContextBudget.test.ts"
+      "run": ". \"$T3_PATCHER_ENV\" && node patcher/check.mjs vitest apps/server/src/picks/PickRequests.test.ts apps/server/src/picks/pickWake.test.ts apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.test.ts apps/server/src/provider/AgentContextBudget.test.ts"
     },
     {
       "name": "client picks logic and permissions",
-      "run": ". \"$T3_PATCHER_ENV\" && cd packages/client-runtime && pnpm exec vp test run src/picks.test.ts src/state/commandPermissions.test.ts"
+      "run": ". \"$T3_PATCHER_ENV\" && node patcher/check.mjs vitest packages/client-runtime/src/picks.test.ts packages/client-runtime/src/state/commandPermissions.test.ts"
     },
     {
       "name": "picker layout, keys, video and Send picks",
-      "run": ". \"$T3_PATCHER_ENV\" && cd apps/web && pnpm exec vp test run src/components/picks/PickerView.browser.test.tsx"
+      "run": ". \"$T3_PATCHER_ENV\" && node patcher/check.mjs vitest apps/web/src/components/picks/PickerView.browser.test.tsx"
     },
     {
       "name": "translations",
-      "run": ". \"$T3_PATCHER_ENV\" && node scripts/i18n-check.ts"
+      "run": ". \"$T3_PATCHER_ENV\" && node patcher/check.mjs i18n"
     }
   ],
   "journeys": [

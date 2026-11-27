@@ -2,23 +2,23 @@
   "id": "work-timestamps",
   "title": "Work timestamps",
   "summary": "Each finished turn's fold row in the thread timeline names when the work ended, next to how long it took: \"Worked for 3m 30s · 9:42 PM EST\", \"You stopped after 12s · 9:42 PM EST\", and \"Continued for …\" on the rows below a steer. The time is the instant the duration is measured to, in the system's locale (12- or 24-hour) and time zone, without seconds, with the month and day added when the turn ended before today; the label gains its date at local midnight. Rows still working, and rows without a duration, show no time. The label strings take the time as a placeholder, translated in every web catalog.",
-  "version": 2,
+  "version": 3,
   "base": {
-    "version": "0.1.12",
-    "commit": "ca81b7b97a1c4b91e5ac25768d0f6629f37732fd"
+    "version": "0.1.13",
+    "commit": "bc0f04da94f64b5e487c598761a43b4cf06b2ac9"
   },
   "checks": [
     {
       "name": "fold label logic",
-      "run": ". \"$T3_PATCHER_ENV\" && cd apps/web && pnpm exec vp test run --project unit src/components/chat/MessagesTimeline.logic.test.ts"
+      "run": ". \"$T3_PATCHER_ENV\" && node patcher/check.mjs vitest apps/web/src/components/chat/MessagesTimeline.logic.test.ts"
     },
     {
       "name": "fold row and midnight rollover",
-      "run": ". \"$T3_PATCHER_ENV\" && export PLAYWRIGHT_BROWSERS_PATH=\"${PLAYWRIGHT_BROWSERS_PATH:-$BE/ms-playwright}\" && cd apps/web && pnpm exec playwright install chromium && pnpm exec vp test run --project browser src/components/chat/MessagesTimeline.browser.test.tsx"
+      "run": ". \"$T3_PATCHER_ENV\" && node patcher/check.mjs vitest apps/web/src/components/chat/MessagesTimeline.browser.test.tsx"
     },
     {
       "name": "translations",
-      "run": ". \"$T3_PATCHER_ENV\" && node scripts/i18n-check.ts"
+      "run": ". \"$T3_PATCHER_ENV\" && node patcher/check.mjs i18n"
     }
   ],
   "journeys": [
