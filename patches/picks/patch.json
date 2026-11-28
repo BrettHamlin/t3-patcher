@@ -18,7 +18,7 @@
     },
     {
       "name": "picker layout, keys, video and Send picks",
-      "run": ". \"$T3_PATCHER_ENV\" && node patcher/check.mjs vitest apps/web/src/components/picks/PickerView.browser.test.tsx"
+      "run": ". \"$T3_PATCHER_ENV\" && node patcher/check.mjs vitest apps/web/src/components/picks/PickerView.browser.test.tsx apps/web/src/components/picks/PickerView.inspector.browser.test.tsx"
     },
     {
       "name": "translations",

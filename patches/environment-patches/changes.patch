@@ -321,10 +321,10 @@ index 9e10380295de25ab421ecd69fe7eb93e0a348c24..5aba73d1db0e10d83d7c5af8b53bbc23
    }),
  })
 diff --git a/apps/server/vite.config.ts b/apps/server/vite.config.ts
-index 292aec0568a2124be04684e2cc2f101da7d416c6..3c7563bd4520a1a31844069739cf951c59e74700 100644
+index 2fd852304dec5925f046630f422e46157d56126c..e5960362fbd9199c2de7c0accfd4e6eac7fe9888 100644
 --- a/apps/server/vite.config.ts
 +++ b/apps/server/vite.config.ts
-@@ -172,6 +172,7 @@ export default mergeConfig(
+@@ -177,6 +177,7 @@ export default mergeConfig(
          __T3CODE_BUILD_RELAY_CLIENT_OTLP_TRACES_TOKEN__: JSON.stringify(
            repoEnv.T3CODE_RELAY_CLIENT_OTLP_TRACES_TOKEN?.trim() ?? "",
          ),
@@ -1467,21 +1467,28 @@ index b07eeb04f5bb7ccbc2231a08bfe69bd6c7da80d4..beaf66c555d35e1d857ab51c1d8eebe4
  export type ExecutionEnvironmentDescriptor = typeof ExecutionEnvironmentDescriptor.Type;
 diff --git a/patcher/journeys/environment-patches.mjs b/patcher/journeys/environment-patches.mjs
 new file mode 100644
-index 0000000000000000000000000000000000000000..133f8f85a933ff27a4c65502219896afefcad062
+index 0000000000000000000000000000000000000000..f693884b902864a6075f73be4143c562d62859d4
 --- /dev/null
 +++ b/patcher/journeys/environment-patches.mjs
-@@ -0,0 +1,289 @@
+@@ -0,0 +1,287 @@
 +// Journey: Settings → Environments shows each environment's version (even when matching the client)
 +// and installed patches with their version and included features in both Map view and List view,
 +// preserving disclosure state across Map ↔ List switches.
 +//   T3_PATCHER_APP=<built .app> T3_PATCHER_EVIDENCE=<dir> node patcher/journeys/environment-patches.mjs
 +import * as NodeChildProcess from "node:child_process";
 +import * as NodeFS from "node:fs";
-+import * as NodeNet from "node:net";
 +import * as NodeOS from "node:os";
 +import * as NodePath from "node:path";
 +
-+import { FIXTURE_DB, STEP_TIMEOUT_MS, evidenceDir, journey, serverBinPath } from "./support.mjs";
++import {
++  FIXTURE_DB,
++  STEP_TIMEOUT_MS,
++  evidenceDir,
++  freePort,
++  journey,
++  journeyCliEnv,
++  serverBinPath,
++} from "./support.mjs";
 +
 +const repoRoot = NodePath.resolve(import.meta.dirname, "../..");
 +
@@ -1499,18 +1506,6 @@ index 0000000000000000000000000000000000000000..133f8f85a933ff27a4c65502219896af
 +).version;
 +const LOCAL_PATCH_COUNT = JSON.parse(process.env.T3_PATCHER_PATCHES || "[]").length;
 +const LOCAL_PATCHES_LABEL = LOCAL_PATCH_COUNT === 1 ? "1 patch" : `${LOCAL_PATCH_COUNT} patches`;
-+
-+function freePort() {
-+  return new Promise((resolve, reject) => {
-+    const srv = NodeNet.createServer();
-+    srv.on("error", reject);
-+    srv.listen(0, "127.0.0.1", () => {
-+      const address = srv.address();
-+      const port = typeof address === "object" && address !== null ? address.port : 0;
-+      srv.close((err) => (err ? reject(err) : resolve(port)));
-+    });
-+  });
-+}
 +
 +async function settled(page) {
 +  await page.evaluate(() =>
@@ -1600,22 +1595,24 @@ index 0000000000000000000000000000000000000000..133f8f85a933ff27a4c65502219896af
 +}
 +
 +try {
-+  await waitForRemoteRuntime();
-+  const pairOutput = NodeChildProcess.execFileSync(
-+    process.execPath,
-+    [serverBinPath(), "pair", "--base-dir", remoteHome],
-+    {
-+      cwd: repoRoot,
-+      env: { ...process.env, T3CODE_HOME: remoteHome },
-+      encoding: "utf8",
-+      timeout: STEP_TIMEOUT_MS,
-+    },
-+  );
-+  const urlMatch = /http:\/\/127\.0\.0\.1:\d+\/[^\s]+/.exec(pairOutput);
-+  if (!urlMatch) {
-+    throw new Error(`could not find pairing URL in pair output:\n${pairOutput}`);
-+  }
-+  const pairingUrl = urlMatch[0];
++  const pairingUrlPromise = waitForRemoteRuntime().then(() => {
++    const pairOutput = NodeChildProcess.execFileSync(
++      process.execPath,
++      [serverBinPath(), "pair", "--base-dir", remoteHome],
++      {
++        cwd: repoRoot,
++        env: journeyCliEnv({ T3CODE_HOME: remoteHome }),
++        encoding: "utf8",
++        timeout: STEP_TIMEOUT_MS,
++      },
++    );
++    const urlMatch = /http:\/\/127\.0\.0\.1:\d+\/[^\s]+/.exec(pairOutput);
++    if (!urlMatch) {
++      throw new Error(`could not find pairing URL in pair output:\n${pairOutput}`);
++    }
++    return urlMatch[0];
++  });
++  pairingUrlPromise.catch(() => {});
 +
 +  await journey(
 +    "environment-patches",
@@ -1631,6 +1628,7 @@ index 0000000000000000000000000000000000000000..133f8f85a933ff27a4c65502219896af
 +      await environmentsNav.click();
 +
 +      step("pairing the remote environment through Add environment");
++      const pairingUrl = await pairingUrlPromise;
 +      await page.getByRole("button", { name: "Add environment" }).first().click();
 +      const addDialog = page.getByRole("dialog", { name: "Add Environment" });
 +      const hostInput = addDialog.getByPlaceholder("backend.example.com");

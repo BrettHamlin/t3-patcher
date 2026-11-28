@@ -3506,213 +3506,47 @@ index 0000000000000000000000000000000000000000..04b5133dc673ae104f0c225f4adf252a
 +}
 diff --git a/apps/web/src/components/picks/PickerView.browser.test.tsx b/apps/web/src/components/picks/PickerView.browser.test.tsx
 new file mode 100644
-index 0000000000000000000000000000000000000000..c44a95910732a0e51d221771f19838092110de1d
+index 0000000000000000000000000000000000000000..eb61d9f3c652bdc976530a97cc99afa437a9bae2
 --- /dev/null
 +++ b/apps/web/src/components/picks/PickerView.browser.test.tsx
-@@ -0,0 +1,3432 @@
+@@ -0,0 +1,1570 @@
 +import { makePickSaveQueue } from "@t3tools/client-runtime/picks";
-+import {
-+  EnvironmentId,
-+  PICK_TIE,
-+  type PicksBatchView,
-+  ThreadId,
-+  TurnItemId,
-+} from "@t3tools/contracts";
++import { type PicksBatchView } from "@t3tools/contracts";
 +import * as DateTime from "effect/DateTime";
 +import { useState } from "react";
 +import { expect, it, vi } from "vite-plus/test";
 +import { page, userEvent } from "vite-plus/test/browser";
 +
-+import "~/index.css";
-+import { updateClientSettings } from "~/hooks/useSettings";
 +import { useStableCallback } from "~/hooks/useStableCallback";
-+import { I18nProvider } from "~/i18n/I18nProvider";
-+import { startI18n, whenLocaleReady } from "~/i18n/runtime";
-+import { isMacPlatform } from "~/lib/utils";
 +import { render, type Screen } from "../../../test/render";
-+import clipA from "../../../test/fixtures/picks/clip-a.webm?url";
-+import clipB from "../../../test/fixtures/picks/clip-b.webm?url";
 +import { PickAnswersList } from "../chat/PickRequestCard";
 +import { Sidebar, SidebarProvider, SidebarTrigger } from "../ui/sidebar";
 +import { PickBatchGate } from "./PickBatchGate";
-+import { PickMediaElement, type PickMediaReady } from "./PickMedia";
++import { type PickMediaReady } from "./PickMedia";
 +import { PicksBatchFrame } from "./PicksBatchFrame";
 +import { PicksListRow } from "./PicksPage";
-+import { PickerView, type PickMediaProps, type PickOptionView } from "./PickerView";
-+
-+const environmentId = EnvironmentId.make("environment:picks");
-+
-+const image = (attachmentId: string): PickOptionView => ({
-+  attachmentId,
-+  mediaKind: "image",
-+  mimeType: "image/png",
-+});
-+
-+const video = (attachmentId: string): PickOptionView => ({
-+  attachmentId,
-+  mediaKind: "video",
-+  mimeType: "video/webm",
-+});
-+
-+const view: PicksBatchView = {
-+  threadId: ThreadId.make("thread:picks"),
-+  batchId: TurnItemId.make("turn-item:pick-request:picks"),
-+  title: "Real person, round 3",
-+  threadTitle: "Art eval",
-+  allowTie: true,
-+  status: "pending",
-+  questions: [
-+    { prompt: "Which face?", options: [image("a1"), image("a2")] },
-+    { prompt: "Which walk?", options: [image("b1"), image("b2"), image("b3")] },
-+    {
-+      prompt: "Which sprite?",
-+      display: { width: 64, height: 48, pixelated: true },
-+      options: [image("c1"), image("c2")],
-+    },
-+  ],
-+};
-+
-+/** Stands in for the page's media: ready at once, as a 64×48 picture. */
-+function StubMedia({ option, pixelated, onReady }: PickMediaProps) {
-+  const report = useStableCallback((node: HTMLDivElement | null) => {
-+    if (node !== null) onReady({ _tag: "Loaded", width: 64, height: 48, video: null });
-+  });
-+  return (
-+    <div ref={report} data-testid={`media-${option.attachmentId}`} data-pixelated={pixelated}>
-+      {option.attachmentId}
-+    </div>
-+  );
-+}
-+
-+/** A PNG of `width` × `height` px, drawn here so no file is needed. */
-+function png(width: number, height: number = width): string {
-+  const canvas = document.createElement("canvas");
-+  canvas.width = width;
-+  canvas.height = height;
-+  const context = canvas.getContext("2d");
-+  if (context !== null) {
-+    context.fillStyle = "#c0ffee";
-+    context.fillRect(0, 0, width, height);
-+  }
-+  return canvas.toDataURL("image/png");
-+}
-+
-+const MEDIA_URLS: Record<string, string> = {
-+  small: png(96),
-+  small2: png(96),
-+  large: png(1024),
-+  large2: png(1024),
-+  large3: png(1024),
-+  large4: png(1024),
-+  half1: png(1024, 512),
-+  half2: png(1024, 512),
-+  wide: png(320, 160),
-+  tall: png(160, 320),
-+  v1: clipA,
-+  v2: clipB,
-+  w1: clipA,
-+  w2: clipB,
-+};
-+
-+/** The real media element, with test files for the attachments. */
-+function RealMedia({ option, label, fit, pixelated, longSide, onReady }: PickMediaProps) {
-+  return (
-+    <PickMediaElement
-+      url={MEDIA_URLS[option.attachmentId] ?? png(64)}
-+      kind={option.mediaKind}
-+      label={label}
-+      fit={fit}
-+      pixelated={pixelated}
-+      longSide={longSide}
-+      onReady={onReady}
-+    />
-+  );
-+}
-+
-+const pickerProps = (overrides: Partial<Parameters<typeof PickerView>[0]> = {}) => ({
++import { PickerView, type PickMediaProps } from "./PickerView";
++import {
++  answered,
++  clips,
++  counter,
 +  environmentId,
++  heldSaves,
++  image,
++  pickAndMove,
++  pickerProps,
++  press,
++  RealMedia,
++  rect,
++  renderPicker,
++  sendChord,
++  stageReady,
++  status,
++  tab,
++  video,
++  twoHundred,
 +  view,
-+  saveQueue: makePickSaveQueue(),
-+  canAnswer: true,
-+  onAnswer: async () => null,
-+  onComplete: async () => null,
-+  Media: StubMedia,
-+  ...overrides,
-+});
-+
-+/** The question on screen can take picks: its stages show once all its media is ready. */
-+const stageReady = (screen: Screen) =>
-+  expect.element(screen.getByTestId("picker-stage-1")).toBeVisible();
-+
-+/**
-+ * The picker as the page lays it out, a full-height column at the spec's window size, once its
-+ * first question can take picks (unless `ready` is false).
-+ */
-+async function renderPicker(
-+  overrides: Partial<Parameters<typeof PickerView>[0]> = {},
-+  { ready = true }: { readonly ready?: boolean } = {},
-+): Promise<Screen> {
-+  await page.viewport(1100, 780);
-+  await using stack = new AsyncDisposableStack();
-+  const screen = stack.use(
-+    await render(
-+      <div className="flex h-dvh flex-col">
-+        <PickerView {...pickerProps(overrides)} />
-+      </div>,
-+    ),
-+  );
-+  if (ready) await stageReady(screen);
-+  const owned = stack.move();
-+  return { ...screen, [Symbol.asyncDispose]: () => owned.disposeAsync() };
-+}
-+
-+/** The view as the server would send it with these answers, by question. */
-+const answered = (
-+  ...answers: ReadonlyArray<PicksBatchView["questions"][number]["answer"]>
-+): PicksBatchView => ({
-+  ...view,
-+  questions: view.questions.map((question, index) => {
-+    const answer = answers[index];
-+    return answer === undefined ? question : { ...question, answer };
-+  }),
-+});
-+
-+/** An onAnswer whose saves finish only when the test says, in order. */
-+function heldSaves() {
-+  const releases: Array<(failure: string | null) => void> = [];
-+  const onAnswer = vi.fn(() => new Promise<string | null>((resolve) => releases.push(resolve)));
-+  return {
-+    onAnswer,
-+    release: (index: number, failure: string | null = null) => releases[index]?.(failure),
-+  };
-+}
-+
-+const counter = (screen: Screen) => screen.getByTestId("picker-progress-question");
-+const status = (screen: Screen) => screen.getByTestId("picker-status");
-+const rect = (screen: Screen, testId: string) => {
-+  const box = screen.getByTestId(testId).element().getBoundingClientRect();
-+  return { left: box.left, top: box.top, width: box.width, height: box.height };
-+};
-+const tab = (screen: Screen, number: number) =>
-+  screen.getByTestId(`picker-flip-tab-${number}`).element();
-+const sendChord = () =>
-+  isMacPlatform(navigator.platform) ? "{Meta>}{Enter}{/Meta}" : "{Control>}{Enter}{/Control}";
-+
-+/** Waits for question `number` of `total` to show and take picks. */
-+async function shows(screen: Screen, number: number, total = view.questions.length) {
-+  await expect.element(counter(screen)).toHaveTextContent(`Question ${number} of ${total}`);
-+  await stageReady(screen);
-+}
-+
-+/** Presses keys, then waits for question `number` to show and take picks. */
-+async function press(screen: Screen, keys: string, number: number, total?: number) {
-+  await userEvent.keyboard(keys);
-+  await shows(screen, number, total);
-+}
-+
-+/** Selects a radio choice and steps forward to `next` (1-based). */
-+const pickAndMove = (screen: Screen, key: string, next: number) =>
-+  press(screen, `${key}{ArrowRight}`, next);
++} from "./testing/pickerViewHarness";
 +
 +// 1
 +it("opening a batch hides the sidebar without changing its stored value; leaving restores it", async () => {
@@ -4111,8 +3945,6 @@ index 0000000000000000000000000000000000000000..c44a95910732a0e51d221771f1983809
 +  ],
 +});
 +
-+const clips = (screen: Screen) => [...screen.container.querySelectorAll("video")];
-+
 +// 8
 +it("draws videos without controls, and a click on the picture picks it", async () => {
 +  const onAnswer = vi.fn(async () => null);
@@ -4354,14 +4186,6 @@ index 0000000000000000000000000000000000000000..c44a95910732a0e51d221771f1983809
 +  await expect.element(preview).toBeInTheDocument();
 +  expect([preview.element().textContent, rect(screen, "picker-stage-1")]).toEqual(["ab …", before]);
 +});
-+
-+const twoHundred: PicksBatchView = {
-+  ...view,
-+  questions: Array.from({ length: 200 }, (_, index) => ({
-+    prompt: `Question ${index + 1}`,
-+    options: [image(`x${index}a`), image(`x${index}b`)],
-+  })),
-+};
 +
 +// 18
 +it("shows one strip cell per question with its state, jumps on a click, and fits 200 in a row", async () => {
@@ -5256,6 +5080,50 @@ index 0000000000000000000000000000000000000000..c44a95910732a0e51d221771f1983809
 +    [{ questionIndex: 0, note: "alpha" }],
 +  ]);
 +});
+diff --git a/apps/web/src/components/picks/PickerView.inspector.browser.test.tsx b/apps/web/src/components/picks/PickerView.inspector.browser.test.tsx
+new file mode 100644
+index 0000000000000000000000000000000000000000..1c7a814748d779a77ed93efb293a295acafdaa5e
+--- /dev/null
++++ b/apps/web/src/components/picks/PickerView.inspector.browser.test.tsx
+@@ -0,0 +1,1761 @@
++import { makePickSaveQueue } from "@t3tools/client-runtime/picks";
++import { PICK_TIE, type PicksBatchView, ThreadId, TurnItemId } from "@t3tools/contracts";
++import * as DateTime from "effect/DateTime";
++import { useState } from "react";
++import { expect, it, vi } from "vite-plus/test";
++import { page, userEvent } from "vite-plus/test/browser";
++
++import { updateClientSettings } from "~/hooks/useSettings";
++import { useStableCallback } from "~/hooks/useStableCallback";
++import { I18nProvider } from "~/i18n/I18nProvider";
++import { startI18n, whenLocaleReady } from "~/i18n/runtime";
++import { render } from "../../../test/render";
++import { PickMediaElement, type PickMediaReady } from "./PickMedia";
++import { PicksListRow } from "./PicksPage";
++import { PickerView, type PickMediaProps } from "./PickerView";
++import {
++  answered,
++  clipA,
++  clipB,
++  clips,
++  counter,
++  environmentId,
++  heldSaves,
++  image,
++  pickerProps,
++  png,
++  press,
++  RealMedia,
++  rect,
++  renderPicker,
++  shows,
++  stageReady,
++  status,
++  tab,
++  twoHundred,
++  video,
++  view,
++} from "./testing/pickerViewHarness";
 +
 +it("never clips media corner pixels under card rounding, including 1024 px fit images and zero-mat exact boxes", async () => {
 +  await using screen = await renderPicker({
@@ -6840,6 +6708,11 @@ index 0000000000000000000000000000000000000000..c44a95910732a0e51d221771f1983809
 +      },
 +    });
 +    await expect.element(pauseScreen.getByRole("button", { name: "Next frame" })).toBeEnabled();
++    await vi.waitFor(() =>
++      expect(pauseScreen.getByTestId("picker-playback-status").element().textContent).toContain(
++        "of 24",
++      ),
++    );
 +    const [leadVideo, followVideo] = clips(pauseScreen);
 +    if (leadVideo === undefined || followVideo === undefined) throw new Error("expected 2 videos");
 +    const frameIdx = (time: number) => Math.floor((time + 0.0011) * 24);
@@ -6851,11 +6724,43 @@ index 0000000000000000000000000000000000000000..c44a95910732a0e51d221771f1983809
 +        !leadVideo.seeking && !followVideo.seeking && frameIdx(leadVideo.currentTime) >= 2,
 +      ).toBe(true),
 +    );
-+    followVideo.currentTime = Math.max(0.068, leadVideo.currentTime - 0.025);
-+    expect(frameIdx(followVideo.currentTime)).not.toBe(frameIdx(leadVideo.currentTime));
-+    await userEvent.keyboard(" ");
-+    await vi.waitFor(() => expect([leadVideo.paused, followVideo.paused]).toEqual([true, true]));
-+    expect(frameIdx(followVideo.currentTime)).toBe(frameIdx(leadVideo.currentTime));
++    // Both clips keep playing: seek the follower once to the frame before the leader's, and in the callback that sees it
++    // land (before either clip plays on) confirm they're on different frames and press Space.
++    const picker = pauseScreen.getByTestId("picker").element();
++    const straddle = await new Promise<{ readonly lead: number; readonly follow: number }>(
++      (resolve) => {
++        followVideo.addEventListener(
++          "seeked",
++          () => {
++            const frames = {
++              lead: frameIdx(leadVideo.currentTime),
++              follow: frameIdx(followVideo.currentTime),
++            };
++            if (frames.lead !== frames.follow) {
++              picker.dispatchEvent(
++                new KeyboardEvent("keydown", { key: " ", code: "Space", bubbles: true }),
++              );
++            }
++            resolve(frames);
++          },
++          { once: true },
++        );
++        followVideo.currentTime = Math.max(0, frameIdx(leadVideo.currentTime) / 24 - 1 / 48);
++      },
++    );
++    expect(straddle.follow).not.toBe(straddle.lead);
++    await vi.waitFor(() =>
++      expect([
++        leadVideo.paused,
++        followVideo.paused,
++        !leadVideo.seeking,
++        !followVideo.seeking,
++      ]).toEqual([true, true, true, true]),
++    );
++    expect([frameIdx(leadVideo.currentTime), frameIdx(followVideo.currentTime)]).toEqual([
++      straddle.lead,
++      straddle.lead,
++    ]);
 +  }
 +
 +  // 2) At 780×780 with 256 px sidebar open, a 4-option 640×480 Blink loupe rail keeps all 4 crops inside the stage viewport at both horizontal scroll limits.
@@ -6944,10 +6849,10 @@ index 0000000000000000000000000000000000000000..c44a95910732a0e51d221771f1983809
 +});
 diff --git a/apps/web/src/components/picks/PickerView.tsx b/apps/web/src/components/picks/PickerView.tsx
 new file mode 100644
-index 0000000000000000000000000000000000000000..8a1b56a052f4d7116eee17bf516688e95557967a
+index 0000000000000000000000000000000000000000..818ef91ed1337cf0f764853a410a802a8c428fbd
 --- /dev/null
 +++ b/apps/web/src/components/picks/PickerView.tsx
-@@ -0,0 +1,3072 @@
+@@ -0,0 +1,3081 @@
 +import {
 +  alignPausedClipTimes,
 +  circularClipPhaseDiff,
@@ -7856,6 +7761,7 @@ index 0000000000000000000000000000000000000000..8a1b56a052f4d7116eee17bf516688e9
 +
 +  const seekClipTo = (place: number, clip: HTMLVideoElement, targetTime: number) => {
 +    if (Math.abs(clip.currentTime - targetTime) <= 0.0005) return;
++    stage.current.presentedTimes.delete(place);
 +    const priorCadence = stage.current.cadence.get(place);
 +    if (priorCadence !== undefined) {
 +      stage.current.cadence.set(place, resetPickFrameCadenceRun(priorCadence));
@@ -7993,6 +7899,14 @@ index 0000000000000000000000000000000000000000..8a1b56a052f4d7116eee17bf516688e9
 +    for (const type of ["play", "pause", "ratechange"]) {
 +      clip.addEventListener(type, refresh);
 +    }
++    clip.addEventListener("seeking", () => {
++      if (!isCurrentClip()) return;
++      stage.current.presentedTimes.delete(place);
++      const priorCadence = stage.current.cadence.get(place);
++      if (priorCadence !== undefined) {
++        stage.current.cadence.set(place, resetPickFrameCadenceRun(priorCadence));
++      }
++    });
 +    clip.addEventListener("seeked", () => {
 +      if (!isCurrentClip()) return;
 +      const perFrame = stage.current.frames.get(place) ?? 1 / 24;
@@ -10710,6 +10624,211 @@ index 0000000000000000000000000000000000000000..aecbb532c8a9dd4dd197b6b9d3a86c09
 +    />
 +  );
 +}
+diff --git a/apps/web/src/components/picks/testing/pickerViewHarness.tsx b/apps/web/src/components/picks/testing/pickerViewHarness.tsx
+new file mode 100644
+index 0000000000000000000000000000000000000000..5cc3a5165a528492c4e2203046b2a58243d7dc83
+--- /dev/null
++++ b/apps/web/src/components/picks/testing/pickerViewHarness.tsx
+@@ -0,0 +1,199 @@
++import { makePickSaveQueue } from "@t3tools/client-runtime/picks";
++import { EnvironmentId, type PicksBatchView, ThreadId, TurnItemId } from "@t3tools/contracts";
++import { expect, vi } from "vite-plus/test";
++import { page, userEvent } from "vite-plus/test/browser";
++
++import "~/index.css";
++import { useStableCallback } from "~/hooks/useStableCallback";
++import { isMacPlatform } from "~/lib/utils";
++import { render, type Screen } from "../../../../test/render";
++import clipA from "../../../../test/fixtures/picks/clip-a.webm?url";
++import clipB from "../../../../test/fixtures/picks/clip-b.webm?url";
++import { PickMediaElement } from "../PickMedia";
++import { PickerView, type PickMediaProps, type PickOptionView } from "../PickerView";
++
++export { clipA, clipB };
++
++export const environmentId = EnvironmentId.make("environment:picks");
++
++export const image = (attachmentId: string): PickOptionView => ({
++  attachmentId,
++  mediaKind: "image",
++  mimeType: "image/png",
++});
++
++export const video = (attachmentId: string): PickOptionView => ({
++  attachmentId,
++  mediaKind: "video",
++  mimeType: "video/webm",
++});
++
++export const view: PicksBatchView = {
++  threadId: ThreadId.make("thread:picks"),
++  batchId: TurnItemId.make("turn-item:pick-request:picks"),
++  title: "Real person, round 3",
++  threadTitle: "Art eval",
++  allowTie: true,
++  status: "pending",
++  questions: [
++    { prompt: "Which face?", options: [image("a1"), image("a2")] },
++    { prompt: "Which walk?", options: [image("b1"), image("b2"), image("b3")] },
++    {
++      prompt: "Which sprite?",
++      display: { width: 64, height: 48, pixelated: true },
++      options: [image("c1"), image("c2")],
++    },
++  ],
++};
++
++/** Stands in for the page's media: ready at once, as a 64×48 picture. */
++function StubMedia({ option, pixelated, onReady }: PickMediaProps) {
++  const report = useStableCallback((node: HTMLDivElement | null) => {
++    if (node !== null) onReady({ _tag: "Loaded", width: 64, height: 48, video: null });
++  });
++  return (
++    <div ref={report} data-testid={`media-${option.attachmentId}`} data-pixelated={pixelated}>
++      {option.attachmentId}
++    </div>
++  );
++}
++
++/** A PNG of `width` × `height` px, drawn here so no file is needed. */
++export function png(width: number, height: number = width): string {
++  const canvas = document.createElement("canvas");
++  canvas.width = width;
++  canvas.height = height;
++  const context = canvas.getContext("2d");
++  if (context !== null) {
++    context.fillStyle = "#c0ffee";
++    context.fillRect(0, 0, width, height);
++  }
++  return canvas.toDataURL("image/png");
++}
++
++const MEDIA_URLS: Record<string, string> = {
++  small: png(96),
++  small2: png(96),
++  large: png(1024),
++  large2: png(1024),
++  large3: png(1024),
++  large4: png(1024),
++  half1: png(1024, 512),
++  half2: png(1024, 512),
++  wide: png(320, 160),
++  tall: png(160, 320),
++  v1: clipA,
++  v2: clipB,
++  w1: clipA,
++  w2: clipB,
++};
++
++/** The real media element, with test files for the attachments. */
++export function RealMedia({ option, label, fit, pixelated, longSide, onReady }: PickMediaProps) {
++  return (
++    <PickMediaElement
++      url={MEDIA_URLS[option.attachmentId] ?? png(64)}
++      kind={option.mediaKind}
++      label={label}
++      fit={fit}
++      pixelated={pixelated}
++      longSide={longSide}
++      onReady={onReady}
++    />
++  );
++}
++
++export const pickerProps = (overrides: Partial<Parameters<typeof PickerView>[0]> = {}) => ({
++  environmentId,
++  view,
++  saveQueue: makePickSaveQueue(),
++  canAnswer: true,
++  onAnswer: async () => null,
++  onComplete: async () => null,
++  Media: StubMedia,
++  ...overrides,
++});
++
++/** The question on screen can take picks: its stages show once all its media is ready. */
++export const stageReady = (screen: Screen) =>
++  expect.element(screen.getByTestId("picker-stage-1")).toBeVisible();
++
++/**
++ * The picker as the page lays it out, a full-height column at the spec's window size, once its
++ * first question can take picks (unless `ready` is false).
++ */
++export async function renderPicker(
++  overrides: Partial<Parameters<typeof PickerView>[0]> = {},
++  { ready = true }: { readonly ready?: boolean } = {},
++): Promise<Screen> {
++  await page.viewport(1100, 780);
++  await using stack = new AsyncDisposableStack();
++  const screen = stack.use(
++    await render(
++      <div className="flex h-dvh flex-col">
++        <PickerView {...pickerProps(overrides)} />
++      </div>,
++    ),
++  );
++  if (ready) await stageReady(screen);
++  const owned = stack.move();
++  return { ...screen, [Symbol.asyncDispose]: () => owned.disposeAsync() };
++}
++
++/** The view as the server would send it with these answers, by question. */
++export const answered = (
++  ...answers: ReadonlyArray<PicksBatchView["questions"][number]["answer"]>
++): PicksBatchView => ({
++  ...view,
++  questions: view.questions.map((question, index) => {
++    const answer = answers[index];
++    return answer === undefined ? question : { ...question, answer };
++  }),
++});
++
++/** An onAnswer whose saves finish only when the test says, in order. */
++export function heldSaves() {
++  const releases: Array<(failure: string | null) => void> = [];
++  const onAnswer = vi.fn(() => new Promise<string | null>((resolve) => releases.push(resolve)));
++  return {
++    onAnswer,
++    release: (index: number, failure: string | null = null) => releases[index]?.(failure),
++  };
++}
++
++export const counter = (screen: Screen) => screen.getByTestId("picker-progress-question");
++export const status = (screen: Screen) => screen.getByTestId("picker-status");
++export const rect = (screen: Screen, testId: string) => {
++  const box = screen.getByTestId(testId).element().getBoundingClientRect();
++  return { left: box.left, top: box.top, width: box.width, height: box.height };
++};
++export const tab = (screen: Screen, number: number) =>
++  screen.getByTestId(`picker-flip-tab-${number}`).element();
++export const sendChord = () =>
++  isMacPlatform(navigator.platform) ? "{Meta>}{Enter}{/Meta}" : "{Control>}{Enter}{/Control}";
++
++/** Waits for question `number` of `total` to show and take picks. */
++export async function shows(screen: Screen, number: number, total = view.questions.length) {
++  await expect.element(counter(screen)).toHaveTextContent(`Question ${number} of ${total}`);
++  await stageReady(screen);
++}
++
++/** Presses keys, then waits for question `number` to show and take picks. */
++export async function press(screen: Screen, keys: string, number: number, total?: number) {
++  await userEvent.keyboard(keys);
++  await shows(screen, number, total);
++}
++
++/** Selects a radio choice and steps forward to `next` (1-based). */
++export const pickAndMove = (screen: Screen, key: string, next: number) =>
++  press(screen, `${key}{ArrowRight}`, next);
++
++export const clips = (screen: Screen) => [...screen.container.querySelectorAll("video")];
++
++export const twoHundred: PicksBatchView = {
++  ...view,
++  questions: Array.from({ length: 200 }, (_, index) => ({
++    prompt: `Question ${index + 1}`,
++    options: [image(`x${index}a`), image(`x${index}b`)],
++  })),
++};
 diff --git a/apps/web/src/components/sidebar/SidebarChrome.tsx b/apps/web/src/components/sidebar/SidebarChrome.tsx
 index 637921f1f91003578bf0bc5acf1a89ea113227b8..a333e10ad239651a48a0b2fe0cde2a0026e1d5d3 100644
 --- a/apps/web/src/components/sidebar/SidebarChrome.tsx
@@ -23310,10 +23429,10 @@ index f99279b911a14d7705581b1feeb264678fc15512..05878ad92dd6b71bb5dccb1f4e5cd088
    WsServerSearchAcpRegistryRpc,
 diff --git a/patcher/journeys/fixtures/picks-agent.mjs b/patcher/journeys/fixtures/picks-agent.mjs
 new file mode 100644
-index 0000000000000000000000000000000000000000..b19e973be7229f4873cdb819a94224792aa054ee
+index 0000000000000000000000000000000000000000..d1eb7831753f7c92002a9fbef79b78157fb20580
 --- /dev/null
 +++ b/patcher/journeys/fixtures/picks-agent.mjs
-@@ -0,0 +1,167 @@
+@@ -0,0 +1,170 @@
 +// A minimal ACP agent for the picks journey. Its first turn asks for two batches of picks through
 +// the T3 MCP server the session was given (the real /mcp endpoint, with this thread's credential);
 +// a later turn that brings the answers replies that it read them. It speaks ACP on stdio.
@@ -23421,8 +23540,11 @@ index 0000000000000000000000000000000000000000..b19e973be7229f4873cdb819a9422479
 +  } else if (session.target === undefined) {
 +    say("No T3 MCP server was given to this session.");
 +  } else {
-+    for (const batch of [PICKS_BATCH, FRAME_PICKS_BATCH]) {
-+      log(`request_picks: ${JSON.stringify(await requestPicks(session.target, batch))}`);
++    const results = await Promise.all(
++      [PICKS_BATCH, FRAME_PICKS_BATCH].map((batch) => requestPicks(session.target, batch)),
++    );
++    for (const result of results) {
++      log(`request_picks: ${JSON.stringify(result)}`);
 +    }
 +    say("Waiting for your picks.");
 +  }
@@ -24538,10 +24660,10 @@ HcmV?d00001
 
 diff --git a/patcher/journeys/picks.mjs b/patcher/journeys/picks.mjs
 new file mode 100644
-index 0000000000000000000000000000000000000000..6d537235f8498ca023b9f39e35ccb537fe488534
+index 0000000000000000000000000000000000000000..c33f318b779d60debb4261fae35113116d931905
 --- /dev/null
 +++ b/patcher/journeys/picks.mjs
-@@ -0,0 +1,253 @@
+@@ -0,0 +1,257 @@
 +// Journey: an agent (fixtures/picks-agent.mjs, a provider in the journey's own T3 home) asks for two
 +// batches of picks over the real MCP endpoint; the user answers one and leaves it unsent, answers
 +// and sends the other with the keyboard, and the asking thread wakes with every answer.
@@ -24552,7 +24674,7 @@ index 0000000000000000000000000000000000000000..6d537235f8498ca023b9f39e35ccb537
 +import * as NodePath from "node:path";
 +
 +import { FRAME_PICKS_TITLE, PICKS_REPLY, PICKS_TITLE } from "./fixtures/picks-batch.mjs";
-+import { FIXTURE_DB, STEP_TIMEOUT_MS, journey, serverBinPath } from "./support.mjs";
++import { FIXTURE_DB, STEP_TIMEOUT_MS, journey, journeyCliEnv, serverBinPath } from "./support.mjs";
 +
 +const repoRoot = NodePath.resolve(import.meta.dirname, "../..");
 +const agent = NodePath.join(import.meta.dirname, "fixtures/picks-agent.mjs");
@@ -24591,7 +24713,7 @@ index 0000000000000000000000000000000000000000..6d537235f8498ca023b9f39e35ccb537
 +  return NodeChildProcess.execFileSync(
 +    process.execPath,
 +    [serverBinPath(), ...args, "--base-dir", t3Home],
-+    { cwd: repoRoot, encoding: "utf8", timeout: STEP_TIMEOUT_MS * 2 },
++    { cwd: repoRoot, env: journeyCliEnv(), encoding: "utf8", timeout: STEP_TIMEOUT_MS * 2 },
 +  );
 +}
 +
@@ -24608,9 +24730,15 @@ index 0000000000000000000000000000000000000000..6d537235f8498ca023b9f39e35ccb537
 +  await journey(
 +    "picks",
 +    async ({ app, page, screenshot }, step) => {
-+      // The spec's window: every picker size is stated at 1100×780.
-+      await app.setContentSize(1100, 780);
-+      await page.waitForFunction(() => window.innerWidth === 1100 && window.innerHeight === 780);
++      step("waiting for the app's server and sizing the window");
++      await Promise.all([
++        app
++          .setContentSize(1100, 780)
++          .then(() =>
++            page.waitForFunction(() => window.innerWidth === 1100 && window.innerHeight === 780),
++          ),
++        untilServerListens(),
++      ]);
 +      const progress = page.getByTestId("picker-progress");
 +      const status = page.getByTestId("picker-status");
 +      const at = (number, total) =>
@@ -24634,8 +24762,6 @@ index 0000000000000000000000000000000000000000..6d537235f8498ca023b9f39e35ccb537
 +      };
 +      const row = (title) => page.getByTestId("picks-row").filter({ hasText: title });
 +
-+      step("waiting for the app's server");
-+      await untilServerListens();
 +      step("adding the workspace as a project");
 +      cli("project", "add", workspace, "--title", "Picks");
 +      step("starting a thread whose agent asks for two batches of picks");

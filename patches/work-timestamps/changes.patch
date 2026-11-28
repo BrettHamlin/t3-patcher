@@ -1,5 +1,5 @@
 diff --git a/apps/web/src/components/chat/MessagesTimeline.browser.test.tsx b/apps/web/src/components/chat/MessagesTimeline.browser.test.tsx
-index 5ebe6aaae180c6c84aa59b69410a12b40cb1afc8..8fd65fa847b364978d0687fb46b973ca84e73e6c 100644
+index 5ebe6aaae180c6c84aa59b69410a12b40cb1afc8..4c3be16a5f6aa8bbf9da8bea7b8194a78d957d62 100644
 --- a/apps/web/src/components/chat/MessagesTimeline.browser.test.tsx
 +++ b/apps/web/src/components/chat/MessagesTimeline.browser.test.tsx
 @@ -59,6 +59,7 @@ import { __setClientSettingsForTests } from "../../hooks/useSettings";
@@ -25,7 +25,7 @@ index 5ebe6aaae180c6c84aa59b69410a12b40cb1afc8..8fd65fa847b364978d0687fb46b973ca
  
  type TimelineProps = ComponentProps<typeof MessagesTimeline>;
  type Entry = TimelineProps["timelineEntries"][number];
-@@ -307,8 +316,17 @@ describe("MessagesTimeline work rows", () => {
+@@ -307,12 +316,34 @@ describe("MessagesTimeline work rows", () => {
      );
      const viewport = props.listRef.current!.getScrollableNode()!;
      const frame = screen.getByTitle("Tall preview").element() as HTMLIFrameElement;
@@ -43,7 +43,24 @@ index 5ebe6aaae180c6c84aa59b69410a12b40cb1afc8..8fd65fa847b364978d0687fb46b973ca
        expect(viewport.scrollTop).toBeGreaterThan(0);
        expect(viewport.scrollHeight - viewport.clientHeight - viewport.scrollTop).toBeLessThan(2);
      });
-@@ -347,7 +365,7 @@ describe("MessagesTimeline work rows", () => {
+     await listening;
++    // Under load the list can still be finishing its initial end-follow; toggle once two polls see the same layout.
++    const layout = () =>
++      `${viewport.scrollTop}:${viewport.scrollHeight}:${frame.getBoundingClientRect().top}`;
++    let polled = "";
++    await vi.waitFor(() => {
++      const [was, now] = [polled, layout()];
++      polled = now;
++      expect(now).toBe(was);
++      expect(frame.clientHeight).toBe(1437);
++      expect(gapAboveReply()).toBe(0);
++      expect(viewport.scrollTop).toBeGreaterThan(0);
++      expect(viewport.scrollHeight - viewport.clientHeight - viewport.scrollTop).toBeLessThan(2);
++    });
+     const top = frame.getBoundingClientRect().top;
+     frame.focus();
+     frame.contentWindow!.postMessage("toggle", "*");
+@@ -347,7 +378,7 @@ describe("MessagesTimeline work rows", () => {
        />,
        { container },
      );
@@ -52,7 +69,7 @@ index 5ebe6aaae180c6c84aa59b69410a12b40cb1afc8..8fd65fa847b364978d0687fb46b973ca
      // LegendList keeps rows click-through until its initial scroll settles on animation
      // frames, which the fake clock below would freeze.
      await expect.element(heading).toHaveStyle({ pointerEvents: "auto" });
-@@ -388,7 +406,7 @@ describe("MessagesTimeline work rows", () => {
+@@ -388,7 +419,7 @@ describe("MessagesTimeline work rows", () => {
      await using screen = await render(<MessagesTimeline {...props} timelineEntries={entries} />, {
        container,
      });
@@ -61,7 +78,7 @@ index 5ebe6aaae180c6c84aa59b69410a12b40cb1afc8..8fd65fa847b364978d0687fb46b973ca
      await expect.element(heading).toHaveStyle({ pointerEvents: "auto" });
      const viewport = props.listRef.current!.getScrollableNode()!;
      const distanceFromEnd = () =>
-@@ -542,6 +560,70 @@ describe("MessagesTimeline work rows", () => {
+@@ -542,6 +573,70 @@ describe("MessagesTimeline work rows", () => {
    });
  });
  
@@ -132,7 +149,7 @@ index 5ebe6aaae180c6c84aa59b69410a12b40cb1afc8..8fd65fa847b364978d0687fb46b973ca
  describe("MessagesTimeline messages", () => {
    it("settles when equally long messages have very different rendered heights", async () => {
      const props = baseProps();
-@@ -706,7 +788,10 @@ describe("MessagesTimeline messages", () => {
+@@ -706,7 +801,10 @@ describe("MessagesTimeline messages", () => {
      screen.container.style.width = "900px";
      const viewport = props.listRef.current!.getScrollableNode()!;
      const target = page.getByText(paragraphs[15]!.trim(), { exact: true }).element();
@@ -855,7 +872,7 @@ index 0000000000000000000000000000000000000000..a3511622457bae9a5f8c0b6c3814d604
 +});
 diff --git a/patcher/journeys/work-timestamps.mjs b/patcher/journeys/work-timestamps.mjs
 new file mode 100644
-index 0000000000000000000000000000000000000000..69d2d406b82b5317d24bebae36c3ded4093ef97d
+index 0000000000000000000000000000000000000000..3f50f0dfe4b15cf3dba0f39b007fcbe2c1b284b4
 --- /dev/null
 +++ b/patcher/journeys/work-timestamps.mjs
 @@ -0,0 +1,145 @@
@@ -868,7 +885,7 @@ index 0000000000000000000000000000000000000000..69d2d406b82b5317d24bebae36c3ded4
 +import * as NodeOS from "node:os";
 +import * as NodePath from "node:path";
 +
-+import { FIXTURE_DB, STEP_TIMEOUT_MS, journey, serverBinPath } from "./support.mjs";
++import { FIXTURE_DB, STEP_TIMEOUT_MS, journey, journeyCliEnv, serverBinPath } from "./support.mjs";
 +
 +const repoRoot = NodePath.resolve(import.meta.dirname, "../..");
 +const agent = NodePath.join(import.meta.dirname, "fixtures/work-timestamps-agent.mjs");
@@ -907,7 +924,7 @@ index 0000000000000000000000000000000000000000..69d2d406b82b5317d24bebae36c3ded4
 +  return NodeChildProcess.execFileSync(
 +    process.execPath,
 +    [serverBinPath(), ...args, "--base-dir", t3Home],
-+    { cwd: repoRoot, encoding: "utf8", timeout: STEP_TIMEOUT_MS * 2 },
++    { cwd: repoRoot, env: journeyCliEnv(), encoding: "utf8", timeout: STEP_TIMEOUT_MS * 2 },
 +  );
 +}
 +

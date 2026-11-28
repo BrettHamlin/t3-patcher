@@ -25,11 +25,17 @@ interface Planned {
   readonly broken: boolean;
 }
 
-it.effect("matches the model over 300 random stacks", () =>
+// Each seed runs twice: in turn (no setup), which replays the original cases exactly, then with setup, whose lanes run
+// the checks beside the build.
+it.effect("matches the model over 300 random stacks, in turn and with setup", () =>
   Effect.gen(function* () {
     const current = yield* commit("b");
     const stale = yield* commit("c");
-    for (let seed = 1; seed <= 300; seed += 1) {
+    const cases = Array.from({ length: 300 }, (_, k) => k + 1).flatMap((seed) => [
+      { seed, setupLength: 0 },
+      { seed, setupLength: 1 + (seed % 2) },
+    ]);
+    for (const { seed, setupLength } of cases) {
       const random = generator(seed);
       const count = (most: number) => Math.floor(random() * (most + 1));
       const failing = new Set<string>();
@@ -59,6 +65,7 @@ it.effect("matches the model over 300 random stacks", () =>
         if (outcome === "resolved" || moved) needsSave.push(id);
         story.push(`${id} ${outcome}${moved ? " moved" : ""}`);
       }
+      const setup = Array.from({ length: setupLength }, (_, k) => ({ name: `t-setup${k}`, run: "x" }));
       const targetChecks = Array.from({ length: count(2) }, (_, k) => ({ name: `t-check${k}`, run: "x" }));
       const build = Array.from({ length: 1 + count(1) }, (_, k) => ({ name: `t-build${k}`, run: "x" }));
       const install = random() < 0.5;
@@ -68,6 +75,7 @@ it.effect("matches the model over 300 random stacks", () =>
       const plan: ReadonlyArray<Planned> = [
         { kind: "source", name: "T3 Code source", broken: false },
         ...patchSteps,
+        ...setup.map((command) => ({ kind: "setup" as const, name: command.name, broken: rollFailure(command.name) })),
         ...targetChecks.map((check) => ({ kind: "check" as const, name: check.name, broken: rollFailure(check.name) })),
         ...patches.flatMap((p) =>
           p.manifest.checks.map((check) => ({
@@ -87,7 +95,7 @@ it.effect("matches the model over 300 random stacks", () =>
         { kind: "save", name: "save patches", broken: false },
         ...(install ? [{ kind: "install" as const, name: "install", broken: installFails || updated }] : []),
       ];
-      story.push(`failing ${[...failing].join(" ")}`, `install ${install}${installFails ? " fails" : ""}${updated ? " updated" : ""}`);
+      story.push(`setup ${setup.length}`, `failing ${[...failing].join(" ")}`, `install ${install}${installFails ? " fails" : ""}${updated ? " updated" : ""}`);
 
       const firstFailure = plan.findIndex((step) => step.broken);
       const passedUpTo = firstFailure === -1 ? plan.length : firstFailure;
@@ -104,7 +112,7 @@ it.effect("matches the model over 300 random stacks", () =>
       };
 
       const fake = yield* fakes({ conflicts, failing, installFails, ...(updated ? { installedLater: "0.1.12" } : {}) });
-      const report = yield* run(target({ checks: targetChecks, build }), patches, install, { evidence: "/e" }).pipe(
+      const report = yield* run(target({ setup, checks: targetChecks, build }), patches, install, { evidence: "/e" }).pipe(
         Effect.provide(fake.layer),
       );
       const actual = {
@@ -113,6 +121,6 @@ it.effect("matches the model over 300 random stacks", () =>
         installed: yield* Ref.get(fake.installed),
         lastReportIsResult: (yield* Ref.get(fake.reports)).at(-1) === report,
       };
-      expect(actual, `seed ${seed}: ${story.join(", ")}`).toEqual(expected);
+      expect(actual, `seed ${seed}, setup ${setupLength}: ${story.join(", ")}`).toEqual(expected);
     }
   }));

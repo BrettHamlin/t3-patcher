@@ -191,12 +191,12 @@ const hostVerifyWorkers = Effect.gen(function* () {
 export const resolvedVerifyWorkers = Effect.fn("resolvedVerifyWorkers")(function* (home: string) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const fallback = yield* hostVerifyWorkers;
   const file = path.join(home, ".config/b-stack/config.toml");
   const text = (yield* fs.exists(file).pipe(Effect.orElseSucceed(() => false)))
     ? yield* fs.readFileString(file).pipe(Effect.orElseSucceed(() => ""))
     : "";
-  return parseVerifyWorkers(text, fallback);
+  const parsed = parseVerifyWorkers(text, 0);
+  return parsed === 0 ? yield* hostVerifyWorkers : parsed;
 });
 
 /** Every real service for `settings`: the patches and stack, git, commands and the installed app. */
@@ -213,6 +213,7 @@ export const servicesFor = (userdata: string, settings: Settings): Layer.Layer<S
         (home === "" ? undefined : yield* resolvedVerifyWorkers(home)) ?? (yield* hostVerifyWorkers);
       const shellDefaults = {
         BSTACK_VERIFY_WORKERS: String(verifyWorkers),
+        NODE_COMPILE_CACHE: path.join(settings.work, "build-env/node-compile-cache"),
         npm_config_prefer_offline: "true",
       };
       return Layer.mergeAll(
