@@ -197,6 +197,10 @@ export const saveInstalled = (
     yield* save(path.join(userdata, "installed.json"), installedJson, record, "the installed record");
   });
 
+const desktopArtifact =
+  "node scripts/build-desktop-artifact.ts --platform mac --target dir --arch arm64 --build-version {version}";
+const splitBuild = `grep -q '"bundles-only"' scripts/build-desktop-artifact.ts`;
+
 export const defaultSettings = (input: { readonly patches: string; readonly work: string }): Settings => ({
   patches: input.patches,
   work: input.work,
@@ -207,19 +211,20 @@ export const defaultSettings = (input: { readonly patches: string; readonly work
     tag: "v{version}",
     installed: "/Applications/T3 Code (Beta).app",
     built: "release/mac-arm64/T3 Code (Beta).app",
-    checks: [
+    // Everything that writes the source tree: compiling aligns the release manifests. The app is packaged from those
+    // bundles alongside the checks, when the build script can split (journey-kit); otherwise setup builds it all.
+    setup: [
       { name: "install packages", run: `. "$T3_PATCHER_ENV" && pnpm install --frozen-lockfile` },
       // The full Chromium T3's browser tests use (journey-kit), into the build env's browser folder.
       { name: "test browser", run: `. "$T3_PATCHER_ENV" && pnpm --dir apps/web exec playwright install chromium` },
-      { name: "changed files", run: `. "$T3_PATCHER_ENV" && pnpm exec vp run check:changed v{version}` },
-    ],
-    build: [
       { name: "env file", run: "test -f .env || cp .env.example .env" },
       {
-        name: "app",
-        run: `. "$T3_PATCHER_ENV" && node scripts/build-desktop-artifact.ts --platform mac --target dir --arch arm64 --build-version {version}`,
+        name: "bundles",
+        run: `. "$T3_PATCHER_ENV" && if ${splitBuild}; then ${desktopArtifact} --bundles-only; else ${desktopArtifact}; fi`,
       },
     ],
+    checks: [{ name: "changed files", run: `. "$T3_PATCHER_ENV" && pnpm exec vp run check:changed v{version}` }],
+    build: [{ name: "app", run: `. "$T3_PATCHER_ENV" && if ${splitBuild}; then ${desktopArtifact} --skip-build; fi` }],
     env: { T3_PATCHER_ENV: `${input.work}/build-env/env.sh` },
   },
 });

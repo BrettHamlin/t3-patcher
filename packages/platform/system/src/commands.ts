@@ -11,7 +11,10 @@ import { couldnt, lastLines, runLogged, stepFailed } from "./process.ts";
 const fileName = (name: string): string => name.replace(/[^A-Za-z0-9._-]+/g, "-");
 
 /** Runs commands with /bin/sh; each command's output goes to `<logs>/<command name>.log`. */
-export const commandShell = (logs: string): Layer.Layer<Shell, never, ChildProcessSpawner | FileSystem.FileSystem | Path.Path> =>
+export const commandShell = (
+  logs: string,
+  defaults: Readonly<Record<string, string>> = {},
+): Layer.Layer<Shell, never, ChildProcessSpawner | FileSystem.FileSystem | Path.Path> =>
   Layer.effect(Shell)(
     Effect.gen(function* () {
       const spawner = yield* ChildProcessSpawner;
@@ -21,7 +24,7 @@ export const commandShell = (logs: string): Layer.Layer<Shell, never, ChildProce
         run: Effect.fn("Shell.run")(function* (folder, command, env) {
           yield* fs.makeDirectory(logs, { recursive: true }).pipe(Effect.mapError(() => stepFailed(`couldn't make ${logs}`)));
           const log = path.join(logs, `${fileName(command.name)}.log`);
-          const result = yield* runLogged(spawner, fs, { folder, script: command.run, env, log });
+          const result = yield* runLogged(spawner, fs, { folder, script: command.run, env, defaults, log });
           if (result.code !== 0) {
             return yield* stepFailed(`${command.name} failed (exit ${result.code}; log ${log}): ${lastLines(result.output)}`);
           }

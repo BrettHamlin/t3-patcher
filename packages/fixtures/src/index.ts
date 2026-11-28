@@ -220,6 +220,7 @@ const build = Effect.fn("build")(function* (data: string, world: World) {
       tag: "v{version}",
       installed: path.join(data, "Installed.app"),
       built: "out/App.app",
+      setup: [],
       checks: [{ name: "plist", run: "test -f Contents/Info.plist" }],
       build: [{ name: "copy", run: "rm -rf out && mkdir -p out/App.app && cp -R Contents out/App.app/" }],
       env: {},

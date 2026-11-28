@@ -66,7 +66,13 @@ export const Target = Schema.Struct({
   installed: Text,
   /** The built app, relative to the source folder. */
   built: Text,
-  /** Run after every patch is applied, before building. `{version}` is replaced in each. */
+  /**
+   * Prepare the source after every patch is applied (install packages, compile into it): everything that writes the
+   * source tree. When there's setup, the checks run alongside the build and journeys, which mustn't change what the
+   * checks read; without it (older settings), everything runs in turn. `{version}` is replaced in each.
+   */
+  setup: Schema.Array(Command).pipe(Schema.withDecodingDefaultKey(Effect.succeed([]))),
+  /** Run after every patch is applied and the setup, before installing. `{version}` is replaced in each. */
   checks: Schema.Array(Command),
   /** Build steps, in order. `{version}` is replaced in each. */
   build: Schema.Array(Command),
@@ -87,7 +93,17 @@ export const Settings = Schema.Struct({
 });
 export type Settings = typeof Settings.Type;
 
-export const StepKind = Schema.Literals(["pull", "source", "patch", "check", "build", "journey", "save", "install"]);
+export const StepKind = Schema.Literals([
+  "pull",
+  "source",
+  "patch",
+  "setup",
+  "check",
+  "build",
+  "journey",
+  "save",
+  "install",
+]);
 export type StepKind = typeof StepKind.Type;
 export const StepStatus = Schema.Literals(["pending", "running", "passed", "failed", "skipped"]);
 export type StepStatus = typeof StepStatus.Type;

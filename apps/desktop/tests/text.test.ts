@@ -5,6 +5,7 @@ import { describe, expect, it } from "vite-plus/test";
 import { defaultUserdata, userdataFolder } from "../src/services.ts";
 import {
   buildEnv,
+  defaultVerifyWorkers,
   outcome,
   parse,
   parseVerifyWorkers,
@@ -227,6 +228,18 @@ describe("build environment", () => {
       `mkdir -p "$TMPDIR" "$XDG_CACHE_HOME" "$ELECTRON_CACHE" "$ELECTRON_BUILDER_CACHE" "$pnpm_config_store_dir" "$pnpm_config_cache_dir" "$CARGO_HOME" "$npm_config_cache" "$COREPACK_HOME" "$electron_config_cache" "$PLAYWRIGHT_BROWSERS_PATH"`,
       "",
     ]);
+  });
+
+  it("sizes default verify workers from cores and memory between 1 and 4 and honors fallback", () => {
+    const gib = 1024 ** 3;
+    expect([
+      defaultVerifyWorkers(2, 8 * gib),
+      defaultVerifyWorkers(8, 8 * gib),
+      defaultVerifyWorkers(10, 16 * gib),
+      defaultVerifyWorkers(24, 64 * gib),
+      parseVerifyWorkers('cache_dir = "/cache"\n', 4),
+      parseVerifyWorkers("verify_workers = 1\n", 4),
+    ]).toEqual([1, 2, 4, 4, 4, 1]);
   });
 
   it("quotes folders so the shell takes them literally", () => {

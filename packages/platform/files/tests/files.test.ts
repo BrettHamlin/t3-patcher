@@ -261,6 +261,16 @@ describe("settings", () => {
       ]);
     }).pipe(Effect.provide(NodeServices.layer)));
 
+  it.effect("saved before setup existed, load with no setup", () =>
+    Effect.gen(function* () {
+      const { fs, at } = yield* temporary;
+      const settings = defaultSettings({ patches: "/patches", work: "/work" });
+      const { setup: _setup, ...older } = settings.target;
+      yield* fs.makeDirectory(at("user"));
+      yield* fs.writeFileString(at("user", "settings.json"), JSON.stringify({ ...settings, target: older }));
+      expect(yield* loadSettings(at("user"))).toEqual({ ...settings, target: { ...older, setup: [] } });
+    }).pipe(Effect.provide(NodeServices.layer)));
+
   it.effect("default to T3 Code", () =>
     Effect.sync(() => {
       expect(defaultSettings({ patches: "/p", work: "/w" })).toEqual({
@@ -273,18 +283,17 @@ describe("settings", () => {
           tag: "v{version}",
           installed: "/Applications/T3 Code (Beta).app",
           built: "release/mac-arm64/T3 Code (Beta).app",
-          checks: [
+          setup: [
             { name: "install packages", run: `. "$T3_PATCHER_ENV" && pnpm install --frozen-lockfile` },
             { name: "test browser", run: `. "$T3_PATCHER_ENV" && pnpm --dir apps/web exec playwright install chromium` },
-            { name: "changed files", run: `. "$T3_PATCHER_ENV" && pnpm exec vp run check:changed v{version}` },
-          ],
-          build: [
             { name: "env file", run: "test -f .env || cp .env.example .env" },
             {
-              name: "app",
-              run: `. "$T3_PATCHER_ENV" && node scripts/build-desktop-artifact.ts --platform mac --target dir --arch arm64 --build-version {version}`,
+              name: "bundles",
+              run: `. "$T3_PATCHER_ENV" && if grep -q '"bundles-only"' scripts/build-desktop-artifact.ts; then node scripts/build-desktop-artifact.ts --platform mac --target dir --arch arm64 --build-version {version} --bundles-only; else node scripts/build-desktop-artifact.ts --platform mac --target dir --arch arm64 --build-version {version}; fi`,
             },
           ],
+          checks: [{ name: "changed files", run: `. "$T3_PATCHER_ENV" && pnpm exec vp run check:changed v{version}` }],
+          build: [{ name: "app", run: `. "$T3_PATCHER_ENV" && if grep -q '"bundles-only"' scripts/build-desktop-artifact.ts; then node scripts/build-desktop-artifact.ts --platform mac --target dir --arch arm64 --build-version {version} --skip-build; fi` }],
           env: { T3_PATCHER_ENV: `/w/build-env/env.sh` },
         },
       });

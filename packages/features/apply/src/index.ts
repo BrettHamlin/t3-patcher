@@ -92,6 +92,8 @@ type Needs = Installation | Resolver | Shell | PatchWriter;
 interface Action {
   readonly kind: StepKind;
   readonly name: string;
+  /** Shared resource key (e.g. log filename stem) that serializes matching actions within a concurrent phase. */
+  readonly lockKey?: string;
   /** Does the step; succeeds with its note. */
   readonly perform: (opened: Opened) => Effect.Effect<string, StepFailed, Needs>;
 }
@@ -117,9 +119,16 @@ const commandEnv = (
   T3_PATCHER_PATCHES: appliedPatchesJson(patches),
 });
 
-const shellStep = (kind: StepKind, name: string, command: (opened: Opened) => Command, env: (opened: Opened) => Readonly<Record<string, string>>): Action => ({
+const shellStep = (
+  kind: StepKind,
+  name: string,
+  command: (opened: Opened) => Command,
+  env: (opened: Opened) => Readonly<Record<string, string>>,
+  lockKey?: string,
+): Action => ({
   kind,
   name,
+  ...(lockKey === undefined ? {} : { lockKey }),
   perform: (opened) =>
     Shell.use((shell) => shell.run(opened.workspace.path, command(opened), env(opened))).pipe(Effect.as("")),
 });
@@ -140,6 +149,8 @@ const patchStep = (patch: Patch, save: boolean): Action => ({
   }),
 });
 
+const logLockKey = (commandName: string): string => commandName.replace(/[^A-Za-z0-9._-]+/g, "-");
+
 const journeyStep = (
   target: Target,
   folders: RunFolders,
@@ -157,6 +168,7 @@ const journeyStep = (
       T3_PATCHER_APP: builtApp(opened.workspace, target),
       T3_PATCHER_EVIDENCE: `${folders.evidence}/${id}/${journey.name}`,
     }),
+    logLockKey(journey.name),
   );
 };
 
@@ -189,28 +201,102 @@ const targetCommand = (command: Command) => (opened: Opened): Command => ({
   run: withVersion(command.run, opened.version),
 });
 
-/** Every step after the source, in order. */
-const actions = (
+/** Actions run in turn (`atOnce` 1), or up to `atOnce` side by side, actions sharing a lock key still in turn. */
+interface Stage {
+  readonly atOnce: number;
+  readonly actions: ReadonlyArray<Action>;
+}
+
+/** Lanes that run side by side, each its stages in turn. */
+interface Phase {
+  readonly lanes: ReadonlyArray<ReadonlyArray<Stage>>;
+}
+
+const inTurn = (actions: ReadonlyArray<Action>): Phase => ({ lanes: [[{ atOnce: 1, actions }]] });
+
+/** Patch checks mostly find their tests already passed in the target's checks, so they're cheap side by side. */
+const CHECKS_AT_ONCE = 8;
+/** Each journey drives its own app; five at once fit in 16 GB beside the checks. */
+const JOURNEYS_AT_ONCE = 5;
+
+const phaseActions = (phase: Phase): ReadonlyArray<Action> =>
+  phase.lanes.flatMap((lane) => lane.flatMap((stage) => stage.actions));
+
+interface IndexedAction {
+  readonly index: number;
+  readonly action: Action;
+}
+
+interface IndexedStage {
+  readonly atOnce: number;
+  readonly items: ReadonlyArray<IndexedAction>;
+}
+
+interface CancelWaiter {
+  readonly index: number;
+  readonly cancel: () => void;
+}
+
+const groupByLockKey = (items: ReadonlyArray<IndexedAction>): ReadonlyArray<ReadonlyArray<IndexedAction>> => {
+  const chains: Array<Array<IndexedAction>> = [];
+  const byKey = new Map<string, Array<IndexedAction>>();
+  for (const item of items) {
+    const key = item.action.lockKey;
+    if (key === undefined) {
+      chains.push([item]);
+    } else {
+      const existing = byKey.get(key);
+      if (existing === undefined) {
+        const chain = [item];
+        byKey.set(key, chain);
+        chains.push(chain);
+      } else {
+        existing.push(item);
+      }
+    }
+  }
+  return chains;
+};
+
+/**
+ * Every phase after the source, in order. With setup, nothing after it writes the source tree, so the checks run in
+ * one lane while the build and journeys run in another; without it (older settings), every step runs in turn.
+ */
+const phases = (
   target: Target,
   patches: ReadonlyArray<Patch>,
   install: boolean,
   folders: RunFolders,
   options: RunOptions,
-): ReadonlyArray<Action> => {
+): ReadonlyArray<Phase> => {
   const save = options.save ?? true;
   const env = (opened: Opened) => commandEnv(target, opened, patches);
-  return [
-    ...patches.map((patch) => patchStep(patch, save)),
-    ...target.checks.map((check) => shellStep("check", check.name, targetCommand(check), env)),
-    ...patches.flatMap((patch) =>
-      patch.manifest.checks.map((check) => shellStep("check", `${patch.manifest.id}: ${check.name}`, () => check, env)),
+  const shell = (kind: StepKind) => (command: Command) => shellStep(kind, command.name, targetCommand(command), env);
+  const checks: Stage = { atOnce: 1, actions: target.checks.map(shell("check")) };
+  const patchChecks: Stage = {
+    atOnce: CHECKS_AT_ONCE,
+    actions: patches.flatMap((patch) =>
+      patch.manifest.checks.map((check) =>
+        shellStep("check", `${patch.manifest.id}: ${check.name}`, () => check, env, logLockKey(check.name)),
+      ),
     ),
-    ...target.build.map((command) => shellStep("build", command.name, targetCommand(command), env)),
-    ...patches.flatMap((patch) =>
+  };
+  const build: Stage = { atOnce: 1, actions: target.build.map(shell("build")) };
+  const journeys: Stage = {
+    atOnce: JOURNEYS_AT_ONCE,
+    actions: patches.flatMap((patch) =>
       patch.manifest.journeys.map((journey) => journeyStep(target, folders, patches, patch, journey)),
     ),
-    ...(save ? [saveStep()] : []),
-    ...(install ? [installStep(target, patches, options)] : []),
+  };
+  const verified: ReadonlyArray<Phase> =
+    target.setup.length === 0
+      ? [inTurn([checks, patchChecks, build, journeys].flatMap((stage) => stage.actions))]
+      : [inTurn(target.setup.map(shell("setup"))), { lanes: [[checks, patchChecks], [build, journeys]] }];
+  return [
+    inTurn(patches.map((patch) => patchStep(patch, save))),
+    ...verified,
+    ...(save ? [inTurn([saveStep()])] : []),
+    ...(install ? [inTurn([installStep(target, patches, options)])] : []),
   ];
 };
 
@@ -223,9 +309,9 @@ const changed = (report: RunReport, index: number, change: (step: Step, at: numb
 
 /**
  * Apply `patches`, in order, over a clean checkout of the installed version (or `options.version`); run the target's
- * checks and each patch's checks; build; run each patch's journeys; save patches whose diff changed (rebased onto
- * this version); then, if `install`, replace the installed app. Stops at the first step that fails; later steps are
- * skipped, so nothing is installed.
+ * setup; run the target's checks and each patch's checks (alongside the build and journeys when there's setup); build;
+ * run each patch's journeys; save patches whose diff changed (rebased onto this version); then, if `install`, replace
+ * the installed app. A failing step stops every later one, so nothing is installed.
  */
 export const run: (
   target: Target,
@@ -236,15 +322,53 @@ export const run: (
 ) => Effect.Effect<RunReport, never, Installation | Source | Resolver | Shell | PatchWriter | Progress> = Effect.fn("run")(
   function* (target, patches, install, folders, options = {}) {
     const progress = yield* Progress;
-    const rest = actions(target, patches, install, folders, options);
+    const planPhases = phases(target, patches, install, folders, options);
+    const rest = planPhases.flatMap(phaseActions);
     const steps = [planned("source", `${target.name} source`), ...rest.map((action) => planned(action.kind, action.name))];
     const report = yield* Ref.make<RunReport>(
       options.updating === undefined
         ? { version: "", install, steps }
         : { version: "", install, updating: options.updating, steps },
     );
+    // Lanes update the report side by side: reports go to Progress one at a time, and one that a newer report has
+    // overtaken is dropped.
+    let made = 0;
+    let sent = 0;
+    let delivering = false;
+    const queued: Array<() => void> = [];
+    const takeTurn = Effect.callback<void>((resume) => {
+      if (!delivering) {
+        delivering = true;
+        resume(Effect.void);
+      } else {
+        queued.push(() => resume(Effect.void));
+      }
+    });
+    const passTurn = Effect.sync(() => {
+      const next = queued.shift();
+      if (next === undefined) delivering = false;
+      else next();
+    });
     const update = (f: (report: RunReport) => RunReport) =>
-      Ref.updateAndGet(report, f).pipe(Effect.flatMap((next) => progress.report(next)));
+      Ref.modify(report, (current): [readonly [RunReport, number], RunReport] => {
+        const next = f(current);
+        made += 1;
+        return [[next, made], next];
+      }).pipe(
+        Effect.flatMap(([next, order]) =>
+          Effect.acquireUseRelease(
+            takeTurn,
+            () =>
+              Effect.suspend(() => {
+                if (order < sent) return Effect.void;
+                sent = order;
+                return progress.report(next);
+              }),
+            () => passTurn,
+          ),
+        ),
+        Effect.uninterruptible,
+      );
     const at = (index: number, change: (step: Step) => Step) =>
       update((current) => changed(current, index, (step, position) => (position === index ? change(step) : step)));
 
@@ -255,12 +379,96 @@ export const run: (
         Effect.tapError((error) =>
           update((current) =>
             changed(current, index, (step, position) =>
-              position === index ? { ...step, status: "failed", note: error.reason } : { ...step, status: "skipped" },
+              position === index ? { ...step, status: "failed", note: error.reason } : { ...step, status: "skipped", note: "" },
             ),
           ),
         ),
         Effect.tap((value) => at(index, (step) => ({ ...step, status: "passed", note: note(value) }))),
       );
+
+    /**
+     * Run a phase's lanes side by side. A step that fails shows it at once and stops every later step in plan order
+     * (running ones are stopped); earlier ones still finish. Stopped and unstarted steps are skipped, and the run fails
+     * with the first failure in plan order.
+     */
+    const performConcurrent = Effect.fn("performConcurrent")(function* (
+      lanes: ReadonlyArray<ReadonlyArray<IndexedStage>>,
+      opened: Opened,
+    ) {
+      let earliestFailure = Number.MAX_SAFE_INTEGER;
+      const failures = new Map<number, StepFailed>();
+      const waiters = new Set<CancelWaiter>();
+
+      const waitEarlierFailure = (index: number) =>
+        Effect.callback<{ readonly _tag: "Cancelled" }>((resume) => {
+          if (earliestFailure < index) {
+            resume(Effect.succeed({ _tag: "Cancelled" }));
+            return;
+          }
+          const entry: CancelWaiter = {
+            index,
+            cancel: () => resume(Effect.succeed({ _tag: "Cancelled" })),
+          };
+          waiters.add(entry);
+          return Effect.sync(() => {
+            waiters.delete(entry);
+          });
+        });
+
+      const runOne = Effect.fn("runOne")(function* ({ index, action }: IndexedAction) {
+        if (earliestFailure < index) return;
+        yield* update((current) =>
+          changed(current, index, (step, position) =>
+            position === index && step.status === "pending" ? { ...step, status: "running" } : step,
+          ),
+        );
+        // An earlier step may have failed while that report was delivered.
+        if (earliestFailure < index) return;
+        const outcome = yield* Effect.raceFirst(
+          action.perform(opened).pipe(Effect.result),
+          waitEarlierFailure(index),
+        );
+        if (outcome._tag === "Cancelled") return;
+        if (outcome._tag === "Success") {
+          if (earliestFailure < index) return;
+          yield* at(index, (step) => ({ ...step, status: "passed", note: outcome.success }));
+          return;
+        }
+        failures.set(index, outcome.failure);
+        if (index < earliestFailure) earliestFailure = index;
+        // Later steps stop before the failure is reported, which can take a while.
+        for (const waiter of waiters) {
+          if (waiter.index > index) {
+            waiters.delete(waiter);
+            waiter.cancel();
+          }
+        }
+        yield* at(index, (step) => ({ ...step, status: "failed", note: outcome.failure.reason }));
+      });
+
+      const runStage = (stage: IndexedStage) =>
+        stage.atOnce === 1
+          ? Effect.forEach(stage.items, runOne, { discard: true })
+          : Effect.forEach(groupByLockKey(stage.items), (chain) => Effect.forEach(chain, runOne, { discard: true }), {
+              concurrency: stage.atOnce,
+              discard: true,
+            });
+      yield* Effect.forEach(lanes, (lane) => Effect.forEach(lane, runStage, { discard: true }), {
+        concurrency: "unbounded",
+        discard: true,
+      });
+
+      if (failures.size === 0) return;
+      const firstIndex = Math.min(...failures.keys());
+      const firstError = failures.get(firstIndex);
+      if (firstError === undefined) return;
+      yield* update((current) =>
+        changed(current, firstIndex, (step) =>
+          step.status === "passed" || step.status === "failed" ? step : { ...step, status: "skipped", note: "" },
+        ),
+      );
+      return yield* firstError;
+    });
 
     yield* update((current) => current);
     yield* Effect.gen(function* () {
@@ -277,9 +485,24 @@ export const run: (
         workspace: source.workspace,
         saves: yield* Ref.make<ReadonlyArray<Patch>>([]),
       };
-      yield* Effect.forEach(rest, (action, index) => perform(index + 1, action.perform(opened), (note) => note), {
-        discard: true,
-      });
+      let nextIndex = 1;
+      for (const phase of planPhases) {
+        const lanes = phase.lanes.map((lane) =>
+          lane.map((stage) => {
+            const items = stage.actions.map((action, offset) => ({ index: nextIndex + offset, action }));
+            nextIndex += stage.actions.length;
+            return { atOnce: stage.atOnce, items };
+          }),
+        );
+        const only = lanes.length === 1 && lanes[0]?.length === 1 ? lanes[0][0] : undefined;
+        if (only !== undefined && (only.atOnce === 1 || only.items.length <= 1)) {
+          yield* Effect.forEach(only.items, ({ index, action }) => perform(index, action.perform(opened), (note) => note), {
+            discard: true,
+          });
+        } else {
+          yield* performConcurrent(lanes, opened);
+        }
+      }
     }).pipe(Effect.catchTag("StepFailed", () => Effect.void));
     return yield* Ref.get(report);
   },

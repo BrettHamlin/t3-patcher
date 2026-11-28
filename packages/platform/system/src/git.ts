@@ -3,6 +3,7 @@ import { PublishedPatches, Source, type Workspace } from "@app/apply";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import { ChildProcessSpawner } from "effect/process/ChildProcessSpawner";
 import * as Schema from "effect/Schema";
@@ -172,15 +173,35 @@ export const gitSource = (input: {
       const isWorktree = (folder: string) =>
         fs.exists(path.join(folder, ".git")).pipe(Effect.mapError(couldnt(`read ${folder}`)));
 
-      const updateMirror = Effect.gen(function* () {
-        if (!(yield* fs.exists(path.join(mirror, "HEAD")).pipe(Effect.mapError(couldnt(`read ${mirror}`))))) {
-          yield* fs.makeDirectory(input.work, { recursive: true }).pipe(Effect.mapError(couldnt(`make ${input.work}`)));
-          yield* git(input.work, ["clone", "--bare", "--quiet", input.repository, mirror]).pipe(
-            Effect.mapError((error) => stepFailed(`couldn't clone ${input.repository}: ${error.reason}`)),
-          );
+      const ensureMirror = Effect.gen(function* () {
+        if (yield* fs.exists(path.join(mirror, "HEAD")).pipe(Effect.mapError(couldnt(`read ${mirror}`)))) {
+          return false;
         }
-        // Offline is fine when the tag is already here; `open` says why if it isn't.
-        return yield* attempt(mirror, ["fetch", "--quiet", "--tags", "--force", "origin"]);
+        yield* fs.makeDirectory(input.work, { recursive: true }).pipe(Effect.mapError(couldnt(`make ${input.work}`)));
+        yield* git(input.work, ["clone", "--bare", "--quiet", input.repository, mirror]).pipe(
+          Effect.mapError((error) => stepFailed(`couldn't clone ${input.repository}: ${error.reason}`)),
+        );
+        return true;
+      });
+
+      const resolveTag = Effect.fn("Source.resolveTag")(function* (tag: string) {
+        const cloned = yield* ensureMirror;
+        const revision = `refs/tags/${tag}^{commit}`;
+        const cached = yield* commitOf(mirror, revision).pipe(Effect.option);
+        if (Option.isSome(cached)) return cached.value;
+        // Offline is fine when the tag is already here; fetch only when the mirror lacks it.
+        const fetched = cloned
+          ? { code: 0, stdout: "", stderr: "" }
+          : yield* attempt(mirror, ["fetch", "--quiet", "--tags", "--force", "origin"]);
+        return yield* commitOf(mirror, revision).pipe(
+          Effect.mapError(() =>
+            stepFailed(
+              fetched.code === 0
+                ? `no tag ${tag} in ${input.repository}`
+                : `no tag ${tag} in ${input.repository} (couldn't fetch: ${lastLines(fetched.stderr, 5)})`,
+            ),
+          ),
+        );
       });
 
       return {
@@ -189,25 +210,21 @@ export const gitSource = (input: {
             Effect.gen(function* () {
               const ready = readyFile(slot);
               yield* fs.remove(ready, { force: true }).pipe(Effect.mapError(couldnt(`remove ${ready}`)));
-              const fetched = yield* updateMirror;
-              const base = yield* commitOf(mirror, `refs/tags/${tag}^{commit}`).pipe(
-                Effect.mapError(() =>
-                  stepFailed(
-                    fetched.code === 0
-                      ? `no tag ${tag} in ${input.repository}`
-                      : `no tag ${tag} in ${input.repository} (couldn't fetch: ${lastLines(fetched.stderr, 5)})`,
-                  ),
-                ),
-              );
+              const base = yield* resolveTag(tag);
               const folder = path.join(slots, slot);
               if (!(yield* isWorktree(folder))) {
                 yield* fs.makeDirectory(slots, { recursive: true }).pipe(Effect.mapError(couldnt(`make ${slots}`)));
                 yield* git(mirror, ["worktree", "prune"]);
                 yield* git(mirror, ["worktree", "add", "--quiet", "--detach", folder, base]);
+              } else {
+                const current = yield* head(folder).pipe(Effect.option);
+                const dirty = yield* git(folder, ["status", "--porcelain", "--untracked-files=all"]);
+                if (Option.isNone(current) || current.value !== base || dirty !== "") {
+                  yield* git(folder, ["checkout", "--quiet", "--force", "--detach", base]);
+                  yield* git(folder, ["reset", "--quiet", "--hard"]);
+                  yield* git(folder, ["clean", "-ffdq"]);
+                }
               }
-              yield* git(folder, ["checkout", "--quiet", "--force", "--detach", base]);
-              yield* git(folder, ["reset", "--quiet", "--hard"]);
-              yield* git(folder, ["clean", "-ffdq"]);
               yield* git(mirror, ["update-ref", slotRef(slot), base]);
               return workspace(folder, base, ready);
             }),

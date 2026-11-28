@@ -4,31 +4,31 @@
       "id": "environment-patches",
       "title": "Environment patches",
       "summary": "Settings → Environments shows every environment's version (even when matching the client) and its installed patches in both Map and List views. Map cards display '<version> · <N> patches', and each environment row adds a 'Patches' disclosure beside Routes and Permissions that lists every patch's title, version badge, slug, summary, and an expandable 'What’s included' feature breakdown, preserving open state across Map ↔ List switches. Servers publish their patches on ExecutionEnvironmentDescriptor (and t3_environment_read) from T3_PATCHER_PATCHES baked at build time or <stateDir>/patcher/installed.json.",
-      "version": 1
+      "version": 2
     },
     {
       "id": "journey-kit",
       "title": "Journey kit",
-      "summary": "patcher/journeys/support.mjs launches the built app for patch journeys: a throwaway HOME and T3CODE_HOME seeded with the release launch fixture, Chromium's mock keychain, no Dock icon and no window ever shown or focused (a journey fails if one is), telemetry and auto-update off, logs and screenshots into $T3_PATCHER_EVIDENCE, tearing down Electron's process group under bounded deadlines if setup fails before the first window opens. Every other patch's journeys use it. T3's Vitest suites cap worker concurrency from BSTACK_VERIFY_WORKERS (default 1), and browser tests run in full headless Chromium in their own group order so frames draw on a locked Mac without colliding with unit runs.",
-      "version": 4
+      "summary": "patcher/journeys/support.mjs launches the built app for patch journeys without Node inspector flags (which packaged Electron fuses disable): a throwaway HOME and T3CODE_HOME seeded with the release launch fixture, Chromium's mock keychain, --background hooks installed in boot.cjs before app ready so no Dock icon or window is ever shown or focused (verified over a fixed stdio IPC channel on close), Playwright connected over --remote-debugging-port=0, telemetry and auto-update off, logs and screenshots into $T3_PATCHER_EVIDENCE, tearing down Electron's process group under bounded deadlines. patcher/check.mjs deduplicates patch Vitest and parallelized i18n checks against check:changed receipts for the exact git tree digest, and T3's Vitest suites cap worker concurrency from BSTACK_VERIFY_WORKERS.",
+      "version": 5
     },
     {
       "id": "patch-updates",
       "title": "Patch updates",
-      "summary": "On a build made by T3 Patcher (with <T3 home>/userdata/patcher/installed.json), the sidebar's update pill offers newer versions of installed patches, brand-new published patches (enabled by default unless turned off in stack.json), and new T3 Code versions; Update runs the patcher's update command (rebuild with every enabled patch, check, install, relaunch) instead of electron-updater, showing its steps live. T3CODE_PATCH_UPDATE_FEED overrides the feed.",
-      "version": 2
+      "summary": "On a build made by T3 Patcher (with <T3 home>/userdata/patcher/installed.json), the sidebar's update pill offers newer versions of installed patches, brand-new published patches (enabled by default unless turned off in stack.json), and new T3 Code versions; Update runs the patcher's update command (rebuild with every enabled patch, check, install, relaunch) instead of electron-updater, showing its steps live. T3CODE_PATCH_UPDATE_FEED overrides the feed and T3CODE_UPDATE_STARTUP_DELAY_MS overrides the startup poll delay in tests and journeys.",
+      "version": 3
     },
     {
       "id": "picks",
       "title": "Picks",
       "summary": "Agents ask the owner for blind RLHF, reference-selection, and pairwise/multi-way media judgments in T3 Code itself. A new MCP tool, request_picks, takes a batch of 1-200 questions, each with 2-4 image or video options (absolute paths, checked and copied into the attachments store under a bounded per-file timeout) and an optional exact display box; it returns pending at once, while refusing delegated child threads so the parent thread asks instead. The server shuffles each question's options, and the Picks inbox (a sidebar item with the open count, and a /picks page across connected environments whose cards open a batch and show its first prompt, progress bar, CTA and Not sent once every answer is in) shows them by place only, one question at a time, with the thread sidebar hidden. Inside a calibrated #181b20 neutral darkroom viewport, options sit on unified #2a2e36 stages over #21252c plinths as pure radio choices, shrink-wrapped to natural media size within stated caps (480, 320 or 240 px for 2, 3 or 4 options, never upscaled) or framed unclipped inside a stepped neutral mat at the agent's exact box, in one row, 2x2, or single-plate blink mode (automatically when options exceed side-by-side space, or on demand via B and the header Side by side / Blink switcher), plus a synchronized multi-candidate detail loupe (Z, 2.5x or 4x pixelated) tracking normalized cursor coordinates across every option simultaneously; a question takes picks once all its media has loaded. Videos have no controls, start together and are driven by a unified dark-surface studio transport bar and Space, S (half speed), R (replay) and comma or period (one frame). Each question offers radio buttons for its options (1-4) plus Can't tell (0) when allowed, without auto-advancing or auto-submitting on selection, and a single Send picks submit button (Cmd/Ctrl+Enter) enabled once all questions are answered; B toggles side-by-side vs blink; F/Shift+F cycles blink options; Z toggles the detail loupe; N opens a rationale note on the question on screen; Shift+N opens the note of the last one answered; U jumps to the next blank; ? opens the keyboard shortcuts popover; arrows and a high-contrast progress strip move between questions. Each answer is saved as it is made; Send picks records the batch answered and wakes the asking thread with one message listing every answer unblinded, plus the same as JSON, and the thread's card lists what was sent. Batches are a pick_request turn item on the asking thread, held open across automatic settlement and closed without a wake when the thread is explicitly stopped, settled, archived or deleted. Server entrypoints default UV_THREADPOOL_SIZE to 16 so slow or blocked external-volume reads cannot starve the libuv worker pool, and the open-batch partial index is created idempotently at startup rather than as a numbered migration.",
-      "version": 4
+      "version": 5
     },
     {
       "id": "work-timestamps",
       "title": "Work timestamps",
       "summary": "Each finished turn's fold row in the thread timeline names when the work ended, next to how long it took: \"Worked for 3m 30s · 9:42 PM EST\", \"You stopped after 12s · 9:42 PM EST\", and \"Continued for …\" on the rows below a steer. The time is the instant the duration is measured to, in the system's locale (12- or 24-hour) and time zone, without seconds, with the month and day added when the turn ended before today; the label gains its date at local midnight. Rows still working, and rows without a duration, show no time. The label strings take the time as a placeholder, translated in every web catalog.",
-      "version": 2
+      "version": 3
     }
   ]
 }

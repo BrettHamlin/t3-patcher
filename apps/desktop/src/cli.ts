@@ -33,6 +33,7 @@ import {
   installedVersion,
   linkElectronCache,
   PREPULLED_ENV,
+  resolvedVerifyWorkers,
   runPublishedUpdate,
   servicesFor,
   settingsFile,
@@ -49,7 +50,6 @@ import {
   type Line,
   outcome,
   parse,
-  parseVerifyWorkers,
   refreshBuildEnv,
   stackLines,
   stepLine,
@@ -117,13 +117,11 @@ const cacheWork = Effect.fn("cacheWork")(function* (home: string) {
   });
 });
 
-/** Reads `verify_workers` from `~/.config/b-stack/config.toml` when present (default 1). */
+/** Reads `verify_workers` from `~/.config/b-stack/config.toml` when present (else this machine's default). */
 const configuredVerifyWorkers = Effect.fn("configuredVerifyWorkers")(function* (home: string) {
-  const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const file = path.join(home, ".config/b-stack/config.toml");
-  const text = (yield* fs.exists(file)) ? yield* fs.readFileString(file) : "";
-  const parsed = parseVerifyWorkers(text);
+  const parsed = yield* resolvedVerifyWorkers(home);
   if (parsed !== undefined) return parsed;
   return yield* new Refused({ why: `verify_workers in ${file} must be a whole number of at least 1` });
 });

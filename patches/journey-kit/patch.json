@@ -1,16 +1,16 @@
 {
   "id": "journey-kit",
   "title": "Journey kit",
-  "summary": "patcher/journeys/support.mjs launches the built app for patch journeys: a throwaway HOME and T3CODE_HOME seeded with the release launch fixture, Chromium's mock keychain, no Dock icon and no window ever shown or focused (a journey fails if one is), telemetry and auto-update off, logs and screenshots into $T3_PATCHER_EVIDENCE, tearing down Electron's process group under bounded deadlines if setup fails before the first window opens. Every other patch's journeys use it. T3's Vitest suites cap worker concurrency from BSTACK_VERIFY_WORKERS (default 1), and browser tests run in full headless Chromium in their own group order so frames draw on a locked Mac without colliding with unit runs.",
-  "version": 4,
+  "summary": "patcher/journeys/support.mjs launches the built app for patch journeys without Node inspector flags (which packaged Electron fuses disable): a throwaway HOME and T3CODE_HOME seeded with the release launch fixture, Chromium's mock keychain, --background hooks installed in boot.cjs before app ready so no Dock icon or window is ever shown or focused (verified over a fixed stdio IPC channel on close), Playwright connected over --remote-debugging-port=0, telemetry and auto-update off, logs and screenshots into $T3_PATCHER_EVIDENCE, tearing down Electron's process group under bounded deadlines. patcher/check.mjs deduplicates patch Vitest and parallelized i18n checks against check:changed receipts for the exact git tree digest, and T3's Vitest suites cap worker concurrency from BSTACK_VERIFY_WORKERS.",
+  "version": 5,
   "base": {
-    "version": "0.1.12",
-    "commit": "ca81b7b97a1c4b91e5ac25768d0f6629f37732fd"
+    "version": "0.1.13",
+    "commit": "bc0f04da94f64b5e487c598761a43b4cf06b2ac9"
   },
   "checks": [
     {
       "name": "browser runner",
-      "run": ". \"$T3_PATCHER_ENV\" && cd apps/web && pnpm exec playwright install chromium && pnpm exec vp test run src/browser/browserDefaults.test.ts src/components/ContextChip.browser.test.tsx src/components/DiffFilePathCopyButton.browser.test.tsx"
+      "run": ". \"$T3_PATCHER_ENV\" && node patcher/check.mjs vitest apps/web/src/browser/browserDefaults.test.ts apps/web/src/components/ContextChip.browser.test.tsx apps/web/src/components/DiffFilePathCopyButton.browser.test.tsx"
     }
   ],
   "journeys": [

@@ -47,8 +47,12 @@ export const run = (
     }),
   ).pipe(Effect.mapError((error) => stepFailed(`couldn't run ${command}: ${error.message}`)));
 
-const shellEnv = (extra: Readonly<Record<string, string>>, runToken: string): Record<string, string> => {
-  const env: Record<string, string> = {};
+const shellEnv = (
+  extra: Readonly<Record<string, string>>,
+  runToken: string,
+  defaults: Readonly<Record<string, string>> = {},
+): Record<string, string> => {
+  const env: Record<string, string> = { ...defaults };
   for (const [key, value] of Object.entries(process.env)) {
     if (
       key !== "ELECTRON_RUN_AS_NODE" &&
@@ -852,13 +856,14 @@ export const runLogged = (
     readonly folder: string;
     readonly script: string;
     readonly env: Readonly<Record<string, string>>;
+    readonly defaults?: Readonly<Record<string, string>>;
     readonly log: string;
   },
 ): Effect.Effect<{ readonly code: number; readonly output: string }, StepFailed> =>
   Effect.scoped(
     Effect.gen(function* () {
       const token = yield* mintRunToken();
-      const childEnv = shellEnv(input.env, token);
+      const childEnv = shellEnv(input.env, token, input.defaults);
       const tempDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-run-" });
       const leakFile = `${tempDir}/leaked.txt`;
       const volFile = `${tempDir}/volume.txt`;

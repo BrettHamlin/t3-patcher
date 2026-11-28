@@ -2,23 +2,23 @@
   "id": "environment-patches",
   "title": "Environment patches",
   "summary": "Settings → Environments shows every environment's version (even when matching the client) and its installed patches in both Map and List views. Map cards display '<version> · <N> patches', and each environment row adds a 'Patches' disclosure beside Routes and Permissions that lists every patch's title, version badge, slug, summary, and an expandable 'What’s included' feature breakdown, preserving open state across Map ↔ List switches. Servers publish their patches on ExecutionEnvironmentDescriptor (and t3_environment_read) from T3_PATCHER_PATCHES baked at build time or <stateDir>/patcher/installed.json.",
-  "version": 1,
+  "version": 2,
   "base": {
-    "version": "0.1.12",
-    "commit": "ca81b7b97a1c4b91e5ac25768d0f6629f37732fd"
+    "version": "0.1.13",
+    "commit": "bc0f04da94f64b5e487c598761a43b4cf06b2ac9"
   },
   "checks": [
     {
       "name": "contracts and server patch descriptor tests",
-      "run": ". \"$T3_PATCHER_ENV\" && cd packages/contracts && pnpm exec vp test run src/environment.test.ts && cd ../../apps/server && pnpm exec vp test run src/environment/ServerEnvironment.test.ts src/mcp/toolkits/environment/handlers.test.ts"
+      "run": ". \"$T3_PATCHER_ENV\" && node patcher/check.mjs vitest packages/contracts/src/environment.test.ts apps/server/src/environment/ServerEnvironment.test.ts apps/server/src/mcp/toolkits/environment/handlers.test.ts"
     },
     {
       "name": "web environment patches logic and browser tests",
-      "run": ". \"$T3_PATCHER_ENV\" && export PLAYWRIGHT_BROWSERS_PATH=\"${PLAYWRIGHT_BROWSERS_PATH:-$BE/ms-playwright}\" && cd apps/web && pnpm exec playwright install chromium && pnpm exec vp test run --project unit src/components/settings/environmentPatches.logic.test.ts && pnpm exec vp test run --project browser src/components/settings/EnvironmentPatchesList.browser.test.tsx"
+      "run": ". \"$T3_PATCHER_ENV\" && node patcher/check.mjs vitest apps/web/src/components/settings/environmentPatches.logic.test.ts apps/web/src/components/settings/EnvironmentPatchesList.browser.test.tsx"
     },
     {
       "name": "translations",
-      "run": ". \"$T3_PATCHER_ENV\" && node scripts/i18n-check.ts"
+      "run": ". \"$T3_PATCHER_ENV\" && node patcher/check.mjs i18n"
     }
   ],
   "journeys": [

@@ -81,12 +81,13 @@ export const patch = Effect.fn("patch")(function* (
   return made;
 });
 
-export const target = (overrides: Partial<Pick<Target, "checks" | "build">> = {}): Target => ({
+export const target = (overrides: Partial<Pick<Target, "setup" | "checks" | "build">> = {}): Target => ({
   name: "T3 Code",
   repository: "https://example.com/t3code.git",
   tag: "v{version}",
   installed: "/Applications/T3 Code.app",
   built: "release/T3 Code.app",
+  setup: overrides.setup ?? [],
   checks: overrides.checks ?? [{ name: "typecheck", run: "bun typecheck --tag {version}" }],
   build: overrides.build ?? [{ name: "build", run: "bun build {version}" }],
   env: { CI: "1" },

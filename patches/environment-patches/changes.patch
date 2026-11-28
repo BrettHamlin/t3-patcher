@@ -321,10 +321,10 @@ index 9e10380295de25ab421ecd69fe7eb93e0a348c24..5aba73d1db0e10d83d7c5af8b53bbc23
    }),
  })
 diff --git a/apps/server/vite.config.ts b/apps/server/vite.config.ts
-index 2bec8830d86c51b2fff6883b2e8d232741fa8800..12d58a2e00841dd3be46ffcda8e7ebeb9dcab5f6 100644
+index 2fd852304dec5925f046630f422e46157d56126c..e5960362fbd9199c2de7c0accfd4e6eac7fe9888 100644
 --- a/apps/server/vite.config.ts
 +++ b/apps/server/vite.config.ts
-@@ -168,6 +168,7 @@ export default mergeConfig(
+@@ -177,6 +177,7 @@ export default mergeConfig(
          __T3CODE_BUILD_RELAY_CLIENT_OTLP_TRACES_TOKEN__: JSON.stringify(
            repoEnv.T3CODE_RELAY_CLIENT_OTLP_TRACES_TOKEN?.trim() ?? "",
          ),
@@ -333,7 +333,7 @@ index 2bec8830d86c51b2fff6883b2e8d232741fa8800..12d58a2e00841dd3be46ffcda8e7ebeb
      },
      test: {
 diff --git a/apps/web/src/components/settings/ConnectionsSettings.tsx b/apps/web/src/components/settings/ConnectionsSettings.tsx
-index 523e25e754c52fa80341049355127bb78b8c03ff..2d46562a81b8f78e4c474fc9683b4583911791f4 100644
+index b17928b28bc98eacc022858136e9406dc8dce071..f46a5764928ec31176c71f848b758f758acdac6f 100644
 --- a/apps/web/src/components/settings/ConnectionsSettings.tsx
 +++ b/apps/web/src/components/settings/ConnectionsSettings.tsx
 @@ -48,6 +48,7 @@ import { LocalEnvironmentSetting } from "./LocalEnvironmentSetting";
@@ -344,7 +344,7 @@ index 523e25e754c52fa80341049355127bb78b8c03ff..2d46562a81b8f78e4c474fc9683b4583
  import { FoldedSettingsSection } from "./FoldedSettingsSection";
  import { EnvironmentsMap } from "./EnvironmentsMap";
  import { LinkedEnvironmentsSettings } from "./LinkedEnvironmentsSettings";
-@@ -181,7 +182,9 @@ export function ConnectionsSettings({ view }: { readonly view: "environments" |
+@@ -182,7 +183,9 @@ export function ConnectionsSettings({ view }: { readonly view: "environments" |
    return view === "access" ? (
      <AccessSettings />
    ) : (
@@ -355,7 +355,7 @@ index 523e25e754c52fa80341049355127bb78b8c03ff..2d46562a81b8f78e4c474fc9683b4583
    );
  }
  
-@@ -1829,6 +1832,13 @@ function ConnectionsSettingsContent({
+@@ -1830,6 +1833,13 @@ function ConnectionsSettingsContent({
        {desktopBridge ? (
          <SettingsSection id="this-app" title={gt("This app")}>
            <LocalEnvironmentSetting />
@@ -902,10 +902,10 @@ index 0000000000000000000000000000000000000000..944147b071ea6a259d860e84307f8c2f
 +  );
 +}
 diff --git a/apps/web/src/components/settings/EnvironmentsMap.tsx b/apps/web/src/components/settings/EnvironmentsMap.tsx
-index 5d4b2f96754c82cfc0c74245a1d304d73ef5740e..23e022d4f5f8c8faa700523116f442707c49128e 100644
+index ee914d6b09e9bc09ee2d8c5ab40af05c6fb6271d..83179ff80769667b50e0978fb4128cd604c7830e 100644
 --- a/apps/web/src/components/settings/EnvironmentsMap.tsx
 +++ b/apps/web/src/components/settings/EnvironmentsMap.tsx
-@@ -1165,6 +1165,14 @@ function environmentStatusText(
+@@ -1179,6 +1179,14 @@ function environmentStatusText(
    linkCount: number,
    gt: GT,
  ): string {
@@ -920,7 +920,7 @@ index 5d4b2f96754c82cfc0c74245a1d304d73ef5740e..23e022d4f5f8c8faa700523116f44270
    if (node.phase !== "connected") return connectionStateText(node, environment, refused, gt);
    switch (node.outgoing) {
      case "loading":
-@@ -2147,11 +2155,13 @@ const FleetScene = memo(function FleetScene({
+@@ -2161,11 +2169,13 @@ const FleetScene = memo(function FleetScene({
            gt,
          );
          // The card's state is short; the name carries the reason and what it leaves unknown.
@@ -935,7 +935,7 @@ index 5d4b2f96754c82cfc0c74245a1d304d73ef5740e..23e022d4f5f8c8faa700523116f44270
                });
          const dimmed = !node.enabled || node.phase === "unsupported";
          const handle = layout.handles.get(node.id);
-@@ -2202,7 +2212,9 @@ const FleetScene = memo(function FleetScene({
+@@ -2216,7 +2226,9 @@ const FleetScene = memo(function FleetScene({
                  <span
                    className={cn(
                      "block truncate text-2xs leading-4",
@@ -947,7 +947,7 @@ index 5d4b2f96754c82cfc0c74245a1d304d73ef5740e..23e022d4f5f8c8faa700523116f44270
                        : "text-muted-foreground",
                    )}
 diff --git a/apps/web/src/components/settings/EnvironmentsMapDetails.tsx b/apps/web/src/components/settings/EnvironmentsMapDetails.tsx
-index 38c6d8d5eb93b3f7fbf490869da285955a573389..0d3c6dfb53e2778e51b845593738495c7e658ba3 100644
+index e01a10ca71407f54f95dbf3ff302bf5becdd0370..cc5076820f415d95cd18cb8ed73f6ed839ee8e31 100644
 --- a/apps/web/src/components/settings/EnvironmentsMapDetails.tsx
 +++ b/apps/web/src/components/settings/EnvironmentsMapDetails.tsx
 @@ -1,11 +1,6 @@
@@ -972,7 +972,7 @@ index 38c6d8d5eb93b3f7fbf490869da285955a573389..0d3c6dfb53e2778e51b845593738495c
  import {
    type FleetEnvironmentNode,
    type FleetFocus,
-@@ -631,7 +626,6 @@ function NodeDetails({
+@@ -650,7 +645,6 @@ function NodeDetails({
    readonly onSelect: (focus: FleetFocus) => void;
  }) {
    const gt = useGT();
@@ -980,7 +980,7 @@ index 38c6d8d5eb93b3f7fbf490869da285955a573389..0d3c6dfb53e2778e51b845593738495c
    const labelOf = (id: string) => graph.nodes.find((entry) => entry.id === id)?.label ?? "";
    if (node.kind === "client") {
      const hosts = graph.nodes.filter((entry) => entry.kind === "environment");
-@@ -715,23 +709,7 @@ function NodeDetails({
+@@ -734,23 +728,7 @@ function NodeDetails({
    const loaded = node.outgoing === "loaded";
    return (
      <>
@@ -1006,7 +1006,7 @@ index 38c6d8d5eb93b3f7fbf490869da285955a573389..0d3c6dfb53e2778e51b845593738495c
          {environment && saved !== null ? <Reconnect environment={environment} /> : null}
          {note ? <p className="max-w-2xl text-muted-foreground">{note}</p> : null}
 diff --git a/apps/web/src/components/settings/SavedEnvironmentRows.tsx b/apps/web/src/components/settings/SavedEnvironmentRows.tsx
-index 2b9ad1225ff0a8a77287262ba55db2224cb150a1..fb3122ae0a80d7704f117194e2c305d7ec81a4cb 100644
+index bb429e0627872d7d20503f0ea9bd0375d2ff0d39..75695e18b8bc9103420078f75b2905e74afbc492 100644
 --- a/apps/web/src/components/settings/SavedEnvironmentRows.tsx
 +++ b/apps/web/src/components/settings/SavedEnvironmentRows.tsx
 @@ -31,6 +31,12 @@ import { cn } from "../../lib/utils";
@@ -1022,7 +1022,7 @@ index 2b9ad1225ff0a8a77287262ba55db2224cb150a1..fb3122ae0a80d7704f117194e2c305d7
  import { EnvironmentRoutesList } from "./EnvironmentRoutesList";
  import {
    ConnectionDiagnosisPanel,
-@@ -138,6 +144,8 @@ export function SavedBackendListRow({
+@@ -139,6 +145,8 @@ export function SavedBackendListRow({
    const [permissionsOpen, setPermissionsOpen] = useState(false);
    const [diagnosisOpen, setDiagnosisOpen] = useState(false);
    const environmentId = environment.environmentId;
@@ -1031,7 +1031,7 @@ index 2b9ad1225ff0a8a77287262ba55db2224cb150a1..fb3122ae0a80d7704f117194e2c305d7
    const unsupported = environment.connection.phase === "unsupported";
    const blocked = unsupported && !hasSavedBearerRoute(environment.entry);
    const enabled = environment.entry.enabled && !unsupported;
-@@ -193,7 +201,6 @@ export function SavedBackendListRow({
+@@ -194,7 +202,6 @@ export function SavedBackendListRow({
    const resumingServerUpdate =
      serverUpdateState.status === "running" && serverUpdateState.stage === "resuming";
    const status = savedBackendStatus(environment, messages);
@@ -1039,7 +1039,7 @@ index 2b9ad1225ff0a8a77287262ba55db2224cb150a1..fb3122ae0a80d7704f117194e2c305d7
    // Discovery empties its map on every refresh, so hold the last descriptor
    // seen or the glyph would blink back to the generic one each time.
    const relayDiscovery = useRelayEnvironmentDiscovery();
-@@ -204,6 +211,10 @@ export function SavedBackendListRow({
+@@ -205,6 +212,10 @@ export function SavedBackendListRow({
    if (discoveredDescriptor !== undefined && discoveredDescriptor !== lastDescriptor) {
      setLastDescriptor(discoveredDescriptor);
    }
@@ -1050,7 +1050,7 @@ index 2b9ad1225ff0a8a77287262ba55db2224cb150a1..fb3122ae0a80d7704f117194e2c305d7
    const discoveredRelayHttpBaseUrl =
      relayDiscovery.environments.get(environmentId)?.environment.endpoint.httpBaseUrl;
    const [lastRelayHttpBaseUrl, setLastRelayHttpBaseUrl] = useState(discoveredRelayHttpBaseUrl);
-@@ -236,7 +247,6 @@ export function SavedBackendListRow({
+@@ -237,7 +248,6 @@ export function SavedBackendListRow({
      environmentTransportLabel(environment, connectedTarget, messages),
      // The headline below names the failure in full.
      diagnosis ? null : resumingServerUpdate ? gt("Restarting") : status.text,
@@ -1058,7 +1058,7 @@ index 2b9ad1225ff0a8a77287262ba55db2224cb150a1..fb3122ae0a80d7704f117194e2c305d7
    ]
      .filter((value): value is string => value !== null)
      .join(" · ");
-@@ -260,7 +270,9 @@ export function SavedBackendListRow({
+@@ -261,7 +271,9 @@ export function SavedBackendListRow({
            serverVersion: versionMismatch.serverVersion,
            clientVersion: versionMismatch.clientVersion,
          })}`
@@ -1069,7 +1069,7 @@ index 2b9ad1225ff0a8a77287262ba55db2224cb150a1..fb3122ae0a80d7704f117194e2c305d7
    }`;
  
    return (
-@@ -269,7 +281,7 @@ export function SavedBackendListRow({
+@@ -270,7 +282,7 @@ export function SavedBackendListRow({
        label={environment.label}
        dimmed={!enabled}
        subtitle={
@@ -1078,7 +1078,7 @@ index 2b9ad1225ff0a8a77287262ba55db2224cb150a1..fb3122ae0a80d7704f117194e2c305d7
            <Tooltip>
              {/* The status can change while the tooltip is open, and base-ui only
                  re-measures the popup when the trigger's payload changes. */}
-@@ -294,6 +306,14 @@ export function SavedBackendListRow({
+@@ -295,6 +307,14 @@ export function SavedBackendListRow({
                {statusTooltip}
              </TooltipPopup>
            </Tooltip>
@@ -1093,7 +1093,7 @@ index 2b9ad1225ff0a8a77287262ba55db2224cb150a1..fb3122ae0a80d7704f117194e2c305d7
            <span aria-hidden className="shrink-0">
              ·
            </span>
-@@ -331,6 +351,13 @@ export function SavedBackendListRow({
+@@ -336,6 +356,13 @@ export function SavedBackendListRow({
                )}
              />
            </button>
@@ -1107,7 +1107,7 @@ index 2b9ad1225ff0a8a77287262ba55db2224cb150a1..fb3122ae0a80d7704f117194e2c305d7
          </span>
        }
        below={
-@@ -379,6 +406,18 @@ export function SavedBackendListRow({
+@@ -384,6 +411,18 @@ export function SavedBackendListRow({
                />
              </div>
            )}
@@ -1215,10 +1215,10 @@ index 0000000000000000000000000000000000000000..016fc2a982827c7286be247f5d8cc885
 +  };
 +}
 diff --git a/apps/web/src/i18n/translations/de.json b/apps/web/src/i18n/translations/de.json
-index 5fd6ff3ede89a7a81d36e15752bc754a650fb624..ff40e0f971611d1640ddcc4bff5168531164a4a8 100644
+index ae73fa39e07d3e0bf8ee479cee33ce907795d7a1..be7d69f6cc4cdccd15730c63c74525634d4a8658 100644
 --- a/apps/web/src/i18n/translations/de.json
 +++ b/apps/web/src/i18n/translations/de.json
-@@ -9036,6 +9036,14 @@
+@@ -9202,6 +9202,14 @@
    "d1781a918f8a11cf": "Agenten auf diesem Computer ausführen. Ausschalten, um T3 Code nur mit Remote-Umgebungen zu nutzen.",
    "e1391d08740f38f0": "Ausgeschaltet. Agenten laufen nur in Remote-Umgebungen.",
    "1bb6eb8f0604ec00": "Lokale Umgebung",
@@ -1234,10 +1234,10 @@ index 5fd6ff3ede89a7a81d36e15752bc754a650fb624..ff40e0f971611d1640ddcc4bff516853
    "4ced358c0a88e181": "Lokale Umgebung einschalten?",
    "2bb64ad2007e3c6a": "T3 Code startet neu, ohne einen Server auf diesem Computer auszuführen. Hier laufende Agenten und Terminals werden beendet, und andere Geräte können sich nicht mehr mit diesem Computer verbinden. Deine Projekte, dein Verlauf und deine Remote-Umgebungen sind nicht betroffen.",
 diff --git a/apps/web/src/i18n/translations/en.json b/apps/web/src/i18n/translations/en.json
-index fa018a7c51464a86d51b73fcc252d2587a19221b..e9bf551c8ee7d6166ad60dd5de97db2a228afc3c 100644
+index 7f45c4c2318fc775af3381a2787cb5dffd27f8ab..6f1f407a5353db3fe562d26b4d7357a2dd23f704 100644
 --- a/apps/web/src/i18n/translations/en.json
 +++ b/apps/web/src/i18n/translations/en.json
-@@ -9044,6 +9044,14 @@
+@@ -9210,6 +9210,14 @@
    "d1781a918f8a11cf": "Run agents on this computer. Turn off to use T3 Code only with remote environments.",
    "e1391d08740f38f0": "Turned off. Agents only run in remote environments.",
    "1bb6eb8f0604ec00": "Local environment",
@@ -1253,10 +1253,10 @@ index fa018a7c51464a86d51b73fcc252d2587a19221b..e9bf551c8ee7d6166ad60dd5de97db2a
    "4ced358c0a88e181": "Turn on local environment?",
    "2bb64ad2007e3c6a": "T3 Code will restart without running a server on this computer. Any agents and terminals running here will stop, and other devices will no longer be able to connect to this computer. Your projects, history, and remote environments are unaffected.",
 diff --git a/apps/web/src/i18n/translations/es.json b/apps/web/src/i18n/translations/es.json
-index 50309bfa62b158db0c0c20e158e2b1c529157129..02938ae90ba4cd36f61f3a878d7ce78444629834 100644
+index b412dd8019ca581eb920e5a416ef6f55351f3cd3..39e25e5d617444084a495c743df727450ad5339a 100644
 --- a/apps/web/src/i18n/translations/es.json
 +++ b/apps/web/src/i18n/translations/es.json
-@@ -9034,6 +9034,14 @@
+@@ -9200,6 +9200,14 @@
    "d1781a918f8a11cf": "Ejecuta agentes en este equipo. Desactívalo para usar T3 Code solo con entornos remotos.",
    "e1391d08740f38f0": "Desactivado. Los agentes solo se ejecutan en entornos remotos.",
    "1bb6eb8f0604ec00": "Entorno local",
@@ -1272,10 +1272,10 @@ index 50309bfa62b158db0c0c20e158e2b1c529157129..02938ae90ba4cd36f61f3a878d7ce784
    "4ced358c0a88e181": "¿Activar el entorno local?",
    "2bb64ad2007e3c6a": "T3 Code se reiniciará sin ejecutar un servidor en este equipo. Se detendrán los agentes y terminales que se ejecuten aquí, y otros dispositivos ya no podrán conectarse a este equipo. Tus proyectos, el historial y los entornos remotos no se ven afectados.",
 diff --git a/apps/web/src/i18n/translations/fr.json b/apps/web/src/i18n/translations/fr.json
-index ef718bab748889edb8d1901a522913b6b5276b8e..6991c8097fad17927098e5525034ad2f95486362 100644
+index 79a195da392d7891374a7d139b2a0ed946798016..b2843657724e338c7a6d818fb116b164fb490046 100644
 --- a/apps/web/src/i18n/translations/fr.json
 +++ b/apps/web/src/i18n/translations/fr.json
-@@ -9036,6 +9036,14 @@
+@@ -9202,6 +9202,14 @@
    "d1781a918f8a11cf": "Exécute des agents sur cet ordinateur. Désactivez l’option pour utiliser T3 Code uniquement avec des environnements distants.",
    "e1391d08740f38f0": "Désactivé. Les agents ne s’exécutent que dans des environnements distants.",
    "1bb6eb8f0604ec00": "Environnement local",
@@ -1291,10 +1291,10 @@ index ef718bab748889edb8d1901a522913b6b5276b8e..6991c8097fad17927098e5525034ad2f
    "4ced358c0a88e181": "Activer l’environnement local ?",
    "2bb64ad2007e3c6a": "T3 Code va redémarrer sans exécuter de serveur sur cet ordinateur. Les agents et terminaux en cours ici s’arrêteront, et les autres appareils ne pourront plus se connecter à cet ordinateur. Vos projets, votre historique et vos environnements distants ne sont pas affectés.",
 diff --git a/apps/web/src/i18n/translations/ja.json b/apps/web/src/i18n/translations/ja.json
-index 206f1bbddfd7c4b96a1c5274fa25d9c66f7954de..cac3b9cc70ea5a3c34d0a5046dae7b85fe50a856 100644
+index 6bbe3d0ddcf0aadad812f3f1845ebccf35e57007..381a5cdd5e1b4c0d27ea4101295805f74dd3c70a 100644
 --- a/apps/web/src/i18n/translations/ja.json
 +++ b/apps/web/src/i18n/translations/ja.json
-@@ -8991,6 +8991,14 @@
+@@ -9157,6 +9157,14 @@
    "d1781a918f8a11cf": "このコンピューターでエージェントを実行します。オフにすると、T3 Code はリモート環境でのみ使用します。",
    "e1391d08740f38f0": "オフになっています。エージェントはリモート環境でのみ実行されます。",
    "1bb6eb8f0604ec00": "ローカル環境",
@@ -1310,10 +1310,10 @@ index 206f1bbddfd7c4b96a1c5274fa25d9c66f7954de..cac3b9cc70ea5a3c34d0a5046dae7b85
    "4ced358c0a88e181": "ローカル環境をオンにしますか？",
    "2bb64ad2007e3c6a": "T3 Code はこのコンピューターでサーバーを実行せずに再起動します。ここで実行中のエージェントとターミナルは停止し、他のデバイスはこのコンピューターに接続できなくなります。プロジェクト、履歴、リモート環境には影響しません。",
 diff --git a/apps/web/src/i18n/translations/ko.json b/apps/web/src/i18n/translations/ko.json
-index 18acb6158025985d14f55401cacd9937cfaca11f..58183003f44a3bf4b8bfd5593ec4420b3531e9a4 100644
+index ba50a84746350ee381b4441274127323fbdb2308..8e911de8bdd51efc7a950260bbf1b6b13503a6dc 100644
 --- a/apps/web/src/i18n/translations/ko.json
 +++ b/apps/web/src/i18n/translations/ko.json
-@@ -8994,6 +8994,14 @@
+@@ -9160,6 +9160,14 @@
    "d1781a918f8a11cf": "이 컴퓨터에서 에이전트를 실행합니다. 끄면 원격 환경에서만 T3 Code를 사용합니다.",
    "e1391d08740f38f0": "꺼져 있습니다. 에이전트는 원격 환경에서만 실행됩니다.",
    "1bb6eb8f0604ec00": "로컬 환경",
@@ -1329,10 +1329,10 @@ index 18acb6158025985d14f55401cacd9937cfaca11f..58183003f44a3bf4b8bfd5593ec4420b
    "4ced358c0a88e181": "로컬 환경을 켤까요?",
    "2bb64ad2007e3c6a": "T3 Code가 이 컴퓨터에서 서버를 실행하지 않은 상태로 다시 시작됩니다. 여기서 실행 중인 에이전트와 터미널은 중지되고, 다른 기기는 더 이상 이 컴퓨터에 연결할 수 없습니다. 프로젝트, 기록, 원격 환경에는 영향이 없습니다.",
 diff --git a/apps/web/src/i18n/translations/pt-BR.json b/apps/web/src/i18n/translations/pt-BR.json
-index 05b2204a445ae3025d7f0691ca48dc0d17f1a71b..106c74b2b722af554f5431d7cc8abeb54f247faa 100644
+index fa5021aed42fecc2d74bb49bc6590aa3a54c7298..5e63141b0928d1e9010658665663bd653b874265 100644
 --- a/apps/web/src/i18n/translations/pt-BR.json
 +++ b/apps/web/src/i18n/translations/pt-BR.json
-@@ -9035,6 +9035,14 @@
+@@ -9201,6 +9201,14 @@
    "d1781a918f8a11cf": "Executa agentes neste computador. Desative para usar o T3 Code só com ambientes remotos.",
    "e1391d08740f38f0": "Desativado. Os agentes só rodam em ambientes remotos.",
    "1bb6eb8f0604ec00": "Ambiente local",
@@ -1348,10 +1348,10 @@ index 05b2204a445ae3025d7f0691ca48dc0d17f1a71b..106c74b2b722af554f5431d7cc8abeb5
    "4ced358c0a88e181": "Ativar o ambiente local?",
    "2bb64ad2007e3c6a": "O T3 Code vai reiniciar sem executar um servidor neste computador. Agentes e terminais em execução aqui vão parar, e outros dispositivos não poderão mais se conectar a este computador. Seus projetos, histórico e ambientes remotos não são afetados.",
 diff --git a/apps/web/src/i18n/translations/ru.json b/apps/web/src/i18n/translations/ru.json
-index 3556dd9455160491b154c25d06230bbb4d5b35ab..6640bae9d15bebf8819140b7fae9c73552875d30 100644
+index e5e30b0b05456e56ae098024d9b155fc6b4cd73a..bdc3aec7f3124b69d143b57fef199c597d8d736d 100644
 --- a/apps/web/src/i18n/translations/ru.json
 +++ b/apps/web/src/i18n/translations/ru.json
-@@ -9036,6 +9036,14 @@
+@@ -9202,6 +9202,14 @@
    "d1781a918f8a11cf": "Запускать агентов на этом компьютере. Выключите, чтобы использовать T3 Code только с удалёнными окружениями.",
    "e1391d08740f38f0": "Выключено. Агенты работают только в удалённых окружениях.",
    "1bb6eb8f0604ec00": "Локальное окружение",
@@ -1367,10 +1367,10 @@ index 3556dd9455160491b154c25d06230bbb4d5b35ab..6640bae9d15bebf8819140b7fae9c735
    "4ced358c0a88e181": "Включить локальное окружение?",
    "2bb64ad2007e3c6a": "T3 Code перезапустится без сервера на этом компьютере. Все агенты и терминалы, запущенные здесь, остановятся, а другие устройства больше не смогут подключаться к этому компьютеру. Ваши проекты, история и удалённые окружения не затрагиваются.",
 diff --git a/apps/web/src/i18n/translations/sv.json b/apps/web/src/i18n/translations/sv.json
-index 6b559d46a1f99db089f533cbb04a45cfd0c0dd17..0135dc74539b115b40939a4afe0aa943303c96f4 100644
+index de2909f749581c3c8f95a154e8b1dd37539ec0ee..d8785ff2908ddedb0b0116177a26e2d59f042053 100644
 --- a/apps/web/src/i18n/translations/sv.json
 +++ b/apps/web/src/i18n/translations/sv.json
-@@ -9042,6 +9042,14 @@
+@@ -9208,6 +9208,14 @@
    "d1781a918f8a11cf": "Kör agenter på den här datorn. Stäng av för att bara använda T3 Code med fjärrmiljöer.",
    "e1391d08740f38f0": "Avstängd. Agenter körs bara i fjärrmiljöer.",
    "1bb6eb8f0604ec00": "Lokal miljö",
@@ -1386,10 +1386,10 @@ index 6b559d46a1f99db089f533cbb04a45cfd0c0dd17..0135dc74539b115b40939a4afe0aa943
    "4ced358c0a88e181": "Aktivera den lokala miljön?",
    "2bb64ad2007e3c6a": "T3 Code startar om utan att köra en server på den här datorn. Agenter och terminaler som körs här stoppas, och andra enheter kan inte längre ansluta till den här datorn. Dina projekt, din historik och dina fjärrmiljöer påverkas inte.",
 diff --git a/apps/web/src/i18n/translations/zh.json b/apps/web/src/i18n/translations/zh.json
-index 4d6210cc5e6d04990157c1c154adbe20fd976806..d92244ba0f6f7b03c5955a1205b081dc1e3826ec 100644
+index 0ce1cd3da985c34cd3125040108d2f5ed5121d9f..00fc451562792c9a0f026d92b9c32486e3502b9b 100644
 --- a/apps/web/src/i18n/translations/zh.json
 +++ b/apps/web/src/i18n/translations/zh.json
-@@ -9051,6 +9051,14 @@
+@@ -9217,6 +9217,14 @@
    "d1781a918f8a11cf": "在本机上运行智能体。关闭后，T3 Code 将仅使用远程环境。",
    "e1391d08740f38f0": "已关闭。智能体仅在远程环境中运行。",
    "1bb6eb8f0604ec00": "本地环境",
@@ -1467,21 +1467,28 @@ index b07eeb04f5bb7ccbc2231a08bfe69bd6c7da80d4..beaf66c555d35e1d857ab51c1d8eebe4
  export type ExecutionEnvironmentDescriptor = typeof ExecutionEnvironmentDescriptor.Type;
 diff --git a/patcher/journeys/environment-patches.mjs b/patcher/journeys/environment-patches.mjs
 new file mode 100644
-index 0000000000000000000000000000000000000000..3755c4ad3dc6d02fe2d3a71b65898bff26e135a2
+index 0000000000000000000000000000000000000000..f693884b902864a6075f73be4143c562d62859d4
 --- /dev/null
 +++ b/patcher/journeys/environment-patches.mjs
-@@ -0,0 +1,289 @@
+@@ -0,0 +1,287 @@
 +// Journey: Settings → Environments shows each environment's version (even when matching the client)
 +// and installed patches with their version and included features in both Map view and List view,
 +// preserving disclosure state across Map ↔ List switches.
 +//   T3_PATCHER_APP=<built .app> T3_PATCHER_EVIDENCE=<dir> node patcher/journeys/environment-patches.mjs
 +import * as NodeChildProcess from "node:child_process";
 +import * as NodeFS from "node:fs";
-+import * as NodeNet from "node:net";
 +import * as NodeOS from "node:os";
 +import * as NodePath from "node:path";
 +
-+import { FIXTURE_DB, STEP_TIMEOUT_MS, evidenceDir, journey } from "./support.mjs";
++import {
++  FIXTURE_DB,
++  STEP_TIMEOUT_MS,
++  evidenceDir,
++  freePort,
++  journey,
++  journeyCliEnv,
++  serverBinPath,
++} from "./support.mjs";
 +
 +const repoRoot = NodePath.resolve(import.meta.dirname, "../..");
 +
@@ -1499,18 +1506,6 @@ index 0000000000000000000000000000000000000000..3755c4ad3dc6d02fe2d3a71b65898bff
 +).version;
 +const LOCAL_PATCH_COUNT = JSON.parse(process.env.T3_PATCHER_PATCHES || "[]").length;
 +const LOCAL_PATCHES_LABEL = LOCAL_PATCH_COUNT === 1 ? "1 patch" : `${LOCAL_PATCH_COUNT} patches`;
-+
-+function freePort() {
-+  return new Promise((resolve, reject) => {
-+    const srv = NodeNet.createServer();
-+    srv.on("error", reject);
-+    srv.listen(0, "127.0.0.1", () => {
-+      const address = srv.address();
-+      const port = typeof address === "object" && address !== null ? address.port : 0;
-+      srv.close((err) => (err ? reject(err) : resolve(port)));
-+    });
-+  });
-+}
 +
 +async function settled(page) {
 +  await page.evaluate(() =>
@@ -1595,27 +1590,29 @@ index 0000000000000000000000000000000000000000..3755c4ad3dc6d02fe2d3a71b65898bff
 +        `remote server never wrote server-runtime.json:\n${NodeFS.readFileSync(remoteLog, "utf8")}`,
 +      );
 +    }
-+    await new Promise((resolve) => setTimeout(resolve, 200));
++    await new Promise((resolve) => setTimeout(resolve, 50));
 +  }
 +}
 +
 +try {
-+  await waitForRemoteRuntime();
-+  const pairOutput = NodeChildProcess.execFileSync(
-+    process.execPath,
-+    ["apps/server/src/bin.ts", "pair", "--base-dir", remoteHome],
-+    {
-+      cwd: repoRoot,
-+      env: { ...process.env, T3CODE_HOME: remoteHome },
-+      encoding: "utf8",
-+      timeout: STEP_TIMEOUT_MS,
-+    },
-+  );
-+  const urlMatch = /http:\/\/127\.0\.0\.1:\d+\/[^\s]+/.exec(pairOutput);
-+  if (!urlMatch) {
-+    throw new Error(`could not find pairing URL in pair output:\n${pairOutput}`);
-+  }
-+  const pairingUrl = urlMatch[0];
++  const pairingUrlPromise = waitForRemoteRuntime().then(() => {
++    const pairOutput = NodeChildProcess.execFileSync(
++      process.execPath,
++      [serverBinPath(), "pair", "--base-dir", remoteHome],
++      {
++        cwd: repoRoot,
++        env: journeyCliEnv({ T3CODE_HOME: remoteHome }),
++        encoding: "utf8",
++        timeout: STEP_TIMEOUT_MS,
++      },
++    );
++    const urlMatch = /http:\/\/127\.0\.0\.1:\d+\/[^\s]+/.exec(pairOutput);
++    if (!urlMatch) {
++      throw new Error(`could not find pairing URL in pair output:\n${pairOutput}`);
++    }
++    return urlMatch[0];
++  });
++  pairingUrlPromise.catch(() => {});
 +
 +  await journey(
 +    "environment-patches",
@@ -1631,6 +1628,7 @@ index 0000000000000000000000000000000000000000..3755c4ad3dc6d02fe2d3a71b65898bff
 +      await environmentsNav.click();
 +
 +      step("pairing the remote environment through Add environment");
++      const pairingUrl = await pairingUrlPromise;
 +      await page.getByRole("button", { name: "Add environment" }).first().click();
 +      const addDialog = page.getByRole("dialog", { name: "Add Environment" });
 +      const hostInput = addDialog.getByPlaceholder("backend.example.com");

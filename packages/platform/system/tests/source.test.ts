@@ -208,6 +208,26 @@ describe("gitSource", () => {
       expect(later.base).toBe(repo.v1);
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)));
 
+  it.live("reuses a tag already in the mirror without fetching from origin", () =>
+    Effect.gen(function* () {
+      const { repo, source, join } = yield* setup;
+      const first = yield* source.open("v1.0.0", "main");
+      yield* sh(repo.folder, "rm", ["-rf", repo.folder]);
+      const cached = yield* source.open("v1.1.0", "other");
+      const again = yield* source.open("v1.0.0", "main");
+      expect({
+        cachedBase: cached.base,
+        againBase: again.base,
+        samePath: again.path === first.path,
+        a: yield* read(join(cached.path, "a.txt")),
+      }).toEqual({
+        cachedBase: repo.v11,
+        againBase: repo.v1,
+        samePath: true,
+        a: V11,
+      });
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)));
+
   it.live("fails with a readable reason when the tag doesn't exist", () =>
     Effect.gen(function* () {
       const { repo, source } = yield* setup;
